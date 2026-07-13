@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: content-ops-console
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node content-ops/server.js --host 0.0.0.0
+    healthCheckPath: /api/health

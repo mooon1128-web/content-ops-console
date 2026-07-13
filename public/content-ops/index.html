@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>内容运营管理台</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">CO</span>
+      <div>
+        <strong>内容运营管理台</strong>
+        <small id="storage-status">正在连接数据源</small>
+      </div>
+    </div>
+    <nav class="tabs" aria-label="主要视图">
+      <button class="tab active" data-view="dashboard">总览</button>
+      <button class="tab" data-view="titles">爆款标题库</button>
+      <button class="tab" data-view="accounts">账号频率</button>
+      <button class="tab" data-view="products">产品库存</button>
+      <button class="tab" data-view="posts">发布数据</button>
+      <button class="tab" data-view="insights">建议</button>
+    </nav>
+    <div class="top-actions">
+      <button class="secondary-button small migration-button" id="migrate-file-data" type="button">迁移到测试服务</button>
+      <button class="icon-action" id="export-data" title="导出备份" aria-label="导出备份">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10m0 0 4-4m-4 4-4-4M5 15v4h14v-4"/></svg>
+      </button>
+      <label class="icon-action" title="导入备份" aria-label="导入备份">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21V11m0 0 4 4m-4-4-4 4M5 9V5h14v4"/></svg>
+        <input id="import-data" type="file" accept="application/json" />
+      </label>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="view active" id="dashboard-view">
+      <div class="view-heading">
+        <div>
+          <span class="eyebrow">OPERATIONS</span>
+          <h1>本周内容节奏</h1>
+        </div>
+        <button class="primary-button" data-open="post-dialog">新增发布记录</button>
+      </div>
+      <section class="recommended-products-panel">
+        <div class="panel-head">
+          <div>
+            <span class="eyebrow">PRODUCT FOCUS</span>
+            <h2>近期建议做内容的产品</h2>
+          </div>
+          <button class="secondary-button small" data-view-jump="products">管理员选择</button>
+        </div>
+        <div id="recommended-products" class="recommended-products"></div>
+      </section>
+      <div id="metric-grid" class="metric-grid"></div>
+      <div class="dashboard-layout">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>账号发布频率</h2>
+            <button class="secondary-button small" data-view-jump="accounts">管理账号</button>
+          </div>
+          <div id="frequency-list" class="frequency-list"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>近期发布</h2>
+            <button class="secondary-button small" data-view-jump="posts">查看数据</button>
+          </div>
+          <div id="recent-posts" class="compact-list"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="view" id="titles-view">
+      <div class="view-heading">
+        <div>
+          <span class="eyebrow">TITLE LIBRARY</span>
+          <h1>爆款标题库</h1>
+        </div>
+        <div class="heading-actions">
+          <button class="secondary-button" data-open="batch-title-dialog">批量采集</button>
+          <button class="primary-button" data-open="title-dialog">新增标题</button>
+        </div>
+      </div>
+      <div class="toolbar">
+        <div class="search-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.3-4.3M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z"/></svg>
+          <input id="title-search" placeholder="搜索标题、赛道、人群、公式" />
+        </div>
+        <select id="title-platform-filter"></select>
+        <select id="title-type-filter"></select>
+        <select id="title-formula-filter"></select>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table title-table">
+          <thead>
+            <tr>
+              <th>标题</th>
+              <th>使用情况</th>
+            </tr>
+          </thead>
+          <tbody id="title-library"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="view" id="accounts-view">
+      <div class="view-heading">
+        <div>
+          <span class="eyebrow">ACCOUNT RHYTHM</span>
+          <h1>账号与发布频率</h1>
+        </div>
+        <button class="primary-button" data-open="account-dialog">新增账号</button>
+      </div>
+      <div id="account-grid" class="account-grid"></div>
+    </section>
+
+    <section class="view" id="products-view">
+      <div class="view-heading">
+        <div>
+          <span class="eyebrow">INVENTORY & CAMPAIGN</span>
+          <h1>产品库存与节日选题</h1>
+        </div>
+        <button class="primary-button" data-open="product-dialog">新增产品</button>
+      </div>
+      <section class="inventory-connection panel">
+        <div class="panel-head">
+          <div>
+            <h2>订货后台库存</h2>
+            <span class="row-meta">从订货后台同步商品、库存状态、货号和后台链接</span>
+          </div>
+          <div class="heading-actions">
+            <button class="secondary-button small" id="save-inventory-settings" type="button">保存设置</button>
+            <button class="primary-button small" id="sync-wholesale-products" type="button">同步订货后台</button>
+          </div>
+        </div>
+        <div class="inventory-settings-grid">
+          <label>后台名称<input id="inventory-backend-name" placeholder="例如：订货后台" /></label>
+          <label>后台链接<input id="inventory-backend-url" placeholder="https://..." /></label>
+          <label>最后同步<input id="inventory-synced-at" type="datetime-local" /></label>
+        </div>
+      </section>
+      <section class="monthly-focus-panel panel">
+        <div class="panel-head">
+          <div>
+            <h2>本月重点运营产品 Top10</h2>
+            <span class="row-meta">从下方产品里设为推荐；拖动卡片即可调整顺序</span>
+          </div>
+        </div>
+        <div id="monthly-focus-list" class="monthly-focus-list"></div>
+      </section>
+      <section class="seasonal-panel panel">
+        <div class="panel-head">
+          <div>
+            <h2>特定节日选题提醒</h2>
+            <span class="row-meta">默认提前 15 天左右提醒，匹配毛绒玩具、箱包、文创文具</span>
+          </div>
+        </div>
+        <div id="seasonal-reminders" class="seasonal-reminders"></div>
+      </section>
+      <div class="toolbar product-toolbar">
+        <div class="search-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.3-4.3M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z"/></svg>
+          <input id="product-search" placeholder="搜索产品名、货号、后台分类" />
+        </div>
+        <select id="product-category-filter"></select>
+        <select id="product-stock-filter">
+          <option value="all">全部库存</option>
+          <option value="instock">有货</option>
+          <option value="preorder">建议提前预定</option>
+          <option value="soldout">缺货</option>
+          <option value="selected">已选 Top10</option>
+        </select>
+      </div>
+      <div id="product-grid" class="product-grid"></div>
+    </section>
+
+    <section class="view" id="posts-view">
+      <div class="view-heading">
+        <div>
+          <span class="eyebrow">PUBLISHING DATA</span>
+          <h1>发布记录与数据登记</h1>
+        </div>
+        <button class="primary-button" data-open="post-dialog">新增发布记录</button>
+      </div>
+      <div class="toolbar">
+        <div class="search-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.3-4.3M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z"/></svg>
+          <input id="post-search" placeholder="搜索标题、账号、赛道" />
+        </div>
+        <select id="post-status-filter"></select>
+        <select id="post-account-filter"></select>
+      </div>
+      <section class="staging-shell">
+        <div class="panel-head">
+          <div>
+            <span class="eyebrow">IN PRODUCTION</span>
+            <h2>制作中内容</h2>
+          </div>
+          <span class="row-meta">默认未分配时间；确定发布时间后拖到日历，对应内容会变灰并划线</span>
+        </div>
+        <div id="staging-board" class="staging-board"></div>
+      </section>
+      <div class="calendar-shell">
+        <div class="calendar-toolbar">
+          <div>
+            <span class="eyebrow">CONTENT CALENDAR</span>
+            <h2 id="calendar-title">发布日历</h2>
+          </div>
+          <div class="calendar-actions">
+            <button class="secondary-button small" id="calendar-prev" type="button">上个月</button>
+            <button class="secondary-button small" id="calendar-today" type="button">今天</button>
+            <button class="secondary-button small" id="calendar-next" type="button">下个月</button>
+          </div>
+        </div>
+        <div class="calendar-weekdays">
+          <span>周一</span><span>周二</span><span>周三</span><span>周四</span><span>周五</span><span>周六</span><span>周日</span>
+        </div>
+        <div id="post-calendar" class="post-calendar"></div>
+      </div>
+    </section>
+
+    <section class="view" id="insights-view">
+      <div class="view-heading">
+        <div>
+          <span class="eyebrow">NEXT ACTIONS</span>
+          <h1>下周建议</h1>
+        </div>
+        <button class="secondary-button" id="copy-brief">复制运营简报</button>
+      </div>
+      <div id="insight-grid" class="insight-grid"></div>
+    </section>
+  </main>
+
+  <dialog id="title-dialog" class="form-dialog">
+    <form id="title-form" method="dialog">
+      <div class="dialog-title">
+        <div><span class="eyebrow">TITLE</span><h2>登记爆款标题</h2></div>
+        <button type="button" class="icon-button" data-close="title-dialog" aria-label="关闭">×</button>
+      </div>
+      <input type="hidden" name="id" />
+      <div class="form-grid">
+        <label class="wide">标题<input name="title" required maxlength="80" placeholder="例如：普通人别再乱做小红书了" /></label>
+        <label>来源平台<select name="platform"></select></label>
+        <label>来源账号<input name="sourceAccount" placeholder="对标账号名" /></label>
+        <label class="wide">来源链接<input name="sourceUrl" placeholder="https://..." /></label>
+        <label>发布时间<input name="publishedAt" type="date" /></label>
+        <label>采集日期<input name="capturedAt" type="date" /></label>
+        <label>点赞<input name="likes" type="number" min="0" /></label>
+        <label>收藏<input name="saves" type="number" min="0" /></label>
+        <label>评论<input name="comments" type="number" min="0" /></label>
+        <label>分享<input name="shares" type="number" min="0" /></label>
+        <label>内容类型<select name="contentType"></select></label>
+        <label>赛道<input name="niche" list="niche-list" placeholder="职场、护肤、家居..." /></label>
+        <label>目标人群<input name="audience" placeholder="新手妈妈、大学生..." /></label>
+        <label>标题公式<select name="formula"></select></label>
+        <label>情绪钩子<select name="emotionHook"></select></label>
+        <label class="wide">备注<textarea name="notes" rows="3" placeholder="为什么值得复用、封面特点、评论区高频问题"></textarea></label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="danger-button" data-delete-title>删除</button>
+        <button class="primary-button" type="submit">保存标题</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="batch-title-dialog" class="form-dialog large">
+    <form id="batch-title-form" method="dialog">
+      <div class="dialog-title">
+        <div><span class="eyebrow">BATCH COLLECT</span><h2>批量采集爆款标题</h2></div>
+        <button type="button" class="icon-button" data-close="batch-title-dialog" aria-label="关闭">×</button>
+      </div>
+      <label class="batch-input-label">粘贴标题、链接或整段笔记信息
+        <textarea id="batch-title-input" rows="10" placeholder="每条标题一行，或每条之间空一行。例如：
+普通人别再乱做小红书了 | 小红书 | 点赞 1.2万 | 收藏 860 | 评论 93 | https://www.xiaohongshu.com/...
+
+30天起号复盘：这5类内容最稳
+作者：增长观察
+点赞：950 收藏：1880 评论：96 分享：141"></textarea>
+      </label>
+      <div class="batch-actions">
+        <button type="button" class="secondary-button" id="parse-batch-titles">解析预览</button>
+        <button type="button" class="primary-button" id="save-batch-titles" disabled>确认入库</button>
+      </div>
+      <div id="batch-title-preview" class="batch-preview"></div>
+    </form>
+  </dialog>
+
+  <dialog id="account-dialog" class="form-dialog">
+    <form id="account-form" method="dialog">
+      <div class="dialog-title">
+        <div><span class="eyebrow">ACCOUNT</span><h2>账号配置</h2></div>
+        <button type="button" class="icon-button" data-close="account-dialog" aria-label="关闭">×</button>
+      </div>
+      <input type="hidden" name="id" />
+      <div class="form-grid">
+        <label>账号名称<input name="name" required placeholder="例如：品牌小红书号" /></label>
+        <label>平台<select name="platform"></select></label>
+        <label>负责人<input name="owner" placeholder="Chloe" /></label>
+        <label>状态<select name="status"><option>运营中</option><option>观察中</option><option>暂停</option></select></label>
+        <label class="wide">账号定位<input name="position" placeholder="账号定位、人设、核心卖点" /></label>
+        <label>目标人群<input name="target" placeholder="女性白领、宝妈..." /></label>
+        <label>每周目标发布数<input name="frequencyPerWeek" type="number" min="0" max="21" value="5" /></label>
+        <label>禁发时段<input name="blockedSlots" placeholder="周末上午、节假日..." /></label>
+        <label class="wide">偏好发布时间<input name="preferredSlots" placeholder="周一/三/五 12:30，周日 20:00" /></label>
+        <label class="wide">备注<textarea name="notes" rows="3" placeholder="内容边界、素材来源、禁用词"></textarea></label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="danger-button" data-delete-account>删除</button>
+        <button class="primary-button" type="submit">保存账号</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="title-usage-dialog" class="form-dialog">
+    <form id="title-usage-form" method="dialog">
+      <div class="dialog-title">
+        <div><span class="eyebrow">TITLE USAGE</span><h2>关联已使用标题</h2></div>
+        <button type="button" class="icon-button" data-close="title-usage-dialog" aria-label="关闭">×</button>
+      </div>
+      <input type="hidden" name="titleId" />
+      <div class="usage-summary" id="title-usage-summary"></div>
+      <div class="form-grid">
+        <label class="wide">选择对应笔记<select name="postId" required></select></label>
+      </div>
+      <p class="dialog-help">标题必须关联到具体发布记录，才会被标记为“已使用”。如果还没有这篇笔记，请先去“发布数据”里新增记录。</p>
+      <div class="dialog-actions">
+        <button type="button" class="secondary-button" data-view-jump="posts">去新增笔记</button>
+        <button class="primary-button" type="submit">确认关联</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="product-dialog" class="form-dialog">
+    <form id="product-form" method="dialog">
+      <div class="dialog-title">
+        <div><span class="eyebrow">PRODUCT</span><h2>产品与库存</h2></div>
+        <button type="button" class="icon-button" data-close="product-dialog" aria-label="关闭">×</button>
+      </div>
+      <input type="hidden" name="id" />
+      <div class="form-grid">
+        <label>产品名称<input name="name" required placeholder="例如：馒头猫毛绒挂件" /></label>
+        <label>产品类型<select name="category"></select></label>
+        <label>SKU / 货号<input name="sku" placeholder="订货后台货号" /></label>
+        <label>当前库存<input name="stock" type="number" min="0" value="0" /></label>
+        <label>在途/可补货<input name="incomingStock" type="number" min="0" value="0" /></label>
+        <label>推荐优先级<input name="priority" type="number" min="0" max="99" value="5" /></label>
+        <label class="wide"><input name="selected" type="checkbox" /> 设为顶部“近期建议做内容的产品”</label>
+        <label class="wide">内容卖点<input name="sellingPoint" placeholder="适合送礼、开学收纳、通勤搭配、手账氛围..." /></label>
+        <label class="wide">后台库存链接<input name="backendUrl" placeholder="订货后台对应商品链接" /></label>
+        <label class="wide">备注<textarea name="notes" rows="3" placeholder="素材方向、库存风险、主推人群、禁用点"></textarea></label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="danger-button" data-delete-product>删除</button>
+        <button class="primary-button" type="submit">保存产品</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="post-dialog" class="form-dialog large">
+    <form id="post-form" method="dialog">
+      <div class="dialog-title">
+        <div><span class="eyebrow">POST</span><h2>发布记录</h2></div>
+        <button type="button" class="icon-button" data-close="post-dialog" aria-label="关闭">×</button>
+      </div>
+      <input type="hidden" name="id" />
+      <div class="form-grid">
+        <label class="wide">内容标题<input name="headline" required maxlength="100" placeholder="实际发布标题或草稿标题" /></label>
+        <label>账号<select name="accountId"></select></label>
+        <label>关联标题库<select name="titleId"></select></label>
+        <label>内容类型<select name="contentType"></select></label>
+        <label>赛道<input name="niche" list="niche-list" /></label>
+        <label>状态<select name="status"></select></label>
+        <label>负责人<input name="owner" /></label>
+        <label>拍摄时间<input name="shootingAt" type="datetime-local" /></label>
+        <label>计划发布<input name="scheduledAt" type="datetime-local" /></label>
+        <label>实际发布<input name="publishedAt" type="datetime-local" /></label>
+        <fieldset class="progress-fieldset wide">
+          <legend>制作进度（每步 20%）</legend>
+          <label><input name="progressPlanning" type="checkbox" /> 内容策划</label>
+          <label><input name="progressShooting" type="checkbox" /> 执行拍摄</label>
+          <label><input name="progressEditing" type="checkbox" /> 剪辑完成/完成制作</label>
+          <label><input name="progressTitle" type="checkbox" /> 标题填写</label>
+          <label><input name="progressAccount" type="checkbox" /> 发布账号</label>
+        </fieldset>
+        <label>曝光<input name="exposure" type="number" min="0" /></label>
+        <label>点击<input name="clicks" type="number" min="0" /></label>
+        <label>点赞<input name="likes" type="number" min="0" /></label>
+        <label>收藏<input name="saves" type="number" min="0" /></label>
+        <label>评论<input name="comments" type="number" min="0" /></label>
+        <label>分享<input name="shares" type="number" min="0" /></label>
+        <label>涨粉<input name="follows" type="number" min="0" /></label>
+        <label>转化<input name="conversions" type="number" min="0" /></label>
+        <label class="wide">链接<input name="url" placeholder="发布后的链接" /></label>
+        <label class="wide">拍摄计划<textarea name="shootingPlan" rows="3" placeholder="拍摄脚本、场景、道具、负责人、素材清单"></textarea></label>
+        <label class="wide">复盘备注<textarea name="notes" rows="3" placeholder="封面表现、评论区问题、下次怎么复用"></textarea></label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="danger-button" data-delete-post>删除</button>
+        <button class="primary-button" type="submit">保存记录</button>
+      </div>
+    </form>
+  </dialog>
+
+  <datalist id="niche-list"></datalist>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="app.js"></script>
+</body>
+</html>

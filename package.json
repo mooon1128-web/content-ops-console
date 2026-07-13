@@ -1,0 +1,10 @@
+{
+  "name": "content-ops-console",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node content-ops/server.js --host 0.0.0.0",
+    "dev": "node content-ops/server.js --host 127.0.0.1"
+  }
+}
