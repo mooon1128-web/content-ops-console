@@ -117,6 +117,13 @@ function send(response, status, body, headers = {}) {
 
 async function serveStatic(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname === "/assets/styles" || url.pathname === "/assets/app") {
+    const isStyles = url.pathname === "/assets/styles";
+    const filePath = join(publicDir, isStyles ? "styles.css" : "app.js");
+    response.writeHead(200, { "Content-Type": isStyles ? mime[".css"] : mime[".js"] });
+    createReadStream(filePath).pipe(response);
+    return;
+  }
   const requestPath = url.pathname === "/" ? "/index.html" : url.pathname;
   const clean = normalize(decodeURIComponent(requestPath)).replace(/^(\.\.[/\\])+/, "");
   const target = resolve(publicDir, `.${clean}`);
