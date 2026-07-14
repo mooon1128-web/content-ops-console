@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+content-ops/backups/
+content-ops/xhs-media-data.json
+content-ops/xhs-media-backups/
+public/xhs-media/*.json
+public/xhs-media/data-backups/

@@ -21,16 +21,40 @@ npm run content-ops
 http://localhost:4322
 ```
 
+小红书媒介投放跟踪台的稳定版地址：
+
+```text
+http://localhost:4322/xhs-media/
+```
+
 公司内网使用时，让同事访问这台电脑/服务器的内网 IP：
 
 ```text
 http://内网IP:4322
 ```
 
+小红书媒介投放跟踪台已启用访问密码。默认密码：
+
+```text
+xhs2026
+```
+
 共享数据会写到：
 
 ```text
 content-ops/data.json
+```
+
+小红书媒介投放数据会写到：
+
+```text
+content-ops/xhs-media-data.json
+```
+
+每次保存前会自动备份到：
+
+```text
+content-ops/xhs-media-backups/
 ```
 
 ## 配置
@@ -41,18 +65,25 @@ content-ops/data.json
 PORT=8080 CONTENT_OPS_DATA=/path/to/content-ops-data.json npm run content-ops
 ```
 
-如果只打开 `public/content-ops/index.html`，页面也能运行，但数据只保存在当前浏览器本机，无法多人共享。
+小红书媒介投放访问密码和数据文件也可以单独指定：
 
-## 免费上线
+```bash
+XHS_MEDIA_PASSWORD=你的新密码 XHS_MEDIA_DATA=/path/to/xhs-media-data.json npm run content-ops
+```
 
-推荐用 Render Free Web Service：
+如果只打开 `public/content-ops/index.html` 或用普通静态服务打开 `public/xhs-media/index.html`，页面也能运行，但数据只保存在当前浏览器本机，无法多人共享。
+
+## 公网上线
+
+推荐用 Render Web Service：
 
 1. 把当前项目推到 GitHub。
 2. 打开 Render，选择 New → Blueprint。
 3. 连接这个 GitHub 仓库，Render 会读取根目录的 `render.yaml`。
 4. 创建服务后，等待部署完成。
 5. 访问 Render 生成的 `https://...onrender.com` 链接。
+6. 小红书媒介投放跟踪台访问 `https://...onrender.com/xhs-media/`。
 
-这个版本不需要登录，知道链接的人都能访问和修改数据，适合 1-3 人小范围使用。
+这个版本有小红书媒介投放跟踪台访问密码。上线后建议在 Render 环境变量里设置 `XHS_MEDIA_PASSWORD`，不要长期使用默认密码。
 
-注意：免费 Web Service 适合轻量测试和内部协作。上线后请定期点右上角“导出备份”，尤其是在改动大量账号、标题、产品和发布记录之后。
+注意：小红书媒介投放跟踪台会在线写入数据，不建议用 Render Free 作为长期正式版。当前 `render.yaml` 已配置 1GB Persistent Disk，并把 `CONTENT_OPS_DATA`、`XHS_MEDIA_DATA` 指到 `/var/data`。上线后仍建议定期点右上角“导出备份”，尤其是在改动大量账号、标题、产品和发布记录之后。

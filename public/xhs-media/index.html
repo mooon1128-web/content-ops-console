@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>小红书媒介投放跟踪台</title>
+  <link rel="stylesheet" href="styles.css?v=20260713-server-persist" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">XH</span>
+      <div>
+        <strong>小红书媒介投放跟踪台</strong>
+        <small id="save-status">本机数据已启用</small>
+      </div>
+    </div>
+    <nav class="tabs" aria-label="视图切换">
+      <button class="tab active" data-view="overview">总览</button>
+      <button class="tab" data-view="creators">达人库</button>
+      <button class="tab" data-view="followups">跟进任务</button>
+      <button class="tab" data-view="placements">投放台账</button>
+      <button class="tab" data-view="feedback">反馈</button>
+    </nav>
+    <div class="top-actions">
+      <button class="icon-action" id="download-template" title="下载CSV模板" aria-label="下载CSV模板">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h8l4 4v14H4V3h4m8 0v5h5M8 13h8M8 17h8"/></svg>
+      </button>
+      <button class="icon-action" id="export-data" title="导出数据" aria-label="导出数据">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 19h14"/></svg>
+      </button>
+      <label class="icon-action" title="导入JSON数据" aria-label="导入JSON数据">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21V9m0 0 4 4m-4-4-4 4M5 5h14"/></svg>
+        <input id="import-data" type="file" accept="application/json" />
+      </label>
+      <label class="icon-action" title="导入CSV台账" aria-label="导入CSV台账">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h16M8 5v14M16 5v14"/></svg>
+        <input id="import-csv" type="file" accept=".csv,text/csv" />
+      </label>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="product-board" aria-label="月度合作产品">
+      <div>
+        <span class="eyebrow">PERIOD PRODUCTS</span>
+        <h2 id="product-board-title">合作产品 Top 3</h2>
+      </div>
+      <div id="product-board" class="product-list"></div>
+    </section>
+
+    <section class="view active" id="overview-view">
+      <div class="view-heading">
+        <div>
+          <span class="eyebrow">MEDIA DASHBOARD</span>
+          <h1>媒介投放复盘</h1>
+        </div>
+        <div class="heading-actions">
+          <label class="period-control">统计周期<select id="overview-period"></select></label>
+          <button class="primary-button" data-open="placement-dialog">新增投放</button>
+        </div>
+      </div>
+      <div id="metric-grid" class="metric-grid"></div>
+      <section class="panel annual-trend-panel" id="annual-trend-panel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2 id="annual-trend-title">全年互动趋势</h2>
+            <span class="muted">按实际发布日期汇总点赞、收藏和评论</span>
+          </div>
+          <div class="chart-legend" aria-label="图表图例">
+            <span class="likes">点赞</span><span class="saves">收藏</span><span class="comments">评论</span>
+          </div>
+        </div>
+        <div id="annual-trend-chart" class="annual-trend-chart"></div>
+      </section>
+      <section class="panel monthly-panel">
+        <div class="panel-head">
+          <h2 id="period-review-title">周期产品复盘</h2>
+          <span class="muted">仅按实际发布时间归入月份或年份</span>
+        </div>
+        <div id="monthly-product-stats" class="monthly-grid"></div>
+      </section>
+      <div class="overview-layout">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>投放进度</h2>
+            <button class="secondary-button small" data-view-jump="placements">查看台账</button>
+          </div>
+          <div id="status-board" class="status-board"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>达人互动排行</h2>
+            <button class="secondary-button small" data-view-jump="feedback">查看反馈</button>
+          </div>
+          <div id="creator-ranking" class="ranking-list"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="view" id="creators-view">
+      <div class="view-heading">
+        <div>
+          <span class="eyebrow">CREATOR CRM</span>
+          <h1>达人库</h1>
+        </div>
+        <div class="heading-actions">
+          <button class="primary-button" id="add-creator">新增达人</button>
+          <button class="secondary-button" id="bulk-outreach">批量建联</button>
+          <button class="secondary-button" id="resync-creators">同步合作记录</button>
+        </div>
+      </div>
+      <div id="creator-summary" class="metric-grid compact-metrics"></div>
+      <section class="panel classification-workbench" id="classification-workbench">
+        <div class="panel-head classification-head">
+          <div>
+            <span class="eyebrow">SAFE REVIEW</span>
+            <h2>待分类工作台</h2>
+          </div>
+          <div class="classification-progress" id="classification-progress"></div>
+        </div>
+        <div id="classification-content"></div>
+      </section>
+      <div class="toolbar">
+        <div class="search-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.3-4.3M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z"/></svg>
+          <input id="creator-search" placeholder="搜索达人、微信、地址、最近合作" />
+        </div>
+        <select id="creator-type-filter"></select>
+        <select id="creator-tier-filter">
+          <option value="all">全部量级</option>
+          <option value="头部">头部</option>
+          <option value="中部">中部</option>
+          <option value="尾部">尾部</option>
+          <option value="素人">素人</option>
+        </select>
+        <select id="creator-outreach-filter">
+          <option value="all">全部建联状态</option>
+          <option value="need">待建联</option>
+          <option value="sent">已发出</option>
+          <option value="wechat">已加微信</option>
+        </select>
+        <select id="creator-sort">
+          <option value="fans">粉丝数排序</option>
+          <option value="recent">最近合作排序</option>
+          <option value="count">合作次数排序</option>
+        </select>
+      </div>
+      <div class="type-editor">
+        <input id="new-creator-type" placeholder="新增达人类型，例如：探店博主、家居收纳博主" />
+        <button class="secondary-button small" id="add-creator-type">新增类型</button>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th><input id="select-all-outreach" type="checkbox" aria-label="选择当前页待建联达人" /></th>
+              <th>达人</th>
+              <th>类型</th>
+              <th>量级</th>
+              <th>粉丝数</th>
+              <th>合作次数</th>
+              <th>最近合作</th>
+              <th>联系信息</th>
+              <th>建联</th>
+              <th>黑名单</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="creator-table"></tbody>
+        </table>
+      </div>
+      <section class="panel blacklist-panel">
+        <div class="panel-head">
+          <h2>黑名单博主</h2>
+          <span class="muted">被标记黑名单的达人会集中在这里，原因可直接编辑。</span>
+        </div>
+        <div id="blacklist-list" class="task-list"></div>
+      </section>
+    </section>
+
+    <section class="view" id="followups-view">
+      <div class="view-heading">
+        <div>
+          <span class="eyebrow">DAILY FOLLOW-UP</span>
+          <h1>今天该跟进谁</h1>
+        </div>
+        <button class="secondary-button" id="copy-followups">复制跟进清单</button>
+      </div>
+      <div id="followup-summary" class="metric-grid compact-metrics"></div>
+      <div id="followup-list" class="task-list"></div>
+    </section>
+
+    <section class="view" id="placements-view">
+      <div class="view-heading">
+        <div>
+          <span class="eyebrow">PLACEMENT LEDGER</span>
+          <h1>达人投放台账</h1>
+        </div>
+        <div class="heading-actions">
+          <label class="period-control">显示周期<select id="ledger-period"></select></label>
+          <button class="primary-button" data-open="placement-dialog">新增投放</button>
+        </div>
+      </div>
+      <div class="toolbar">
+        <div class="search-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.3-4.3M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z"/></svg>
+          <input id="search-input" placeholder="搜索达人、产品、笔记、负责人" />
+        </div>
+        <select id="status-filter"></select>
+        <select id="content-filter"></select>
+        <select id="result-filter">
+          <option value="all">全部反馈</option>
+          <option value="scale">可加投</option>
+          <option value="optimize">需优化</option>
+          <option value="pause">暂停观察</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table placement-data-table">
+          <thead>
+            <tr>
+              <th>状态</th>
+              <th>达人与内容</th>
+              <th>费用</th>
+              <th>互动数据</th>
+              <th>转化</th>
+              <th>跟进</th>
+              <th>反馈</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="placement-table"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="view" id="feedback-view">
+      <div class="view-heading">
+        <div>
+          <span class="eyebrow">NEXT ACTIONS</span>
+          <h1>投放情况反馈</h1>
+        </div>
+        <button class="secondary-button" id="copy-report">复制复盘简报</button>
+      </div>
+      <div id="feedback-grid" class="feedback-grid"></div>
+    </section>
+  </main>
+
+  <dialog id="placement-dialog" class="form-dialog">
+    <form id="placement-form" method="dialog">
+      <div class="dialog-title">
+        <div>
+          <span class="eyebrow">PLACEMENT</span>
+          <h2>投放记录</h2>
+        </div>
+        <button type="button" class="icon-button" data-close="placement-dialog" aria-label="关闭">×</button>
+      </div>
+      <input type="hidden" name="id" />
+      <div class="form-grid">
+        <label>达人昵称<input name="creator" required maxlength="40" list="creator-name-list" placeholder="从达人库选择或输入新达人" /></label>
+        <label>达人类型<input name="creatorTier" readonly placeholder="选择达人后自动显示" /></label>
+        <input type="hidden" name="productId" />
+        <input type="hidden" name="productIds" />
+        <input type="hidden" name="productCode" />
+        <input type="hidden" name="productCodes" />
+        <input type="hidden" name="productCategory" />
+        <input type="hidden" name="productStatus" />
+        <input type="hidden" name="productUrl" />
+        <label class="wide product-picker-field">产品
+          <div class="product-picker">
+            <input name="product" required maxlength="300" placeholder="点击选择产品，或手动用、隔开多个产品" autocomplete="off" />
+            <button type="button" id="product-picker-toggle" class="picker-toggle" aria-label="展开产品列表">⌄</button>
+            <div id="product-picker-menu" class="product-picker-menu" hidden>
+              <input id="product-picker-search" class="product-picker-search" placeholder="在这里搜索产品名称/货号" autocomplete="off" />
+              <div id="product-picker-options" class="product-picker-options"></div>
+            </div>
+          </div>
+        </label>
+        <label>库存状态<input name="productStatusDisplay" disabled /></label>
+        <label class="wide product-link-row"><a id="product-stock-link" href="../wholesale-portal/partner.html" target="_blank" rel="noreferrer">打开订货站查看库存</a></label>
+        <label>内容类型<select name="contentType"></select></label>
+        <label>联系方式<input name="contactMethod" maxlength="40" placeholder="小红书私信、微信、邮箱" /></label>
+        <label>负责人<input name="owner" maxlength="24" placeholder="例如：Chloe" /></label>
+        <label>投放状态<select name="status"></select></label>
+        <label>样品状态<select name="sampleStatus"></select></label>
+        <label>样品签收日期<input name="sampleDeliveredAt" type="date" /></label>
+        <label>内容进度<input name="deliverableProgress" maxlength="12" placeholder="0/1、1/2、2/2" /></label>
+        <label>约定发布日期<input name="agreedPublishAt" type="date" /></label>
+        <label>稿件审核<select name="requiresDraftReview"><option value="yes">需要审核（默认）</option><option value="no">无需审核</option></select></label>
+        <label>稿件申请状态<select name="draftStatus"></select></label>
+        <label>稿件申请日期<input name="draftSubmittedAt" type="date" /></label>
+        <label>上次联系日期<input name="lastContactAt" type="date" /></label>
+        <label>跟进次数<input name="followUpCount" type="number" min="0" step="1" /></label>
+        <label>达人回复<input name="creatorResponse" maxlength="80" placeholder="未回复、已确认、需改脚本" /></label>
+        <label>计划发布时间<input name="plannedAt" type="date" /></label>
+        <label>实际发布时间<input name="publishedAt" type="date" /></label>
+        <label>合作费<input name="fee" type="number" min="0" step="1" /></label>
+        <label>样品/履约成本<input name="extraCost" type="number" min="0" step="1" /></label>
+        <label>曝光<input name="exposure" type="number" min="0" step="1" /></label>
+        <label>阅读/点击<input name="clicks" type="number" min="0" step="1" /></label>
+        <label>点赞<input name="likes" type="number" min="0" step="1" /></label>
+        <label>收藏<input name="saves" type="number" min="0" step="1" /></label>
+        <label>评论<input name="comments" type="number" min="0" step="1" /></label>
+        <label>分享<input name="shares" type="number" min="0" step="1" /></label>
+        <label>新增私信/线索<input name="leads" type="number" min="0" step="1" /></label>
+        <label>成交单数<input name="orders" type="number" min="0" step="1" /></label>
+        <label>GMV<input name="gmv" type="number" min="0" step="1" /></label>
+        <label>笔记链接<input name="url" type="url" placeholder="https://www.xiaohongshu.com/..." /></label>
+        <label class="wide">笔记标题<input name="noteTitle" maxlength="90" placeholder="实际发布标题或脚本主题" /></label>
+        <label class="wide">备注<textarea name="notes" rows="3" placeholder="建联情况、脚本修改、评论区反馈、后续动作"></textarea></label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="danger-button" data-delete>删除</button>
+        <button class="primary-button" type="submit">保存记录</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="brief-dialog" class="form-dialog brief-dialog">
+    <div class="brief-shell">
+      <div class="dialog-title">
+        <div>
+          <span class="eyebrow">COLLABORATION BRIEF</span>
+          <h2>合作要求确认</h2>
+        </div>
+        <button type="button" class="icon-button" data-close="brief-dialog" aria-label="关闭">×</button>
+      </div>
+      <div id="brief-preview" class="brief-preview"></div>
+      <div class="dialog-actions brief-actions">
+        <button type="button" class="secondary-button" data-close="brief-dialog">取消</button>
+        <div>
+          <button type="button" class="secondary-button" id="copy-brief">复制文字</button>
+          <button type="button" class="primary-button" id="download-brief-image">生成图片</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="outreach-dialog" class="form-dialog brief-dialog">
+    <div class="brief-shell">
+      <div class="dialog-title">
+        <div>
+          <span class="eyebrow">OUTREACH EMAIL</span>
+          <h2>建联草稿</h2>
+          <small id="outreach-email-target" class="muted">可逐条编辑正文，再统一打开邮件草稿</small>
+        </div>
+        <button type="button" class="icon-button" data-close="outreach-dialog" aria-label="关闭">×</button>
+      </div>
+      <div id="outreach-preview" class="outreach-draft-list"></div>
+      <div class="dialog-actions brief-actions">
+        <button type="button" class="secondary-button" data-close="outreach-dialog">取消</button>
+        <div>
+          <button type="button" class="secondary-button" id="copy-outreach-email">复制全部正文</button>
+          <button type="button" class="primary-button" id="open-mailto">批量打开邮件草稿</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="creator-dialog" class="form-dialog creator-dialog">
+    <form id="creator-form" method="dialog">
+      <div class="dialog-title">
+        <div>
+          <span class="eyebrow">CREATOR PROFILE</span>
+          <h2 id="creator-dialog-title">编辑达人</h2>
+        </div>
+        <button type="button" class="icon-button" data-close="creator-dialog" aria-label="关闭">×</button>
+      </div>
+      <input type="hidden" name="id" />
+      <div class="form-grid">
+        <label>博主ID/昵称<input name="name" required maxlength="80" placeholder="先填博主ID也可以" /></label>
+        <label>达人类型<select name="creatorType"></select></label>
+        <label>自定义新类型<input name="creatorTypeCustom" list="creator-type-list" maxlength="40" placeholder="没有合适选项时填写" /></label>
+        <label>粉丝数量<input name="fansText" maxlength="20" placeholder="例如：2.8w、28000" /></label>
+        <label>邮箱<input name="email" type="email" maxlength="120" placeholder="用于半自动邮件建联" /></label>
+        <label>微信号<input name="wechat" maxlength="80" /></label>
+        <label>建联状态<select name="outreachStatus"></select></label>
+        <label class="wide">主页链接<input name="profileLink" type="url" /></label>
+        <label class="wide">地址/备注<input name="contactAddress" /></label>
+        <label class="wide check-line editor-check">
+          <input name="isBlacklisted" type="checkbox" />
+          黑名单博主
+        </label>
+        <label class="wide">黑名单原因<textarea name="blacklistReason" rows="3" placeholder="例如：长期不回复、内容不达标、合作态度差"></textarea></label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="secondary-button" data-close="creator-dialog">取消</button>
+        <button class="primary-button" type="submit">保存达人</button>
+      </div>
+    </form>
+  </dialog>
+
+  <datalist id="creator-type-list"></datalist>
+  <datalist id="creator-name-list"></datalist>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="app.js?v=20260713-server-persist"></script>
+</body>
+</html>
