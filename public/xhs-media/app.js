@@ -522,6 +522,35 @@
     localStorage.setItem(CREATOR_TYPES_STORAGE_KEY, JSON.stringify(customCreatorTypes));
   }
 
+  function xhsStateCounts(state) {
+    return {
+      creators: Array.isArray(state?.creators) ? state.creators.length : 0,
+      placements: Array.isArray(state?.placements) ? state.placements.length : 0,
+    };
+  }
+
+  function hasUsefulXhsState(state) {
+    const counts = xhsStateCounts(state);
+    return counts.creators > 0 || counts.placements > 0;
+  }
+
+  function isRemoteDataRegression(remoteState, localState) {
+    const remote = xhsStateCounts(remoteState);
+    const local = xhsStateCounts(localState);
+    if (!hasUsefulXhsState(localState)) return false;
+    if (!hasUsefulXhsState(remoteState)) return true;
+    if (local.creators >= 50 && remote.creators < Math.floor(local.creators * 0.5)) return true;
+    if (local.placements >= 10 && remote.placements < Math.floor(local.placements * 0.5)) return true;
+    return false;
+  }
+
+  function backupLocalState(reason) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    localStorage.setItem(`xhs_media_creators_backup_${reason}_${stamp}`, JSON.stringify(creators));
+    localStorage.setItem(`xhs_media_placements_backup_${reason}_${stamp}`, JSON.stringify(placements));
+    localStorage.setItem(`xhs_media_creator_types_backup_${reason}_${stamp}`, JSON.stringify(customCreatorTypes));
+  }
+
   function xhsStatePayload() {
     return {
       creators,
@@ -539,12 +568,22 @@
 
   async function saveServerState() {
     if (!apiOnline || applyingServerState) return;
+    const payload = xhsStatePayload();
+    if (!hasUsefulXhsState(payload)) {
+      $("#save-status").textContent = "空数据未同步，避免覆盖云端";
+      return;
+    }
     try {
       const response = await fetch(API_URL, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(xhsStatePayload()),
+        body: JSON.stringify(payload),
       });
+      if (response.status === 409) {
+        apiOnline = true;
+        $("#save-status").textContent = "云端已阻止异常覆盖，请刷新同步";
+        return;
+      }
       if (!response.ok) throw new Error("server save failed");
       const result = await response.json();
       $("#save-status").textContent = `云端已保存 ${new Date(result.updatedAt || Date.now()).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
@@ -560,7 +599,15 @@
       if (!response.ok) throw new Error("server unavailable");
       const data = await response.json();
       if (!Array.isArray(data.creators) || !Array.isArray(data.placements)) throw new Error("invalid server state");
+      const localState = { creators, placements, customCreatorTypes };
+      if (isRemoteDataRegression(data, localState)) {
+        apiOnline = true;
+        $("#save-status").textContent = "云端数据疑似为空，已保留本机并回写云端";
+        await saveServerState();
+        return;
+      }
       applyingServerState = true;
+      if (hasUsefulXhsState(localState)) backupLocalState("before_server_apply");
       creators = data.creators.map(normalizeCreator).filter((item) => !isLegacyTestCreator(item));
       placements = data.placements.filter((item) => !isLegacyTestPlacement(item)).map((item) => ({ ...item, status: normalizePlacementStatus(item.status, item) }));
       customCreatorTypes = Array.isArray(data.customCreatorTypes) ? data.customCreatorTypes : customCreatorTypes;

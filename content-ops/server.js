@@ -205,6 +205,33 @@ function validXhsState(parsed) {
     (!parsed.customCreatorTypes || Array.isArray(parsed.customCreatorTypes));
 }
 
+function xhsStateCounts(state) {
+  return {
+    creators: Array.isArray(state?.creators) ? state.creators.length : 0,
+    placements: Array.isArray(state?.placements) ? state.placements.length : 0,
+  };
+}
+
+function hasUsefulXhsState(state) {
+  const counts = xhsStateCounts(state);
+  return counts.creators > 0 || counts.placements > 0;
+}
+
+function isDangerousXhsOverwrite(nextState, currentState) {
+  const next = xhsStateCounts(nextState);
+  const current = xhsStateCounts(currentState);
+  if (!hasUsefulXhsState(currentState)) return false;
+  if (!hasUsefulXhsState(nextState)) return true;
+  if (current.creators >= 50 && next.creators < Math.floor(current.creators * 0.5)) return true;
+  if (current.placements >= 10 && next.placements < Math.floor(current.placements * 0.5)) return true;
+  return false;
+}
+
+async function readXhsStateFile() {
+  await ensureXhsDataFile();
+  return JSON.parse(await readFile(xhsDataFile, "utf8"));
+}
+
 function parseProductsScript(source) {
   const match = String(source || "").match(/window\.PRODUCTS\s*=\s*(\[[\s\S]*?\]);?\s*$/);
   if (!match) throw new Error("Product data not found");
@@ -543,15 +570,13 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.url?.startsWith("/api/xhs-media/state")) {
-      await ensureXhsDataFile();
       if (request.method === "OPTIONS") {
         response.writeHead(204, corsHeaders);
         response.end();
         return;
       }
       if (request.method === "GET") {
-        response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...corsHeaders });
-        createReadStream(xhsDataFile).pipe(response);
+        send(response, 200, await readXhsStateFile(), { "Cache-Control": "no-store" });
         return;
       }
       if (request.method === "PUT") {
@@ -563,6 +588,15 @@ const server = createServer(async (request, response) => {
         }
         parsed.customCreatorTypes = parsed.customCreatorTypes || [];
         parsed.updatedAt = new Date().toISOString();
+        const current = await readXhsStateFile();
+        if (isDangerousXhsOverwrite(parsed, current)) {
+          send(response, 409, {
+            error: "Refusing to overwrite existing XHS media data with empty or much smaller state",
+            current: xhsStateCounts(current),
+            incoming: xhsStateCounts(parsed),
+          });
+          return;
+        }
         await mkdir(dirname(xhsDataFile), { recursive: true });
         await backupFile(xhsDataFile, xhsBackupDir, "xhs-media");
         await writeFile(xhsDataFile, JSON.stringify(parsed, null, 2));
