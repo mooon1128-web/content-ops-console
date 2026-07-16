@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node content-ops/server.js --host 0.0.0.0",
-    "dev": "node content-ops/server.js --host 127.0.0.1"
+    "dev": "node content-ops/server.js --host 127.0.0.1",
+    "sync:xhs": "node scripts/sync-xhs-public-data.mjs",
+    "dev:xhs": "node scripts/sync-xhs-public-data.mjs && node content-ops/server.js --host 127.0.0.1"
   }
 }
