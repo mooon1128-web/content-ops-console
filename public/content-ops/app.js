@@ -1320,11 +1320,16 @@
     $("#stats-reminder-list").innerHTML = due.length ? due.map((post) => {
       const account = accountById(post.accountId);
       return `<article class="stats-reminder-card" data-reminder-post="${escapeHtml(post.id)}">
-        <div>
-          <strong>${escapeHtml(post.headline || "未命名内容")}</strong>
-          <div class="row-meta">${escapeHtml(account?.name || "未关联账号")}｜发布 ${dateText(post.publishedAt)}｜已过 ${postReviewAge(post)} 天</div>
+        <div class="stats-reminder-main">
+          <div>
+            <strong>${escapeHtml(post.headline || "未命名内容")}</strong>
+            <div class="row-meta">${escapeHtml(account?.name || "未关联账号")}｜发布 ${dateText(post.publishedAt)}｜已过 ${postReviewAge(post)} 天</div>
+          </div>
+          <span class="pill amber">待填写数据</span>
         </div>
-        <span class="pill amber">待填写数据</span>
+        <div class="stats-reminder-editor">
+          ${statsPlatforms.map((platform) => platformStatsInputs(post, platform)).join("")}
+        </div>
       </article>`;
     }).join("") : empty("当前筛选范围内没有需要补填的数据。");
   }
@@ -1593,7 +1598,7 @@
       statsMonth = event.currentTarget.value;
       renderStats();
     });
-    $("#stats-table-body").addEventListener("click", (event) => {
+    $("#stats-view").addEventListener("click", (event) => {
       const button = event.target.closest("[data-stats-edit]");
       if (button) startStatsEdit(button);
     });
