@@ -25,6 +25,7 @@ button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 input, select, textarea { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 11px 12px; color: var(--ink); background: #fff; outline: none; }
+input[type="color"] { min-height: 44px; padding: 5px; cursor: pointer; }
 textarea { resize: vertical; line-height: 1.65; }
 input:focus, select:focus, textarea:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(31, 122, 114, .10); }
 .hidden { display: none !important; }
@@ -180,9 +181,22 @@ h3 { font-size: 16px; }
 .score-line strong { color: var(--ink); font-size: 15px; }
 
 .account-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-.account-card { padding: 17px; }
+.account-card {
+  padding: 17px;
+  border-color: var(--account-border, var(--line));
+  box-shadow: inset 4px 0 0 var(--account-color, transparent), 0 10px 26px rgba(38, 55, 50, .06);
+}
 .account-card .card-topline { align-items: flex-start; }
-.account-card h3 { margin-bottom: 5px; }
+.account-card h3 { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.account-color-dot,
+.calendar-account i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--account-color, var(--teal));
+}
 .account-card p { margin: 14px 0; color: var(--muted); line-height: 1.65; }
 .account-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
 .account-stats div { padding: 10px; border-radius: 8px; background: #f7faf7; }
@@ -376,6 +390,25 @@ h3 { font-size: 16px; }
   grid-template-columns: 180px 220px minmax(280px, 1fr);
 }
 .stats-feedback-panel { margin-bottom: 16px; }
+.stats-reminder-list {
+  display: grid;
+  gap: 9px;
+}
+.stats-reminder-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #ead4a6;
+  border-radius: 8px;
+  background: #fff9e9;
+}
+.stats-reminder-card strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 15px;
+}
 .top-feedback-list {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -439,11 +472,33 @@ h3 { font-size: 16px; }
   font-size: 11px;
   font-weight: 900;
 }
-.platform-stats input {
+.stats-value,
+.stats-inline-input {
   height: 34px;
   border-radius: 7px;
   padding: 7px 8px;
   font-size: 13px;
+}
+.stats-value {
+  width: 100%;
+  border: 1px solid transparent;
+  color: var(--ink);
+  background: #f7faf7;
+  font-weight: 900;
+  text-align: left;
+}
+.stats-value:hover {
+  border-color: var(--teal);
+  background: #eef8f5;
+}
+.stats-value.empty {
+  color: #87908b;
+  background: #fbfcfa;
+  font-weight: 800;
+}
+.stats-inline-input {
+  border: 1px solid var(--teal);
+  background: #fff;
 }
 .stats-summary {
   display: grid;
@@ -517,16 +572,25 @@ h3 { font-size: 16px; }
 .calendar-count { color: var(--muted); font-size: 11px; font-weight: 800; }
 .calendar-items { display: grid; gap: 7px; }
 .calendar-post {
-  border: 1px solid #d8e4dd;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--account-border, #d8e4dd);
   border-radius: 8px;
-  padding: 8px;
-  background: #f8fbfa;
+  padding: 8px 8px 8px 11px;
+  background: var(--account-bg, #f8fbfa);
   cursor: grab;
 }
+.calendar-post::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  content: "";
+  background: var(--account-color, var(--teal));
+}
 .calendar-post:active { cursor: grabbing; }
-.calendar-post.status-draft { border-color: #e9d7a7; background: #fff9e9; }
-.calendar-post.status-published { border-color: #b9d9cd; background: #f1faf6; }
-.calendar-post.status-review { border-color: #c9c7e8; background: #f5f3ff; }
+.calendar-post.status-draft { background: linear-gradient(0deg, rgba(255, 249, 233, .72), rgba(255, 249, 233, .72)), var(--account-bg, #fff9e9); }
+.calendar-post.status-published { background: linear-gradient(0deg, rgba(241, 250, 246, .72), rgba(241, 250, 246, .72)), var(--account-bg, #f1faf6); }
+.calendar-post.status-review { background: linear-gradient(0deg, rgba(245, 243, 255, .72), rgba(245, 243, 255, .72)), var(--account-bg, #f5f3ff); }
 .calendar-post h3 {
   margin: 5px 0;
   font-size: 13px;
@@ -540,6 +604,7 @@ h3 { font-size: 16px; }
   font-size: 11px;
   line-height: 1.4;
 }
+.calendar-account { display: inline-flex; align-items: center; gap: 4px; font-weight: 900; }
 .calendar-post-footer {
   display: flex;
   justify-content: space-between;
@@ -575,17 +640,18 @@ h3 { font-size: 16px; }
   gap: 12px;
 }
 .staging-card {
-  border: 1px solid #d8e4dd;
+  border: 1px solid var(--account-border, #d8e4dd);
   border-radius: 8px;
   padding: 12px;
-  background: #fbfdfc;
+  background: linear-gradient(0deg, rgba(255,255,255,.72), rgba(255,255,255,.72)), var(--account-bg, #fbfdfc);
+  box-shadow: inset 4px 0 0 var(--account-color, transparent);
   cursor: grab;
 }
 .staging-card:active { cursor: grabbing; }
 .staging-card.assigned {
   color: #7a827e;
-  background: #f0f3f1;
-  border-color: #d5ded8;
+  background: linear-gradient(0deg, rgba(240, 243, 241, .82), rgba(240, 243, 241, .82)), var(--account-bg, #f0f3f1);
+  border-color: var(--account-border, #d5ded8);
 }
 .staging-card.assigned h3,
 .staging-card.assigned .staging-title {

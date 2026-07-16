@@ -242,6 +242,15 @@
       <section class="panel stats-feedback-panel">
         <div class="panel-head">
           <div>
+            <h2>发布满 7 天待填写</h2>
+            <span class="row-meta">内容发布 7 天后提醒补数据；填写点赞、收藏或评论后会从这里消失</span>
+          </div>
+        </div>
+        <div id="stats-reminder-list" class="stats-reminder-list"></div>
+      </section>
+      <section class="panel stats-feedback-panel">
+        <div class="panel-head">
+          <div>
             <h2>本月点赞前三名反馈</h2>
             <span class="row-meta">按小红书 + 抖音合计点赞排序，方便判断本月最值得复用的方向</span>
           </div>
@@ -341,6 +350,7 @@
         <label>平台<select name="platform"></select></label>
         <label>负责人<input name="owner" placeholder="Chloe" /></label>
         <label>状态<select name="status"><option>运营中</option><option>观察中</option><option>暂停</option></select></label>
+        <label>账号颜色<input name="color" type="color" value="#1f7a72" /></label>
         <label class="wide">账号定位<input name="position" placeholder="账号定位、人设、核心卖点" /></label>
         <label>目标人群<input name="target" placeholder="女性白领、宝妈..." /></label>
         <label>每周目标发布数<input name="frequencyPerWeek" type="number" min="0" max="21" value="5" /></label>
