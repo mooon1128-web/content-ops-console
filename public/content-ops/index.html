@@ -20,7 +20,8 @@
       <button class="tab" data-view="titles">爆款标题库</button>
       <button class="tab" data-view="accounts">账号频率</button>
       <button class="tab" data-view="products">产品库存</button>
-      <button class="tab" data-view="posts">发布数据</button>
+      <button class="tab" data-view="posts">发布记录</button>
+      <button class="tab" data-view="stats">数据统计</button>
       <button class="tab" data-view="insights">建议</button>
     </nav>
     <div class="top-actions">
@@ -66,7 +67,7 @@
         <section class="panel">
           <div class="panel-head">
             <h2>近期发布</h2>
-            <button class="secondary-button small" data-view-jump="posts">查看数据</button>
+            <button class="secondary-button small" data-view-jump="posts">查看记录</button>
           </div>
           <div id="recent-posts" class="compact-list"></div>
         </section>
@@ -180,8 +181,8 @@
     <section class="view" id="posts-view">
       <div class="view-heading">
         <div>
-          <span class="eyebrow">PUBLISHING DATA</span>
-          <h1>发布记录与数据登记</h1>
+          <span class="eyebrow">PUBLISHING CALENDAR</span>
+          <h1>发布记录</h1>
         </div>
         <button class="primary-button" data-open="post-dialog">新增发布记录</button>
       </div>
@@ -219,6 +220,46 @@
           <span>周一</span><span>周二</span><span>周三</span><span>周四</span><span>周五</span><span>周六</span><span>周日</span>
         </div>
         <div id="post-calendar" class="post-calendar"></div>
+      </div>
+    </section>
+
+    <section class="view" id="stats-view">
+      <div class="view-heading">
+        <div>
+          <span class="eyebrow">DATA STATS</span>
+          <h1>数据统计</h1>
+        </div>
+        <button class="secondary-button" data-view-jump="posts">查看发布日历</button>
+      </div>
+      <div class="toolbar stats-toolbar">
+        <select id="stats-month-filter"></select>
+        <select id="stats-account-filter"></select>
+        <div class="search-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.3-4.3M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z"/></svg>
+          <input id="stats-search" placeholder="搜索标题、账号、赛道" />
+        </div>
+      </div>
+      <section class="panel stats-feedback-panel">
+        <div class="panel-head">
+          <div>
+            <h2>本月点赞前三名反馈</h2>
+            <span class="row-meta">按小红书 + 抖音合计点赞排序，方便判断本月最值得复用的方向</span>
+          </div>
+        </div>
+        <div id="monthly-top-feedback" class="top-feedback-list"></div>
+      </section>
+      <div class="table-wrap stats-table-wrap">
+        <table class="data-table stats-table">
+          <thead>
+            <tr>
+              <th>内容</th>
+              <th>小红书数据</th>
+              <th>抖音数据</th>
+              <th>合计反馈</th>
+            </tr>
+          </thead>
+          <tbody id="stats-table-body"></tbody>
+        </table>
       </div>
     </section>
 
@@ -325,7 +366,7 @@
       <div class="form-grid">
         <label class="wide">选择对应笔记<select name="postId" required></select></label>
       </div>
-      <p class="dialog-help">标题必须关联到具体发布记录，才会被标记为“已使用”。如果还没有这篇笔记，请先去“发布数据”里新增记录。</p>
+      <p class="dialog-help">标题必须关联到具体发布记录，才会被标记为“已使用”。如果还没有这篇笔记，请先去“发布记录”里新增记录。</p>
       <div class="dialog-actions">
         <button type="button" class="secondary-button" data-view-jump="posts">去新增笔记</button>
         <button class="primary-button" type="submit">确认关联</button>

@@ -10,6 +10,21 @@
   const emotionHooks = ["好奇", "吃惊", "焦虑", "共鸣", "反差", "不服气", "爽感", "安全感", "紧迫感", "收藏欲"];
   const postStatuses = ["选题", "草稿", "待发布", "已发布", "复盘完成"];
   const productCategories = ["毛绒玩具", "箱包", "文创文具"];
+  const statsPlatforms = [
+    { key: "xhs", label: "小红书" },
+    { key: "douyin", label: "抖音" },
+  ];
+  const metricFields = ["exposure", "clicks", "likes", "saves", "comments", "shares", "follows", "conversions"];
+  const metricLabels = {
+    exposure: "曝光",
+    clicks: "点击",
+    likes: "点赞",
+    saves: "收藏",
+    comments: "评论",
+    shares: "分享",
+    follows: "涨粉",
+    conversions: "转化",
+  };
   const qixiDates = { 2026: "2026-08-19", 2027: "2027-08-08", 2028: "2028-08-26" };
   const seasonalTemplates = [
     { name: "情人节", month: 2, day: 14, leadDays: 15, categories: ["毛绒玩具", "箱包", "文创文具"], angle: "礼物清单、情侣/闺蜜互送、仪式感开箱" },
@@ -225,6 +240,7 @@
   let saveTimer = null;
   let batchTitleDrafts = [];
   let calendarCursor = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  let statsMonth = todayDate().slice(0, 7);
   const isFileMode = location.protocol === "file:";
 
   function loadLocal() {
@@ -240,9 +256,23 @@
     next.titles = Array.isArray(next.titles) ? next.titles : [];
     next.accounts = Array.isArray(next.accounts) ? next.accounts : [];
     next.posts = Array.isArray(next.posts) ? next.posts : [];
+    next.posts.forEach(normalizePostMetrics);
     next.products = Array.isArray(next.products) ? next.products : [];
     next.inventorySettings = { ...seedState.inventorySettings, ...(next.inventorySettings || {}) };
     return next;
+  }
+
+  function normalizePostMetrics(post) {
+    post.platformMetrics = post.platformMetrics && typeof post.platformMetrics === "object" ? post.platformMetrics : {};
+    statsPlatforms.forEach((platform) => {
+      const existing = post.platformMetrics[platform.key] && typeof post.platformMetrics[platform.key] === "object" ? post.platformMetrics[platform.key] : {};
+      post.platformMetrics[platform.key] = {};
+      metricFields.forEach((field) => {
+        const fallback = platform.key === "xhs" ? post[field] : 0;
+        post.platformMetrics[platform.key][field] = number(existing[field] ?? fallback);
+      });
+    });
+    return post;
   }
 
   async function loadState() {
@@ -339,6 +369,8 @@
     $$("[name='accountId']").forEach((select) => { select.innerHTML = `<option value="">未分配账号</option>${options}`; });
     const postAccount = $("#post-account-filter");
     postAccount.innerHTML = `<option value="all">全部账号</option>${options}`;
+    const statsAccount = $("#stats-account-filter");
+    if (statsAccount) statsAccount.innerHTML = `<option value="all">全部账号</option>${options}`;
   }
 
   function refreshTitleSelects() {
@@ -379,13 +411,25 @@
     return number(title.likes) + number(title.saves) * 1.8 + number(title.comments) * 2.4 + number(title.shares) * 2;
   }
 
+  function platformMetric(post, platformKey, field) {
+    normalizePostMetrics(post);
+    return number(post.platformMetrics?.[platformKey]?.[field]);
+  }
+
+  function totalPostMetric(post, field) {
+    normalizePostMetrics(post);
+    return statsPlatforms.reduce((sum, platform) => sum + platformMetric(post, platform.key, field), 0);
+  }
+
   function postEngagement(post) {
-    const interactions = number(post.likes) + number(post.saves) + number(post.comments) + number(post.shares);
-    return number(post.clicks) ? interactions / number(post.clicks) : null;
+    const interactions = totalPostMetric(post, "likes") + totalPostMetric(post, "saves") + totalPostMetric(post, "comments") + totalPostMetric(post, "shares");
+    const clicks = totalPostMetric(post, "clicks");
+    return clicks ? interactions / clicks : null;
   }
 
   function postClickRate(post) {
-    return number(post.exposure) ? number(post.clicks) / number(post.exposure) : null;
+    const exposure = totalPostMetric(post, "exposure");
+    return exposure ? totalPostMetric(post, "clicks") / exposure : null;
   }
 
   function thisWeekPublished(accountId) {
@@ -613,6 +657,7 @@
     renderAccounts();
     renderProducts();
     renderPosts();
+    renderStats();
     renderInsights();
   }
 
@@ -1176,6 +1221,114 @@
     toast(`制作进度已更新为 ${(index + 1) * 20}%`);
   }
 
+  function postMonth(post) {
+    return String(post.publishedAt || post.scheduledAt || "").slice(0, 7);
+  }
+
+  function statsMonthOptions() {
+    const months = [...new Set(state.posts.map(postMonth).filter((value) => /^\d{4}-\d{2}$/.test(value)))].sort().reverse();
+    if (!months.includes(statsMonth)) months.unshift(statsMonth);
+    return months;
+  }
+
+  function hydrateStatsMonthFilter() {
+    const select = $("#stats-month-filter");
+    if (!select) return;
+    const options = statsMonthOptions();
+    select.innerHTML = options.map((month) => `<option value="${escapeHtml(month)}">${escapeHtml(month.replace("-", "年"))}月</option>`).join("");
+    select.value = options.includes(statsMonth) ? statsMonth : options[0];
+    statsMonth = select.value;
+  }
+
+  function filteredStatsPosts() {
+    const query = $("#stats-search")?.value.trim().toLowerCase() || "";
+    const accountId = $("#stats-account-filter")?.value || "all";
+    return state.posts.filter((post) => {
+      const account = accountById(post.accountId);
+      const haystack = [post.headline, post.niche, post.contentType, account?.name, account?.platform].join(" ").toLowerCase();
+      return postMonth(post) === statsMonth
+        && (!query || haystack.includes(query))
+        && (accountId === "all" || post.accountId === accountId);
+    }).sort((a, b) => totalPostMetric(b, "likes") - totalPostMetric(a, "likes") || String(b.publishedAt || b.scheduledAt).localeCompare(String(a.publishedAt || a.scheduledAt)));
+  }
+
+  function renderStats() {
+    hydrateStatsMonthFilter();
+    const posts = filteredStatsPosts();
+    renderMonthlyTopFeedback(posts);
+    $("#stats-table-body").innerHTML = posts.length ? posts.map((post) => statsRow(post)).join("") : `<tr><td colspan="4">${empty("这个月份还没有可统计的发布记录。")}</td></tr>`;
+  }
+
+  function renderMonthlyTopFeedback(posts) {
+    const top = posts
+      .filter((post) => totalPostMetric(post, "likes") > 0)
+      .slice()
+      .sort((a, b) => totalPostMetric(b, "likes") - totalPostMetric(a, "likes"))
+      .slice(0, 3);
+    $("#monthly-top-feedback").innerHTML = top.length ? top.map((post, index) => {
+      const account = accountById(post.accountId);
+      const likes = totalPostMetric(post, "likes");
+      const saves = totalPostMetric(post, "saves");
+      const clicks = totalPostMetric(post, "clicks");
+      const advice = index === 0
+        ? "本月优先复用它的选题角度、标题表达和封面结构。"
+        : saves > likes ? "收藏表现更强，适合拆成清单或教程。"
+        : clicks ? "点击有反馈，可以继续测试相近标题。"
+        : "先补曝光/点击，方便判断转化质量。";
+      return `<article class="top-feedback-card">
+        <span class="focus-rank">${index + 1}</span>
+        <div>
+          <h3>${escapeHtml(post.headline || "未命名内容")}</h3>
+          <div class="row-meta">${escapeHtml(account?.name || "未关联账号")}｜${escapeHtml(post.contentType || "未分类")}｜${dateText(post.publishedAt || post.scheduledAt)}</div>
+          <p>${escapeHtml(advice)}</p>
+        </div>
+        <div class="top-feedback-score">
+          <strong>${likes}</strong>
+          <span>合计点赞</span>
+        </div>
+      </article>`;
+    }).join("") : empty("这个月份还没有点赞数据，先在下方表格直接填写。");
+  }
+
+  function statsRow(post) {
+    const account = accountById(post.accountId);
+    const totalLikes = totalPostMetric(post, "likes");
+    const totalSaves = totalPostMetric(post, "saves");
+    const ctr = postClickRate(post);
+    return `<tr data-stats-post="${escapeHtml(post.id)}">
+      <td>
+        <strong>${escapeHtml(post.headline || "未命名内容")}</strong>
+        <div class="row-meta">${escapeHtml(account?.name || "未关联账号")}｜${escapeHtml(post.status)}｜${dateText(post.publishedAt || post.scheduledAt)}</div>
+      </td>
+      ${statsPlatforms.map((platform) => `<td>${platformStatsInputs(post, platform)}</td>`).join("")}
+      <td>
+        <div class="stats-summary">
+          <span>合计点赞 <strong>${totalLikes}</strong></span>
+          <span>合计收藏 <strong>${totalSaves}</strong></span>
+          <span>点击率 <strong>${percent(ctr)}</strong></span>
+        </div>
+      </td>
+    </tr>`;
+  }
+
+  function platformStatsInputs(post, platform) {
+    return `<div class="platform-stats">
+      <div class="platform-stats-title">${escapeHtml(platform.label)}</div>
+      ${metricFields.map((field) => `<label>${escapeHtml(metricLabels[field])}<input data-stats-input data-post-id="${escapeHtml(post.id)}" data-platform="${escapeHtml(platform.key)}" data-field="${escapeHtml(field)}" type="number" min="0" step="1" inputmode="numeric" value="${platformMetric(post, platform.key, field)}" /></label>`).join("")}
+    </div>`;
+  }
+
+  function updateStatsMetric(input) {
+    const post = state.posts.find((item) => item.id === input.dataset.postId);
+    if (!post) return;
+    normalizePostMetrics(post);
+    post.platformMetrics[input.dataset.platform][input.dataset.field] = Math.max(0, number(input.value));
+    if (input.dataset.platform === "xhs") post[input.dataset.field] = post.platformMetrics.xhs[input.dataset.field];
+    post.updatedAt = new Date().toISOString();
+    scheduleSave();
+    renderStats();
+  }
+
   function topTitles(count = 5) {
     return state.titles.slice().sort((a, b) => titleScore(b) - titleScore(a)).slice(0, count);
   }
@@ -1224,7 +1377,7 @@
   }
 
   function dataGaps() {
-    const gaps = state.posts.filter((post) => ["已发布", "复盘完成"].includes(post.status) && (!number(post.exposure) || !number(post.clicks)));
+    const gaps = state.posts.filter((post) => ["已发布", "复盘完成"].includes(post.status) && (!totalPostMetric(post, "exposure") || !totalPostMetric(post, "clicks")));
     if (!gaps.length) return ["已发布内容的曝光/点击数据齐全。"];
     return gaps.slice(0, 6).map((post) => `<strong>${escapeHtml(post.headline)}</strong> 缺曝光或点击数据。`);
   }
@@ -1334,6 +1487,15 @@
 
     ["title-search", "title-platform-filter", "title-type-filter", "title-formula-filter"].forEach((id) => $(`#${id}`).addEventListener("input", renderTitles));
     ["post-search", "post-status-filter", "post-account-filter"].forEach((id) => $(`#${id}`).addEventListener("input", renderPosts));
+    ["stats-search", "stats-account-filter"].forEach((id) => $(`#${id}`).addEventListener("input", renderStats));
+    $("#stats-month-filter").addEventListener("change", (event) => {
+      statsMonth = event.currentTarget.value;
+      renderStats();
+    });
+    $("#stats-table-body").addEventListener("change", (event) => {
+      const input = event.target.closest("[data-stats-input]");
+      if (input) updateStatsMetric(input);
+    });
     ["product-search", "product-category-filter", "product-stock-filter"].forEach((id) => $(`#${id}`).addEventListener("input", renderProducts));
 
     $("#title-library").addEventListener("click", (event) => {
@@ -1509,6 +1671,12 @@
     $("#post-form").addEventListener("submit", (event) => {
       event.preventDefault();
       const record = numericFields(readForm(event.currentTarget), ["exposure", "clicks", "likes", "saves", "comments", "shares", "follows", "conversions"]);
+      const existing = state.posts.find((post) => post.id === record.id);
+      if (existing?.platformMetrics) record.platformMetrics = structuredClone(existing.platformMetrics);
+      normalizePostMetrics(record);
+      metricFields.forEach((field) => {
+        record.platformMetrics.xhs[field] = number(record[field]);
+      });
       progressSteps.forEach((step) => {
         record[step.key] = Boolean(record[step.key]);
       });
