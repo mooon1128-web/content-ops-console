@@ -32,6 +32,7 @@
   const creatorTypes = ["未分类", "美女头像博主", "好物开箱博主", "玩偶头像博主", "vlog博主", "口播博主", "剧情种草博主", "母婴博主", "宠物博主", "家居博主", "穿搭博主", "美妆护肤博主"];
   const creatorOutreachStatuses = ["待建联", "草稿已生成", "已发出", "已回复", "已加微信", "不合适"];
   const contentTypes = ["测评种草", "合集植入", "单品笔记", "探店体验", "直播预热", "活动宣发", "买手推荐"];
+  const platformOptions = ["小红书", "抖音"];
   const priorityRank = { 最高: 1, 高: 2, 中: 3, 低: 4, 暂无: 5 };
 
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -43,6 +44,7 @@
   const compact = (value) => number(value).toLocaleString("zh-CN");
   const percent = (value) => Number.isFinite(value) ? `${(value * 100).toFixed(value >= .1 ? 0 : 1)}%` : "无";
   const ratio = (value) => Number.isFinite(value) ? value.toFixed(2) : "无";
+  const placementPlatform = (item) => platformOptions.includes(item?.platform) ? item.platform : "小红书";
   const today = () => new Date().toISOString().slice(0, 10);
   const creatorKey = (name) => String(name || "").replace(/\s+/g, "").toLowerCase();
   const creatorId = (name) => `creator-${String(name || "unknown").replace(/[^\u4e00-\u9fffa-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "") || uid()}`;
@@ -816,6 +818,10 @@
     return String(text).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || "";
   }
 
+  function creatorWechat(item) {
+    return String(item?.wechat || "").trim();
+  }
+
   function creatorOutreachStatus(item) {
     if (String(item.wechat || "").trim()) return "已加微信";
     return item.outreachStatus || "待建联";
@@ -823,6 +829,38 @@
 
   function canOutreachCreator(item) {
     return Boolean(item && !item.isBlacklisted && !String(item.wechat || "").trim() && creatorOutreachStatus(item) !== "不合适");
+  }
+
+  function canEmailOutreachCreator(item) {
+    return Boolean(item && !item.isBlacklisted && creatorEmail(item) && creatorOutreachStatus(item) !== "不合适");
+  }
+
+  function canOutreachTarget(item) {
+    return canOutreachCreator(item) || canEmailOutreachCreator(item);
+  }
+
+  function canWechatQueueCreator(item) {
+    return Boolean(item && !item.isBlacklisted && creatorWechat(item));
+  }
+
+  function canSelectCreator(item) {
+    return canOutreachTarget(item) || canWechatQueueCreator(item);
+  }
+
+  function creatorCreatedDate(item) {
+    return String(item?.createdAt || "").slice(0, 10);
+  }
+
+  function matchesCreatorAddedFilter(item, filter) {
+    const createdAt = creatorCreatedDate(item);
+    if (filter === "all") return true;
+    if (filter === "no-date") return !createdAt;
+    if (!createdAt) return false;
+    const age = daysSince(createdAt);
+    if (filter === "today") return age === 0;
+    if (filter === "yesterday") return age === 1;
+    if (filter === "7days") return Number.isFinite(age) && age >= 0 && age <= 7;
+    return true;
   }
 
   function creatorOutreachSubject(item) {
@@ -843,9 +881,9 @@
   }
 
   function openCreatorOutreachDialog(rows) {
-    const items = rows.filter(canOutreachCreator);
+    const items = rows.filter(canOutreachTarget);
     if (!items.length) {
-      toast("请先选择没有微信且可建联的达人");
+      toast("请先选择有邮箱或可建联的达人");
       return;
     }
     activeOutreachCreatorIds = items.map((item) => item.id);
@@ -921,6 +959,40 @@
     toast(`已准备打开 ${emailDrafts.length} 封邮件草稿`);
   }
 
+  function openWechatQueueDialog(rows) {
+    const items = rows.filter(canWechatQueueCreator);
+    if (!items.length) {
+      toast("当前筛选里没有已填写微信号的达人");
+      return;
+    }
+    $("#wechat-target").textContent = `已整理 ${items.length} 位达人，复制后到微信里搜索添加`;
+    $("#wechat-preview").innerHTML = items.map((item, index) => `
+      <article class="wechat-row" data-wechat-row="${escapeHtml(item.id)}">
+        <span>${index + 1}</span>
+        <div>
+          <strong>${escapeHtml(item.name)}</strong>
+          <small>${escapeHtml(item.creatorType || "未分类")} · ${escapeHtml(item.fansText || compact(item.fanCount))}</small>
+        </div>
+        <code>${escapeHtml(creatorWechat(item))}</code>
+        <button type="button" class="secondary-button small" data-copy-wechat="${escapeHtml(item.id)}">复制</button>
+      </article>
+    `).join("");
+    $("#wechat-dialog").showModal();
+  }
+
+  function wechatQueueText() {
+    return $$("[data-wechat-row]", $("#wechat-preview")).map((node, index) => {
+      const item = creators.find((creator) => creator.id === node.dataset.wechatRow);
+      return item ? `${index + 1}. ${item.name}｜${creatorWechat(item)}` : "";
+    }).filter(Boolean).join("\n");
+  }
+
+  async function copyWechatQueue() {
+    const text = wechatQueueText();
+    if (!text) return;
+    await copyText(text, "微信待添加清单已复制");
+  }
+
   async function copyText(text, successMessage) {
     try {
       await navigator.clipboard.writeText(text);
@@ -954,6 +1026,8 @@
       outreachStatus: input.wechat ? "已加微信" : (input.outreachStatus || "待建联"),
       lastOutreachAt: input.lastOutreachAt || "",
       outreachNote: input.outreachNote || "",
+      createdAt: input.createdAt || input.addedAt || "",
+      updatedAt: input.updatedAt || "",
       cooperationCount: number(input.cooperationCount),
       placementIds: Array.isArray(input.placementIds) ? input.placementIds : [],
       isBlacklisted: Boolean(input.isBlacklisted),
@@ -1000,6 +1074,8 @@
       outreachStatus: current.wechat || normalized.wechat ? "已加微信" : (current.outreachStatus || normalized.outreachStatus),
       lastOutreachAt: current.lastOutreachAt || normalized.lastOutreachAt,
       outreachNote: current.outreachNote || normalized.outreachNote,
+      createdAt: current.createdAt || normalized.createdAt,
+      updatedAt: normalized.updatedAt || current.updatedAt,
       isBlacklisted: current.isBlacklisted || normalized.isBlacklisted,
       blacklistReason: current.blacklistReason || normalized.blacklistReason,
     };
@@ -1081,6 +1157,15 @@
     return "互动数据中段，建议优化标题、首图和内容卖点。";
   }
 
+  function hasPlacementPerformanceData(item) {
+    return [item.likes, item.saves, item.comments].some((value) => number(value) > 0);
+  }
+
+  function isDay7ReviewDue(item) {
+    const publishedDays = daysSince(item.publishedAt);
+    return item.status === "已发布" && Number.isFinite(publishedDays) && publishedDays >= 7 && !hasPlacementPerformanceData(item);
+  }
+
   function followupTask(item) {
     const itemProgress = progress(item.deliverableProgress);
     const deliveredDays = daysSince(item.sampleDeliveredAt);
@@ -1090,8 +1175,7 @@
     const draftDueMissed = Number.isFinite(daysToPublish) && daysToPublish <= 2 && daysToPublish >= 0 && !draftDone;
     const notes = [item.notes, item.creatorResponse].join(" ");
     const publishedDays = daysSince(item.publishedAt);
-    const hasPerformanceData = [item.likes, item.saves, item.comments].some((value) => number(value) > 0);
-    const day7ReviewDue = item.status === "已发布" && Number.isFinite(publishedDays) && publishedDays >= 7 && !hasPerformanceData;
+    const day7ReviewDue = isDay7ReviewDue(item);
     const warnings = [];
     if (item.sampleStatus === "已签收" && itemProgress.done === 0 && deliveredDays >= 7) warnings.push("样品签收超过7天仍未发布");
     if (draftDueMissed) warnings.push("距约定发布日期不足2天，稿件申请仍未完成");
@@ -1133,7 +1217,7 @@
   function followupTasks() {
     return placements
       .map((item) => ({ ...item, task: followupTask(item) }))
-      .sort((a, b) => a.task.rank - b.task.rank || (daysSince(b.sampleDeliveredAt) || 0) - (daysSince(a.sampleDeliveredAt) || 0));
+      .sort((a, b) => Number(b.task.kind === "day7-review") - Number(a.task.kind === "day7-review") || a.task.rank - b.task.rank || (daysSince(b.sampleDeliveredAt) || 0) - (daysSince(a.sampleDeliveredAt) || 0));
   }
 
   function productNames() {
@@ -1476,21 +1560,28 @@
     const type = $("#creator-type-filter")?.value || "all";
     const tier = $("#creator-tier-filter")?.value || "all";
     const outreach = $("#creator-outreach-filter")?.value || "all";
+    const added = $("#creator-added-filter")?.value || "all";
+    const contact = $("#creator-contact-filter")?.value || "all";
     const sort = $("#creator-sort")?.value || "fans";
     const rows = creators.filter((item) => {
       const status = creatorOutreachStatus(item);
-      const haystack = [item.name, item.email, item.wechat, item.contactAddress, item.lastProduct, item.source, status].join(" ").toLowerCase();
+      const haystack = [item.name, item.email, item.wechat, item.contactAddress, item.lastProduct, item.source, status, creatorCreatedDate(item)].join(" ").toLowerCase();
       if (query && !haystack.includes(query)) return false;
       if (type !== "all" && item.creatorType !== type) return false;
       if (tier !== "all" && item.tier !== tier) return false;
       if (outreach === "need" && !canOutreachCreator(item)) return false;
       if (outreach === "sent" && !["草稿已生成", "已发出", "已回复"].includes(status)) return false;
       if (outreach === "wechat" && status !== "已加微信") return false;
+      if (!matchesCreatorAddedFilter(item, added)) return false;
+      if (contact === "email" && !creatorEmail(item)) return false;
+      if (contact === "wechat" && !creatorWechat(item)) return false;
+      if (contact === "email-no-wechat" && (!creatorEmail(item) || creatorWechat(item))) return false;
       return true;
     });
     return rows.sort((a, b) => {
       if (sort === "count") return number(b.cooperationCount) - number(a.cooperationCount) || number(b.fanCount) - number(a.fanCount);
       if (sort === "recent") return String(b.lastCooperationAt || "").localeCompare(String(a.lastCooperationAt || "")) || number(b.fanCount) - number(a.fanCount);
+      if (sort === "created") return String(creatorCreatedDate(b)).localeCompare(String(creatorCreatedDate(a))) || number(b.fanCount) - number(a.fanCount);
       return number(b.fanCount) - number(a.fanCount);
     });
   }
@@ -1498,7 +1589,7 @@
   function renderCreators() {
     fillSelect("#creator-type-filter", creatorTypeOptions(), "全部类型");
     $("#creator-type-list").innerHTML = creatorTypeOptions().map((type) => `<option value="${escapeHtml(type)}"></option>`).join("");
-    selectedCreatorIds = new Set([...selectedCreatorIds].filter((id) => canOutreachCreator(creators.find((item) => item.id === id))));
+    selectedCreatorIds = new Set([...selectedCreatorIds].filter((id) => canSelectCreator(creators.find((item) => item.id === id))));
     const total = creators.length;
     const head = creators.filter((item) => item.tier === "头部").length;
     const middle = creators.filter((item) => item.tier === "中部").length;
@@ -1532,13 +1623,14 @@
     $("#creator-table").innerHTML = rows.length ? rows.map((item) => `
       <tr>
         <td>
-          <input type="checkbox" data-select-creator="${escapeHtml(item.id)}" ${selectedCreatorIds.has(item.id) ? "checked" : ""} ${canOutreachCreator(item) ? "" : "disabled"} aria-label="选择${escapeHtml(item.name)}建联" />
+          <input type="checkbox" data-select-creator="${escapeHtml(item.id)}" ${selectedCreatorIds.has(item.id) ? "checked" : ""} ${canSelectCreator(item) ? "" : "disabled"} aria-label="选择${escapeHtml(item.name)}建联" />
         </td>
         <td>
           <div class="cell-title">
             <strong>${escapeHtml(item.name)}</strong>
             ${item.profileLink ? `<a href="${escapeHtml(item.profileLink)}" target="_blank" rel="noreferrer">打开主页</a>` : ""}
             <span class="muted">${escapeHtml(item.source || "达人库")} · ${escapeHtml(item.id)}</span>
+            <span class="muted">新增：${escapeHtml(creatorCreatedDate(item) || "未记录")}</span>
           </div>
         </td>
         <td><span class="pill gray">${escapeHtml(item.creatorType || "未分类")}</span></td>
@@ -1562,12 +1654,12 @@
           ${item.isBlacklisted ? `<span class="pill coral">黑名单</span><div class="muted">${escapeHtml(item.blacklistReason || "未填写原因")}</div>` : `<span class="pill gray">正常</span>`}
         </td>
         <td>
-          ${canOutreachCreator(item) ? `<button class="secondary-button small" data-creator-outreach="${escapeHtml(item.id)}">建联</button>` : ""}
+          ${canOutreachTarget(item) ? `<button class="secondary-button small" data-creator-outreach="${escapeHtml(item.id)}">建联</button>` : ""}
           <button class="secondary-button small" data-edit-creator="${escapeHtml(item.id)}">编辑</button>
         </td>
       </tr>
     `).join("") : `<tr><td colspan="11"><div class="empty-state">暂无匹配达人。</div></td></tr>`;
-    const selectableRows = rows.filter(canOutreachCreator);
+    const selectableRows = rows.filter(canSelectCreator);
     const selectAll = $("#select-all-outreach");
     if (selectAll) {
       selectAll.checked = selectableRows.length > 0 && selectableRows.every((item) => selectedCreatorIds.has(item.id));
@@ -1781,16 +1873,18 @@
     const content = $("#content-filter")?.value || "all";
     const result = $("#result-filter")?.value || "all";
     return filterSelectedProduct(placementsForPeriod(ledgerPeriod)).filter((item) => {
-      const haystack = [item.creator, item.product, item.noteTitle, item.owner, item.contactMethod, item.creatorResponse, item.notes].join(" ").toLowerCase();
+      const haystack = [item.creator, item.product, item.noteTitle, item.owner, item.contactMethod, item.creatorResponse, item.notes, placementPlatform(item)].join(" ").toLowerCase();
       if (query && !haystack.includes(query)) return false;
       if (status !== "all" && item.status !== status) return false;
       if (content !== "all" && item.contentType !== content) return false;
       if (result !== "all" && feedbackType(item) !== result) return false;
       return true;
     }).sort((a, b) => {
+      const day7A = isDay7ReviewDue(a);
+      const day7B = isDay7ReviewDue(b);
       const poorA = Boolean(a.publishedAt) && number(a.likes) < 200;
       const poorB = Boolean(b.publishedAt) && number(b.likes) < 200;
-      return Number(poorB) - Number(poorA) || String(b.publishedAt || b.agreedPublishAt || "").localeCompare(String(a.publishedAt || a.agreedPublishAt || ""));
+      return Number(day7B) - Number(day7A) || Number(poorB) - Number(poorA) || String(b.publishedAt || b.agreedPublishAt || "").localeCompare(String(a.publishedAt || a.agreedPublishAt || ""));
     });
   }
 
@@ -1811,6 +1905,7 @@
         : `<span>${escapeHtml(item.creator)}</span>`;
       const agreedPublishAt = item.agreedPublishAt || "未填写";
       const placementNotes = String(item.notes || "").trim() || "未填写";
+      const platform = placementPlatform(item);
       const isPoorPerformance = Boolean(item.publishedAt) && number(item.likes) < 200;
       const link = item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.noteTitle || item.product)}</a>` : `<strong>${escapeHtml(item.noteTitle || item.product)}</strong>`;
       return `
@@ -1824,10 +1919,17 @@
                 <span>约定发布：${escapeHtml(agreedPublishAt)}</span>
                 <span>备注：${escapeHtml(placementNotes)}</span>
               </span>
+              <span class="platform-badge ${platform === "抖音" ? "douyin" : "xhs"}">${escapeHtml(platform)}</span>
             </div>
           </td>
           <td>${money(values.spend)}<div class="muted">合作 ${money(item.fee)} / 其他 ${money(item.extraCost)}</div></td>
-          <td><strong>${compact(item.likes)} 赞</strong><div class="muted">${compact(item.saves)} 收藏 · ${compact(item.comments)} 评论</div></td>
+          <td>
+            <div class="quick-metrics" data-placement-id="${escapeHtml(item.id)}">
+              <label>赞<input data-metric-input data-field="likes" type="number" min="0" step="1" inputmode="numeric" value="${number(item.likes)}" /></label>
+              <label>收藏<input data-metric-input data-field="saves" type="number" min="0" step="1" inputmode="numeric" value="${number(item.saves)}" /></label>
+              <label>评论<input data-metric-input data-field="comments" type="number" min="0" step="1" inputmode="numeric" value="${number(item.comments)}" /></label>
+            </div>
+          </td>
           <td>${compact(item.leads)} 线索<div class="muted">${compact(item.orders)} 单 · ${money(item.gmv)}</div></td>
           <td><span class="pill ${task.priority === "最高" ? "coral" : task.priority === "高" ? "amber" : task.priority === "中" ? "blue" : "gray"}">${task.priority}</span><div class="muted">${escapeHtml(task.action)}</div></td>
           <td><span class="pill ${feedbackClass(type)}">${feedbackLabel(type)}</span><div class="muted">${feedbackReason(item)}</div></td>
@@ -1839,6 +1941,21 @@
         </tr>
       `;
     }).join("") : `<tr><td colspan="8"><div class="empty-state">暂无匹配投放记录。</div></td></tr>`;
+  }
+
+  function updatePlacementMetric(input, shouldRefresh = false) {
+    const field = input.dataset.field;
+    if (!["likes", "saves", "comments"].includes(field)) return;
+    const id = input.closest("[data-placement-id]")?.dataset.placementId;
+    const item = placements.find((placement) => placement.id === id);
+    if (!item) return;
+    item[field] = number(input.value);
+    savePlacements();
+    if (shouldRefresh) {
+      syncCreatorsFromPlacements();
+      renderAll();
+      toast("互动数据已保存");
+    }
   }
 
   function renderFeedback() {
@@ -1900,6 +2017,7 @@
     fillSelect("#creator-form [name='outreachStatus']", creatorOutreachStatuses);
     fillSelect("#creator-type-filter", creatorTypeOptions(), "全部类型");
     fillSelect("[name='contentType'], #content-filter", contentTypes, "全部类型");
+    fillSelect("[name='platform']", platformOptions);
     fillWholesaleProductSelect();
     $("#creator-type-list").innerHTML = creatorTypeOptions().map((type) => `<option value="${escapeHtml(type)}"></option>`).join("");
     $("#creator-name-list").innerHTML = creators.map((creator) => `<option value="${escapeHtml(creator.name)}" label="${escapeHtml(`${creator.creatorType || "未分类"} · ${creator.fansText || compact(creator.fanCount)}`)}"></option>`).join("");
@@ -2024,6 +2142,7 @@
       form.elements.id.value = "";
       form.elements.owner.value = "Chloe";
       form.elements.status.value = "待建联";
+      form.elements.platform.value = "小红书";
       form.elements.sampleStatus.value = "待寄样";
       form.elements.draftStatus.value = "未申请";
       form.elements.requiresDraftReview.value = "yes";
@@ -2077,6 +2196,8 @@
       contactAddress: String(data.contactAddress || "").trim(),
       isBlacklisted: form.elements.isBlacklisted.checked,
       blacklistReason: String(data.blacklistReason || "").trim(),
+      createdAt: current.createdAt || (current.id ? "" : today()),
+      updatedAt: today(),
     };
   }
 
@@ -2104,6 +2225,7 @@
     data.productUrl = selectedProducts.length === 1 ? productUrl(selectedProducts[0]) : "";
     if (selectedProducts.length) data.product = selectedProducts.map((product) => product.name).join("、");
     data.creatorTier = form.elements.creatorTier.value || data.creatorTier || "";
+    data.platform = placementPlatform(data);
     data.status = normalizePlacementStatus(data.status, data);
     data.id = data.id || uid();
     return data;
@@ -2192,10 +2314,10 @@
     URL.revokeObjectURL(url);
   }
 
-  const csvHeaders = ["达人昵称", "达人主页", "联系方式", "达人类型", "订货站产品ID", "产品货号", "产品/活动", "内容类型", "负责人", "投放状态", "样品状态", "样品签收日期", "内容进度", "约定发布日期", "稿件申请状态", "稿件申请日期", "上次联系日期", "跟进次数", "达人回复", "计划发布时间", "实际发布时间", "合作费", "样品/履约成本", "曝光", "阅读/点击", "点赞", "收藏", "评论", "分享", "新增私信/线索", "成交单数", "GMV", "笔记链接", "笔记标题", "备注"];
+  const csvHeaders = ["达人昵称", "达人主页", "联系方式", "达人类型", "订货站产品ID", "产品货号", "产品/活动", "平台", "内容类型", "负责人", "投放状态", "样品状态", "样品签收日期", "内容进度", "约定发布日期", "稿件申请状态", "稿件申请日期", "上次联系日期", "跟进次数", "达人回复", "计划发布时间", "实际发布时间", "合作费", "样品/履约成本", "曝光", "阅读/点击", "点赞", "收藏", "评论", "分享", "新增私信/线索", "成交单数", "GMV", "笔记链接", "笔记标题", "备注"];
 
   function buildCsvTemplate() {
-    const example = ["小红书达人A", "https://www.xiaohongshu.com/user/profile/example", "小红书私信", "KOC", "", "", "新品试用", "测评种草", "Chloe", "已签收", "已签收", today(), "0/1", today(), "未申请", "", today(), "0", "已确认收到", today(), "", "1200", "150", "", "", "", "", "", "", "", "", "", "", "新品试用真实测评", "样品已签收，等待发布时间"];
+    const example = ["小红书达人A", "https://www.xiaohongshu.com/user/profile/example", "小红书私信", "KOC", "", "", "新品试用", "小红书", "测评种草", "Chloe", "已签收", "已签收", today(), "0/1", today(), "未申请", "", today(), "0", "已确认收到", today(), "", "1200", "150", "", "", "", "", "", "", "", "", "", "", "新品试用真实测评", "样品已签收，等待发布时间"];
     return [csvHeaders, example].map((row) => row.map(csvValue).join(",")).join("\n");
   }
 
@@ -2219,6 +2341,7 @@
       productCode: productCodes[0] || "",
       productCodes,
       product: get("产品/活动", "Product", "product"),
+      platform: placementPlatform({ platform: get("平台", "platform") }),
       contentType: get("内容类型", "contentType") || "测评种草",
       owner: get("负责人", "owner") || "Chloe",
       status: normalizePlacementStatus(get("投放状态", "Current status", "status") || "待建联", {
@@ -2275,6 +2398,9 @@
     $$("[data-close='outreach-dialog']").forEach((button) => {
       button.addEventListener("click", () => $("#outreach-dialog").close());
     });
+    $$("[data-close='wechat-dialog']").forEach((button) => {
+      button.addEventListener("click", () => $("#wechat-dialog").close());
+    });
     $("#placement-form").addEventListener("submit", (event) => {
       event.preventDefault();
       const next = formToPlacement(event.currentTarget);
@@ -2310,6 +2436,14 @@
         toast("投放记录已删除");
       }
     });
+    $("#placement-table").addEventListener("input", (event) => {
+      const input = event.target.closest("[data-metric-input]");
+      if (input) updatePlacementMetric(input);
+    });
+    $("#placement-table").addEventListener("change", (event) => {
+      const input = event.target.closest("[data-metric-input]");
+      if (input) updatePlacementMetric(input, true);
+    });
     $("#followup-list").addEventListener("click", (event) => {
       const editId = event.target.closest("[data-edit]")?.dataset.edit;
       if (editId) openForm(placements.find((item) => item.id === editId));
@@ -2327,7 +2461,7 @@
     ["search-input", "status-filter", "content-filter", "result-filter"].forEach((id) => {
       $(`#${id}`).addEventListener("input", renderTable);
     });
-    ["creator-search", "creator-type-filter", "creator-tier-filter", "creator-outreach-filter", "creator-sort"].forEach((id) => {
+    ["creator-search", "creator-type-filter", "creator-tier-filter", "creator-outreach-filter", "creator-added-filter", "creator-contact-filter", "creator-sort"].forEach((id) => {
       $(`#${id}`).addEventListener("input", renderCreators);
     });
     $("#product-board").addEventListener("click", (event) => {
@@ -2365,15 +2499,28 @@
     });
     $("#add-creator").addEventListener("click", () => openCreatorForm());
     $("#bulk-outreach").addEventListener("click", () => {
-      const rows = creators.filter((item) => selectedCreatorIds.has(item.id));
+      const selectedRows = creators.filter((item) => selectedCreatorIds.has(item.id));
+      const rows = selectedRows.length ? selectedRows : filteredCreators().filter(canOutreachTarget);
       openCreatorOutreachDialog(rows);
     });
+    $("#bulk-wechat").addEventListener("click", () => {
+      const selectedRows = creators.filter((item) => selectedCreatorIds.has(item.id));
+      const rows = selectedRows.length ? selectedRows : filteredCreators().filter(canWechatQueueCreator);
+      openWechatQueueDialog(rows);
+    });
     $("#select-all-outreach").addEventListener("change", (event) => {
-      filteredCreators().filter(canOutreachCreator).forEach((item) => {
+      filteredCreators().filter(canSelectCreator).forEach((item) => {
         if (event.target.checked) selectedCreatorIds.add(item.id);
         else selectedCreatorIds.delete(item.id);
       });
       renderCreators();
+    });
+    $("#copy-wechat-list").addEventListener("click", copyWechatQueue);
+    $("#wechat-preview").addEventListener("click", async (event) => {
+      const id = event.target.closest("[data-copy-wechat]")?.dataset.copyWechat;
+      if (!id) return;
+      const creator = creators.find((item) => item.id === id);
+      if (creator) await copyText(creatorWechat(creator), "微信号已复制");
     });
     $("#creator-table").addEventListener("click", (event) => {
       const outreachId = event.target.closest("[data-creator-outreach]")?.dataset.creatorOutreach;

@@ -107,6 +107,7 @@
         <div class="heading-actions">
           <button class="primary-button" id="add-creator">新增达人</button>
           <button class="secondary-button" id="bulk-outreach">批量建联</button>
+          <button class="secondary-button" id="bulk-wechat">微信待添加</button>
           <button class="secondary-button" id="resync-creators">同步合作记录</button>
         </div>
       </div>
@@ -140,8 +141,22 @@
           <option value="sent">已发出</option>
           <option value="wechat">已加微信</option>
         </select>
+        <select id="creator-added-filter">
+          <option value="all">全部新增时间</option>
+          <option value="today">今天新增</option>
+          <option value="yesterday">昨天新增</option>
+          <option value="7days">近7天新增</option>
+          <option value="no-date">无新增时间</option>
+        </select>
+        <select id="creator-contact-filter">
+          <option value="all">全部联系方式</option>
+          <option value="email">有邮箱</option>
+          <option value="wechat">有微信</option>
+          <option value="email-no-wechat">有邮箱未填微信</option>
+        </select>
         <select id="creator-sort">
           <option value="fans">粉丝数排序</option>
+          <option value="created">新增时间排序</option>
           <option value="recent">最近合作排序</option>
           <option value="count">合作次数排序</option>
         </select>
@@ -280,6 +295,7 @@
         <label>库存状态<input name="productStatusDisplay" disabled /></label>
         <label class="wide product-link-row"><a id="product-stock-link" href="../wholesale-portal/partner.html" target="_blank" rel="noreferrer">打开订货站查看库存</a></label>
         <label>内容类型<select name="contentType"></select></label>
+        <label>平台<select name="platform"></select></label>
         <label>联系方式<input name="contactMethod" maxlength="40" placeholder="小红书私信、微信、邮箱" /></label>
         <label>负责人<input name="owner" maxlength="24" placeholder="例如：Chloe" /></label>
         <label>投放状态<select name="status"></select></label>
@@ -358,6 +374,24 @@
     </div>
   </dialog>
 
+  <dialog id="wechat-dialog" class="form-dialog brief-dialog">
+    <div class="brief-shell">
+      <div class="dialog-title">
+        <div>
+          <span class="eyebrow">WECHAT QUEUE</span>
+          <h2>微信待添加清单</h2>
+          <small id="wechat-target" class="muted">复制微信号后到微信里搜索添加</small>
+        </div>
+        <button type="button" class="icon-button" data-close="wechat-dialog" aria-label="关闭">×</button>
+      </div>
+      <div id="wechat-preview" class="wechat-list"></div>
+      <div class="dialog-actions brief-actions">
+        <button type="button" class="secondary-button" data-close="wechat-dialog">取消</button>
+        <button type="button" class="primary-button" id="copy-wechat-list">复制全部微信号</button>
+      </div>
+    </div>
+  </dialog>
+
   <dialog id="creator-dialog" class="form-dialog creator-dialog">
     <form id="creator-form" method="dialog">
       <div class="dialog-title">
@@ -394,6 +428,6 @@
   <datalist id="creator-type-list"></datalist>
   <datalist id="creator-name-list"></datalist>
   <div id="toast" class="toast" role="status"></div>
-  <script src="app.js?v=20260713-server-persist"></script>
+  <script src="app.js?v=20260716-outreach-tools"></script>
 </body>
 </html>
