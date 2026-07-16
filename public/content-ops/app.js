@@ -5,6 +5,7 @@
   const TEST_SERVER_URL = "http://127.0.0.1:4322/api/content-ops/state";
   const STORAGE_KEY = "content_ops_state_v1";
   const platforms = ["小红书", "抖音", "视频号", "B站", "公众号", "微博", "Instagram", "TikTok", "LinkedIn", "X"];
+  const accountColorPalette = ["#1f7a72", "#d6634f", "#3f6fb5", "#c98b22", "#7562a9", "#2f855a", "#b45309", "#be4b7a", "#2563eb", "#64748b"];
   const contentTypes = ["教程干货", "避坑清单", "测评种草", "观点反常识", "故事案例", "热点借势", "账号人设", "成交转化"];
   const formulas = ["用户定位", "场景设计", "价值体现", "痛点挖掘", "颠覆理论", "蹭热门", "对比", "诱饵悬念", "价格锚点", "时间节点"];
   const emotionHooks = ["好奇", "吃惊", "焦虑", "共鸣", "反差", "不服气", "爽感", "安全感", "紧迫感", "收藏欲"];
@@ -15,6 +16,7 @@
     { key: "douyin", label: "抖音" },
   ];
   const metricFields = ["exposure", "clicks", "likes", "saves", "comments", "shares", "follows", "conversions"];
+  const statsMetricFields = ["likes", "saves", "comments", "conversions"];
   const metricLabels = {
     exposure: "曝光",
     clicks: "点击",
@@ -135,6 +137,7 @@
         id: "account-1",
         name: "品牌小红书号",
         platform: "小红书",
+        color: "#1f7a72",
         owner: "Chloe",
         position: "围绕内容运营、账号增长、标题拆解做专业可信的干货号。",
         target: "新媒体运营、创始人助理",
@@ -148,6 +151,7 @@
         id: "account-2",
         name: "案例拆解视频号",
         platform: "视频号",
+        color: "#3f6fb5",
         owner: "Lina",
         position: "用短视频拆解爆款内容结构，强调可复制动作。",
         target: "内容团队负责人",
@@ -255,11 +259,42 @@
     const next = input && typeof input === "object" ? input : structuredClone(seedState);
     next.titles = Array.isArray(next.titles) ? next.titles : [];
     next.accounts = Array.isArray(next.accounts) ? next.accounts : [];
+    next.accounts.forEach(normalizeAccount);
     next.posts = Array.isArray(next.posts) ? next.posts : [];
     next.posts.forEach(normalizePostMetrics);
     next.products = Array.isArray(next.products) ? next.products : [];
     next.inventorySettings = { ...seedState.inventorySettings, ...(next.inventorySettings || {}) };
     return next;
+  }
+
+  function normalizeAccount(account, index = 0) {
+    account.color = normalizeHexColor(account.color) || accountColorPalette[index % accountColorPalette.length];
+    return account;
+  }
+
+  function normalizeHexColor(value) {
+    const color = String(value || "").trim();
+    return /^#[0-9a-fA-F]{6}$/.test(color) ? color.toLowerCase() : "";
+  }
+
+  function hexToRgb(hex) {
+    const safe = normalizeHexColor(hex) || "#1f7a72";
+    const value = safe.slice(1);
+    return {
+      r: parseInt(value.slice(0, 2), 16),
+      g: parseInt(value.slice(2, 4), 16),
+      b: parseInt(value.slice(4, 6), 16),
+    };
+  }
+
+  function accountStyle(account) {
+    const color = normalizeHexColor(account?.color) || "#1f7a72";
+    const rgb = hexToRgb(color);
+    return `--account-color:${color};--account-border:rgba(${rgb.r},${rgb.g},${rgb.b},.34);--account-bg:rgba(${rgb.r},${rgb.g},${rgb.b},.10);--account-soft:rgba(${rgb.r},${rgb.g},${rgb.b},.16);`;
+  }
+
+  function nextAccountColor() {
+    return accountColorPalette[state.accounts.length % accountColorPalette.length];
   }
 
   function normalizePostMetrics(post) {
@@ -1006,12 +1041,13 @@
 
   function renderAccounts() {
     $("#account-grid").innerHTML = state.accounts.length ? state.accounts.map((account) => {
+      normalizeAccount(account, state.accounts.indexOf(account));
       const info = frequencyInfo(account);
       const posts = state.posts.filter((post) => post.accountId === account.id);
       const published = posts.filter((post) => ["已发布", "复盘完成"].includes(post.status));
-      return `<article class="account-card" data-edit-account="${account.id}">
+      return `<article class="account-card" data-edit-account="${account.id}" style="${accountStyle(account)}">
         <div class="card-topline">
-          <div><h3>${escapeHtml(account.name)}</h3><div class="row-meta">${escapeHtml(account.platform)}｜${escapeHtml(account.owner || "未分配")}</div></div>
+          <div><h3><span class="account-color-dot"></span>${escapeHtml(account.name)}</h3><div class="row-meta">${escapeHtml(account.platform)}｜${escapeHtml(account.owner || "未分配")}</div></div>
           <span class="pill ${account.status === "暂停" ? "coral" : account.status === "观察中" ? "amber" : ""}">${escapeHtml(account.status)}</span>
         </div>
         <p>${escapeHtml(account.position || "未填写账号定位")}</p>
@@ -1083,29 +1119,26 @@
   }
 
   function renderStagingBoard() {
-    const posts = filteredPosts().slice().sort((a, b) => {
-      const aAssigned = postHasAssignedTime(a);
-      const bAssigned = postHasAssignedTime(b);
-      if (aAssigned !== bAssigned) return aAssigned ? 1 : -1;
-      return String(b.updatedAt || b.scheduledAt || b.publishedAt || "").localeCompare(String(a.updatedAt || a.scheduledAt || a.publishedAt || ""));
-    });
-    $("#staging-board").innerHTML = posts.length ? posts.map((post) => stagingCard(post)).join("") : empty("制作中内容暂无记录。点“新增发布记录”先放一条选题进来。");
+    const posts = filteredPosts()
+      .filter((post) => !postHasAssignedTime(post))
+      .slice()
+      .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+    $("#staging-board").innerHTML = posts.length ? posts.map((post) => stagingCard(post)).join("") : empty("暂存板没有未分配发布时间的内容。新增选题或清空发布时间后会出现在这里。");
   }
 
   function stagingCard(post) {
     const account = accountById(post.accountId);
-    const assigned = postHasAssignedTime(post);
     const info = progressInfo(post);
-    return `<article class="staging-card ${assigned ? "assigned" : ""}" draggable="true" data-staging-post="${post.id}">
+    return `<article class="staging-card" draggable="true" data-staging-post="${post.id}" style="${accountStyle(account)}">
       <div class="staging-topline">
-            <span class="pill ${assigned ? "" : "amber"}">${assigned ? "已排期" : "未分配时间"}</span>
+            <span class="pill amber">未分配时间</span>
             <span class="row-meta">${info.done}/${info.total}</span>
       </div>
       <h3 class="staging-title">${escapeHtml(post.headline || "未命名内容")}</h3>
       <div class="row-meta">${escapeHtml(account?.name || "未选发布账号")}｜${escapeHtml(post.contentType || "未分类")}</div>
       ${progressMarkup(post)}
       <div class="staging-footer">
-        <span class="row-meta">${assigned ? `发布 ${dateText(post.publishedAt || post.scheduledAt)}` : "发布时间未分配"}</span>
+        <span class="row-meta">发布时间未分配</span>
         <button class="text-button" data-edit-post="${post.id}" type="button">编辑</button>
       </div>
     </article>`;
@@ -1164,10 +1197,10 @@
     const account = accountById(post.accountId);
     const publishTime = timePart(postCalendarDateTime(post), "待定");
     const shootingText = post.shootingAt ? `拍摄 ${dateText(post.shootingAt)}` : "未排拍摄";
-    return `<article class="calendar-post ${calendarPostClass(post)}" draggable="true" data-calendar-post="${post.id}">
+    return `<article class="calendar-post ${calendarPostClass(post)}" draggable="true" data-calendar-post="${post.id}" style="${accountStyle(account)}">
       <div class="calendar-post-meta">
         <span>${escapeHtml(post.status)}</span>
-        <span>${escapeHtml(account?.name || "未关联账号")}</span>
+        <span class="calendar-account"><i></i>${escapeHtml(account?.name || "未关联账号")}</span>
       </div>
       <h3>${escapeHtml(post.headline || "未命名内容")}</h3>
       <div class="calendar-post-meta">
@@ -1225,6 +1258,28 @@
     return String(post.publishedAt || post.scheduledAt || "").slice(0, 7);
   }
 
+  function daysSinceDate(value) {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    const today = localDate(todayDate());
+    const target = localDate(dateKey(date));
+    return Math.floor((today - target) / 86400000);
+  }
+
+  function postReviewAge(post) {
+    return daysSinceDate(post.publishedAt);
+  }
+
+  function hasCoreStats(post) {
+    return totalPostMetric(post, "likes") > 0 || totalPostMetric(post, "saves") > 0 || totalPostMetric(post, "comments") > 0;
+  }
+
+  function needsStatsReminder(post) {
+    const age = postReviewAge(post);
+    return ["已发布", "复盘完成"].includes(post.status) && age != null && age >= 7 && !hasCoreStats(post);
+  }
+
   function statsMonthOptions() {
     const months = [...new Set(state.posts.map(postMonth).filter((value) => /^\d{4}-\d{2}$/.test(value)))].sort().reverse();
     if (!months.includes(statsMonth)) months.unshift(statsMonth);
@@ -1255,8 +1310,23 @@
   function renderStats() {
     hydrateStatsMonthFilter();
     const posts = filteredStatsPosts();
+    renderStatsReminders(posts);
     renderMonthlyTopFeedback(posts);
     $("#stats-table-body").innerHTML = posts.length ? posts.map((post) => statsRow(post)).join("") : `<tr><td colspan="4">${empty("这个月份还没有可统计的发布记录。")}</td></tr>`;
+  }
+
+  function renderStatsReminders(posts) {
+    const due = posts.filter(needsStatsReminder).sort((a, b) => String(a.publishedAt).localeCompare(String(b.publishedAt)));
+    $("#stats-reminder-list").innerHTML = due.length ? due.map((post) => {
+      const account = accountById(post.accountId);
+      return `<article class="stats-reminder-card" data-reminder-post="${escapeHtml(post.id)}">
+        <div>
+          <strong>${escapeHtml(post.headline || "未命名内容")}</strong>
+          <div class="row-meta">${escapeHtml(account?.name || "未关联账号")}｜发布 ${dateText(post.publishedAt)}｜已过 ${postReviewAge(post)} 天</div>
+        </div>
+        <span class="pill amber">待填写数据</span>
+      </article>`;
+    }).join("") : empty("当前筛选范围内没有需要补填的数据。");
   }
 
   function renderMonthlyTopFeedback(posts) {
@@ -1266,15 +1336,14 @@
       .sort((a, b) => totalPostMetric(b, "likes") - totalPostMetric(a, "likes"))
       .slice(0, 3);
     $("#monthly-top-feedback").innerHTML = top.length ? top.map((post, index) => {
-      const account = accountById(post.accountId);
-      const likes = totalPostMetric(post, "likes");
-      const saves = totalPostMetric(post, "saves");
-      const clicks = totalPostMetric(post, "clicks");
+    const account = accountById(post.accountId);
+    const likes = totalPostMetric(post, "likes");
+    const saves = totalPostMetric(post, "saves");
       const advice = index === 0
         ? "本月优先复用它的选题角度、标题表达和封面结构。"
         : saves > likes ? "收藏表现更强，适合拆成清单或教程。"
-        : clicks ? "点击有反馈，可以继续测试相近标题。"
-        : "先补曝光/点击，方便判断转化质量。";
+        : totalPostMetric(post, "comments") ? "评论有反馈，可以继续观察评论区需求。"
+        : "先补点赞、收藏、评论，方便判断内容质量。";
       return `<article class="top-feedback-card">
         <span class="focus-rank">${index + 1}</span>
         <div>
@@ -1294,18 +1363,22 @@
     const account = accountById(post.accountId);
     const totalLikes = totalPostMetric(post, "likes");
     const totalSaves = totalPostMetric(post, "saves");
-    const ctr = postClickRate(post);
+    const totalComments = totalPostMetric(post, "comments");
+    const totalConversions = totalPostMetric(post, "conversions");
+    const reminder = needsStatsReminder(post) ? `<span class="pill amber">发布满7天待填</span>` : "";
     return `<tr data-stats-post="${escapeHtml(post.id)}">
       <td>
         <strong>${escapeHtml(post.headline || "未命名内容")}</strong>
         <div class="row-meta">${escapeHtml(account?.name || "未关联账号")}｜${escapeHtml(post.status)}｜${dateText(post.publishedAt || post.scheduledAt)}</div>
+        ${reminder}
       </td>
       ${statsPlatforms.map((platform) => `<td>${platformStatsInputs(post, platform)}</td>`).join("")}
       <td>
         <div class="stats-summary">
           <span>合计点赞 <strong>${totalLikes}</strong></span>
           <span>合计收藏 <strong>${totalSaves}</strong></span>
-          <span>点击率 <strong>${percent(ctr)}</strong></span>
+          <span>合计评论 <strong>${totalComments}</strong></span>
+          <span>合计转化 <strong>${totalConversions}</strong></span>
         </div>
       </td>
     </tr>`;
@@ -1314,19 +1387,47 @@
   function platformStatsInputs(post, platform) {
     return `<div class="platform-stats">
       <div class="platform-stats-title">${escapeHtml(platform.label)}</div>
-      ${metricFields.map((field) => `<label>${escapeHtml(metricLabels[field])}<input data-stats-input data-post-id="${escapeHtml(post.id)}" data-platform="${escapeHtml(platform.key)}" data-field="${escapeHtml(field)}" type="number" min="0" step="1" inputmode="numeric" value="${platformMetric(post, platform.key, field)}" /></label>`).join("")}
+      ${statsMetricFields.map((field) => {
+        const value = platformMetric(post, platform.key, field);
+        return `<label>${escapeHtml(metricLabels[field])}<button class="stats-value ${value ? "" : "empty"}" data-stats-edit data-post-id="${escapeHtml(post.id)}" data-platform="${escapeHtml(platform.key)}" data-field="${escapeHtml(field)}" data-value="${value}" type="button">${value ? escapeHtml(value) : "未填"}</button></label>`;
+      }).join("")}
     </div>`;
   }
 
-  function updateStatsMetric(input) {
-    const post = state.posts.find((item) => item.id === input.dataset.postId);
+  function updateStatsMetric(source) {
+    const post = state.posts.find((item) => item.id === source.dataset.postId);
     if (!post) return;
     normalizePostMetrics(post);
-    post.platformMetrics[input.dataset.platform][input.dataset.field] = Math.max(0, number(input.value));
-    if (input.dataset.platform === "xhs") post[input.dataset.field] = post.platformMetrics.xhs[input.dataset.field];
+    post.platformMetrics[source.dataset.platform][source.dataset.field] = Math.max(0, number(source.value));
+    if (source.dataset.platform === "xhs") post[source.dataset.field] = post.platformMetrics.xhs[source.dataset.field];
     post.updatedAt = new Date().toISOString();
     scheduleSave();
     renderStats();
+  }
+
+  function startStatsEdit(button) {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.step = "1";
+    input.inputMode = "numeric";
+    input.className = "stats-inline-input";
+    input.value = button.dataset.value || "0";
+    input.dataset.postId = button.dataset.postId;
+    input.dataset.platform = button.dataset.platform;
+    input.dataset.field = button.dataset.field;
+    button.replaceWith(input);
+    input.focus();
+    input.select();
+    const save = () => updateStatsMetric(input);
+    input.addEventListener("change", save, { once: true });
+    input.addEventListener("blur", () => {
+      if (document.body.contains(input)) save();
+    }, { once: true });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") input.blur();
+      if (event.key === "Escape") renderStats();
+    });
   }
 
   function topTitles(count = 5) {
@@ -1377,9 +1478,9 @@
   }
 
   function dataGaps() {
-    const gaps = state.posts.filter((post) => ["已发布", "复盘完成"].includes(post.status) && (!totalPostMetric(post, "exposure") || !totalPostMetric(post, "clicks")));
-    if (!gaps.length) return ["已发布内容的曝光/点击数据齐全。"];
-    return gaps.slice(0, 6).map((post) => `<strong>${escapeHtml(post.headline)}</strong> 缺曝光或点击数据。`);
+    const gaps = state.posts.filter((post) => needsStatsReminder(post));
+    if (!gaps.length) return ["发布满 7 天的内容都已补核心数据。"];
+    return gaps.slice(0, 6).map((post) => `<strong>${escapeHtml(post.headline)}</strong> 发布已满 ${postReviewAge(post)} 天，缺点赞/收藏/评论数据。`);
   }
 
   function insight(title, lines) {
@@ -1479,7 +1580,7 @@
       const id = button.dataset.open;
       if (id === "title-dialog") openDialog(id, { capturedAt: todayDate(), platform: "小红书", contentType: contentTypes[0], formula: formulas[0], emotionHook: emotionHooks[0] });
       if (id === "batch-title-dialog") openBatchTitleDialog();
-      if (id === "account-dialog") openDialog(id, { platform: "小红书", frequencyPerWeek: 5, status: "运营中" });
+      if (id === "account-dialog") openDialog(id, { platform: "小红书", frequencyPerWeek: 5, status: "运营中", color: nextAccountColor() });
       if (id === "product-dialog") openDialog(id, { category: productCategories[0], stock: 0, incomingStock: 0, priority: 5, selected: false });
       if (id === "post-dialog") openDialog(id, { status: "选题", scheduledAt: "", publishedAt: "", shootingAt: "", contentType: contentTypes[0], accountId: "", owner: "" });
     }));
@@ -1492,9 +1593,9 @@
       statsMonth = event.currentTarget.value;
       renderStats();
     });
-    $("#stats-table-body").addEventListener("change", (event) => {
-      const input = event.target.closest("[data-stats-input]");
-      if (input) updateStatsMetric(input);
+    $("#stats-table-body").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-stats-edit]");
+      if (button) startStatsEdit(button);
     });
     ["product-search", "product-category-filter", "product-stock-filter"].forEach((id) => $(`#${id}`).addEventListener("input", renderProducts));
 
@@ -1629,6 +1730,7 @@
       event.preventDefault();
       const record = numericFields(readForm(event.currentTarget), ["frequencyPerWeek"]);
       record.id = record.id || uid("account");
+      normalizeAccount(record, state.accounts.length);
       upsert("accounts", record);
       closeDialog("account-dialog");
       scheduleSave();
