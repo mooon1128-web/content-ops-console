@@ -1205,7 +1205,7 @@
   }
 
   function hasPlacementPerformanceData(item) {
-    return [item.likes, item.saves, item.comments].some((value) => number(value) > 0);
+    return Boolean(item.performanceReviewedAt) || [item.likes, item.saves, item.comments].some((value) => number(value) > 0);
   }
 
   function isDay7ReviewDue(item) {
@@ -1576,7 +1576,7 @@
       const task = item.task;
       const cls = task.priority === "最高" ? "coral" : task.priority === "高" ? "amber" : task.priority === "中" ? "blue" : "gray";
       return `
-        <article class="task-card">
+        <article class="task-card ${task.kind === "day7-review" ? "day7-review-card" : ""}">
           <div>
             <h3>${escapeHtml(item.creator)} · ${escapeHtml(item.product)}</h3>
             <p>${escapeHtml(task.reason)}</p>
@@ -1590,16 +1590,28 @@
               <span class="pill gray">签收 ${escapeHtml(item.sampleDeliveredAt || "未填")}</span>
               <span class="pill gray">跟进 ${number(item.followUpCount)} 次</span>
             </div>
+            ${task.kind === "day7-review" ? performanceReviewForm(item) : ""}
             ${task.warnings.length ? `<p><strong>失败候选提醒：</strong>${task.warnings.map(escapeHtml).join("；")}。</p>` : ""}
           </div>
           <div class="task-action">
             ${task.kind === "day7-review" && normalizeProfileLink(item.url) ? `<a class="secondary-button small" href="${escapeHtml(normalizeProfileLink(item.url))}" target="_blank" rel="noreferrer">打开笔记</a>` : ""}
-            <button class="${task.kind === "day7-review" ? "primary-button" : "secondary-button"} small" data-edit="${item.id}">${task.kind === "day7-review" ? "填写数据" : "编辑记录"}</button>
+            <button class="secondary-button small" data-edit="${item.id}">${task.kind === "day7-review" ? "编辑全部" : "编辑记录"}</button>
             <span class="muted">${escapeHtml(item.contactMethod || "未填联系方式")}</span>
           </div>
         </article>
       `;
     }).join("") : `<div class="empty-state">今天没有触发跟进规则的达人。</div>`;
+  }
+
+  function performanceReviewForm(item) {
+    return `
+      <form class="review-quick-form" data-review-form="${escapeHtml(item.id)}">
+        <label>点赞<input data-review-field="likes" type="number" min="0" step="1" inputmode="numeric" value="${number(item.likes)}" /></label>
+        <label>收藏<input data-review-field="saves" type="number" min="0" step="1" inputmode="numeric" value="${number(item.saves)}" /></label>
+        <label>评论<input data-review-field="comments" type="number" min="0" step="1" inputmode="numeric" value="${number(item.comments)}" /></label>
+        <button class="primary-button small" type="submit">保存数据</button>
+      </form>
+    `;
   }
 
   function filteredCreators() {
@@ -1971,11 +1983,7 @@
           </td>
           <td>${money(values.spend)}<div class="muted">合作 ${money(item.fee)} / 其他 ${money(item.extraCost)}</div></td>
           <td>
-            <div class="quick-metrics" data-placement-id="${escapeHtml(item.id)}">
-              <label>赞<input data-metric-input data-field="likes" type="number" min="0" step="1" inputmode="numeric" value="${number(item.likes)}" /></label>
-              <label>收藏<input data-metric-input data-field="saves" type="number" min="0" step="1" inputmode="numeric" value="${number(item.saves)}" /></label>
-              <label>评论<input data-metric-input data-field="comments" type="number" min="0" step="1" inputmode="numeric" value="${number(item.comments)}" /></label>
-            </div>
+            ${ledgerMetricsDisplay(item)}
           </td>
           <td>${compact(item.leads)} 线索<div class="muted">${compact(item.orders)} 单 · ${money(item.gmv)}</div></td>
           <td><span class="pill ${task.priority === "最高" ? "coral" : task.priority === "高" ? "amber" : task.priority === "中" ? "blue" : "gray"}">${task.priority}</span><div class="muted">${escapeHtml(task.action)}</div></td>
@@ -1990,19 +1998,36 @@
     }).join("") : `<tr><td colspan="8"><div class="empty-state">暂无匹配投放记录。</div></td></tr>`;
   }
 
-  function updatePlacementMetric(input, shouldRefresh = false) {
-    const field = input.dataset.field;
-    if (!["likes", "saves", "comments"].includes(field)) return;
-    const id = input.closest("[data-placement-id]")?.dataset.placementId;
+  function ledgerMetricsDisplay(item) {
+    const reviewed = hasPlacementPerformanceData(item);
+    const due = isDay7ReviewDue(item);
+    const publishedDays = daysSince(item.publishedAt);
+    const note = reviewed
+      ? item.performanceReviewedAt ? `已补录 ${String(item.performanceReviewedAt).slice(0, 10)}` : "已录入"
+      : due ? "跟进任务待填" : Number.isFinite(publishedDays) ? `发布${publishedDays}天` : "未发布";
+    return `
+      <div class="ledger-metrics ${reviewed ? "" : "pending"}">
+        <div class="ledger-metric"><span>赞</span><strong>${compact(item.likes)}</strong></div>
+        <div class="ledger-metric"><span>收藏</span><strong>${compact(item.saves)}</strong></div>
+        <div class="ledger-metric"><span>评论</span><strong>${compact(item.comments)}</strong></div>
+        <div class="metric-note">${escapeHtml(note)}</div>
+      </div>
+    `;
+  }
+
+  function savePerformanceReview(form) {
+    const id = form.dataset.reviewForm;
     const item = placements.find((placement) => placement.id === id);
     if (!item) return;
-    item[field] = number(input.value);
+    ["likes", "saves", "comments"].forEach((field) => {
+      const input = form.querySelector(`[data-review-field="${field}"]`);
+      item[field] = number(input?.value);
+    });
+    item.performanceReviewedAt = new Date().toISOString();
     savePlacements();
-    if (shouldRefresh) {
-      syncCreatorsFromPlacements();
-      renderAll();
-      toast("互动数据已保存");
-    }
+    syncCreatorsFromPlacements();
+    renderAll();
+    toast("互动数据已保存，跟进任务已归档");
   }
 
   function renderFeedback() {
@@ -2483,17 +2508,15 @@
         toast("投放记录已删除");
       }
     });
-    $("#placement-table").addEventListener("input", (event) => {
-      const input = event.target.closest("[data-metric-input]");
-      if (input) updatePlacementMetric(input);
-    });
-    $("#placement-table").addEventListener("change", (event) => {
-      const input = event.target.closest("[data-metric-input]");
-      if (input) updatePlacementMetric(input, true);
-    });
     $("#followup-list").addEventListener("click", (event) => {
       const editId = event.target.closest("[data-edit]")?.dataset.edit;
       if (editId) openForm(placements.find((item) => item.id === editId));
+    });
+    $("#followup-list").addEventListener("submit", (event) => {
+      const form = event.target.closest("[data-review-form]");
+      if (!form) return;
+      event.preventDefault();
+      savePerformanceReview(form);
     });
     $("#overview-period").addEventListener("change", (event) => {
       overviewPeriod = event.target.value;
