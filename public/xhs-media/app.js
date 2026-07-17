@@ -5,6 +5,7 @@
   const MIRROR_CREATORS_STORAGE_KEYS = ["xhs_media_creators_seed_v2"];
   const CREATORS_BACKUP_STORAGE_KEY = "xhs_media_creators_before_last_classification_v1";
   const CREATOR_TYPES_STORAGE_KEY = "xhs_media_creator_types_v1";
+  const LOCAL_META_STORAGE_KEY = "xhs_media_local_meta_v1";
   const RECOVERY_DONE_KEY = "xhs_media_recovery_20260712_done";
   const SNAPSHOT_RESTORE_DONE_KEY = "xhs_media_snapshot_restore_20260712_done";
   const MORNING_RECOVERY_DONE_KEY = "xhs_media_morning_recovery_20260713_done";
@@ -242,6 +243,8 @@
   let apiOnline = false;
   let applyingServerState = false;
   let remoteSaveTimer = null;
+  let remoteSaveInFlight = null;
+  let remoteSaveQueued = false;
   let overviewPeriod = today().slice(0, 7);
   let ledgerPeriod = today().slice(0, 7);
 
@@ -487,12 +490,59 @@
     return Boolean(item && LEGACY_TEST_CREATORS.has(item.name));
   }
 
-  function saveCreators() {
+  function loadLocalMeta() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(LOCAL_META_STORAGE_KEY));
+      return saved && typeof saved === "object" ? saved : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writeLocalMeta(meta) {
+    localStorage.setItem(LOCAL_META_STORAGE_KEY, JSON.stringify({
+      ...loadLocalMeta(),
+      ...meta,
+    }));
+  }
+
+  function markLocalChanged() {
+    const clientUpdatedAt = new Date().toISOString();
+    writeLocalMeta({ clientUpdatedAt, needsSync: true });
+    return clientUpdatedAt;
+  }
+
+  function markServerSynced(serverUpdatedAt, clientUpdatedAt) {
+    writeLocalMeta({
+      clientUpdatedAt: clientUpdatedAt || loadLocalMeta().clientUpdatedAt || serverUpdatedAt || new Date().toISOString(),
+      serverUpdatedAt: serverUpdatedAt || new Date().toISOString(),
+      needsSync: false,
+    });
+  }
+
+  function hasPendingLocalSync() {
+    return Boolean(loadLocalMeta().needsSync);
+  }
+
+  function localStateIsNewerThanRemote(remoteState, localState) {
+    const meta = loadLocalMeta();
+    if (!meta.needsSync || !meta.clientUpdatedAt || !hasUsefulXhsState(localState)) return false;
+    const localTime = Date.parse(meta.clientUpdatedAt);
+    const remoteTime = Date.parse(remoteState?.clientUpdatedAt || remoteState?.updatedAt || "");
+    if (!Number.isFinite(localTime)) return false;
+    const local = xhsStateCounts(localState);
+    const remote = xhsStateCounts(remoteState);
+    const remoteIsOlder = !Number.isFinite(remoteTime) || localTime > remoteTime;
+    return remoteIsOlder && local.creators >= remote.creators && local.placements >= remote.placements;
+  }
+
+  function saveCreators(options = {}) {
     localStorage.setItem(CREATORS_STORAGE_KEY, JSON.stringify(creators));
     MIRROR_CREATORS_STORAGE_KEYS.forEach((key) => localStorage.setItem(key, JSON.stringify(creators)));
+    if (options.markDirty !== false) markLocalChanged();
     const status = $("#save-status");
     if (status) status.textContent = `达人库已保存 ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
-    scheduleServerSave();
+    if (options.remote !== false) scheduleServerSave();
   }
 
   function loadCustomCreatorTypes() {
@@ -504,15 +554,17 @@
     }
   }
 
-  function saveCustomCreatorTypes() {
+  function saveCustomCreatorTypes(options = {}) {
     localStorage.setItem(CREATOR_TYPES_STORAGE_KEY, JSON.stringify(customCreatorTypes));
-    scheduleServerSave();
+    if (options.markDirty !== false) markLocalChanged();
+    if (options.remote !== false) scheduleServerSave();
   }
 
-  function savePlacements() {
+  function savePlacements(options = {}) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(placements));
+    if (options.markDirty !== false) markLocalChanged();
     $("#save-status").textContent = `已保存 ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
-    scheduleServerSave();
+    if (options.remote !== false) scheduleServerSave();
   }
 
   function writeLocalState() {
@@ -552,44 +604,71 @@
   }
 
   function xhsStatePayload() {
+    const meta = loadLocalMeta();
     return {
       creators,
       placements,
       customCreatorTypes,
-      clientUpdatedAt: new Date().toISOString(),
+      clientUpdatedAt: meta.clientUpdatedAt || new Date().toISOString(),
     };
   }
 
   function scheduleServerSave() {
-    if (!apiOnline || applyingServerState) return;
+    if (applyingServerState) return;
     clearTimeout(remoteSaveTimer);
-    remoteSaveTimer = setTimeout(saveServerState, 420);
+    remoteSaveTimer = setTimeout(() => saveServerState({ force: true }), 420);
   }
 
-  async function saveServerState() {
-    if (!apiOnline || applyingServerState) return;
+  function flushServerSave() {
+    clearTimeout(remoteSaveTimer);
+    return saveServerState({ force: true });
+  }
+
+  async function saveServerState(options = {}) {
+    if (applyingServerState) return false;
+    if (!apiOnline && !options.force) return false;
+    if (remoteSaveInFlight) {
+      remoteSaveQueued = true;
+      return remoteSaveInFlight;
+    }
     const payload = xhsStatePayload();
     if (!hasUsefulXhsState(payload)) {
       $("#save-status").textContent = "空数据未同步，避免覆盖云端";
-      return;
+      return false;
     }
-    try {
-      const response = await fetch(API_URL, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (response.status === 409) {
+    $("#save-status").textContent = "正在同步云端...";
+    remoteSaveInFlight = (async () => {
+      try {
+        const response = await fetch(API_URL, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (response.status === 409) {
+          apiOnline = true;
+          $("#save-status").textContent = "云端已阻止异常覆盖，请刷新同步";
+          return false;
+        }
+        if (!response.ok) throw new Error("server save failed");
+        const result = await response.json();
         apiOnline = true;
-        $("#save-status").textContent = "云端已阻止异常覆盖，请刷新同步";
-        return;
+        markServerSynced(result.updatedAt, payload.clientUpdatedAt);
+        $("#save-status").textContent = `云端已保存 ${new Date(result.updatedAt || Date.now()).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+        return true;
+      } catch {
+        apiOnline = false;
+        $("#save-status").textContent = "云端暂不可用，本机改动待同步";
+        return false;
       }
-      if (!response.ok) throw new Error("server save failed");
-      const result = await response.json();
-      $("#save-status").textContent = `云端已保存 ${new Date(result.updatedAt || Date.now()).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
-    } catch {
-      apiOnline = false;
-      $("#save-status").textContent = "云端暂不可用，已先保存到本机";
+    })();
+    try {
+      return await remoteSaveInFlight;
+    } finally {
+      remoteSaveInFlight = null;
+      if (remoteSaveQueued) {
+        remoteSaveQueued = false;
+        await saveServerState({ force: true });
+      }
     }
   }
 
@@ -600,6 +679,12 @@
       const data = await response.json();
       if (!Array.isArray(data.creators) || !Array.isArray(data.placements)) throw new Error("invalid server state");
       const localState = { creators, placements, customCreatorTypes };
+      if (localStateIsNewerThanRemote(data, localState)) {
+        apiOnline = true;
+        $("#save-status").textContent = "检测到本机有未同步改动，正在同步云端";
+        await saveServerState({ force: true });
+        return;
+      }
       if (isRemoteDataRegression(data, localState)) {
         apiOnline = true;
         $("#save-status").textContent = "云端数据疑似为空，已保留本机并回写云端";
@@ -612,6 +697,7 @@
       placements = data.placements.filter((item) => !isLegacyTestPlacement(item)).map((item) => ({ ...item, status: normalizePlacementStatus(item.status, item) }));
       customCreatorTypes = Array.isArray(data.customCreatorTypes) ? data.customCreatorTypes : customCreatorTypes;
       writeLocalState();
+      markServerSynced(data.updatedAt, data.clientUpdatedAt);
       apiOnline = true;
       hydrateControls();
       renderAll();
@@ -1128,7 +1214,7 @@
     };
   }
 
-  function syncCreatorsFromPlacements() {
+  function syncCreatorsFromPlacements(options = {}) {
     placements.forEach((item) => {
       upsertCreator({
         name: item.creator,
@@ -1143,7 +1229,7 @@
         lastCooperationAt: item.publishedAt || item.agreedPublishAt || item.plannedAt || "",
       }, { increment: true, placementId: item.id });
     });
-    saveCreators();
+    saveCreators(options);
   }
 
   async function loadSeedCreators(force = false) {
@@ -1865,7 +1951,7 @@
     `).join("") : `<div class="empty-state">暂无黑名单博主。</div>`;
   }
 
-  function saveClassificationCreator(form) {
+  async function saveClassificationCreator(form) {
     if (!form || !form.reportValidity()) return;
     const data = Object.fromEntries(new FormData(form).entries());
     const nameKey = creatorKey(data.creatorName);
@@ -1905,6 +1991,7 @@
       creatorType: String(data.creatorType || "").trim() || "未分类",
     };
     saveCreators();
+    await flushServerSave();
     const persistedCreators = loadCreators();
     const persisted = persistedCreators.find((item) => creatorKey(item.name) === nameKey);
     const savedCorrectly = persisted &&
@@ -2015,7 +2102,7 @@
     `;
   }
 
-  function savePerformanceReview(form) {
+  async function savePerformanceReview(form) {
     const id = form.dataset.reviewForm;
     const item = placements.find((placement) => placement.id === id);
     if (!item) return;
@@ -2026,6 +2113,7 @@
     item.performanceReviewedAt = new Date().toISOString();
     savePlacements();
     syncCreatorsFromPlacements();
+    await flushServerSave();
     renderAll();
     toast("互动数据已保存，跟进任务已归档");
   }
@@ -2473,7 +2561,7 @@
     $$("[data-close='wechat-dialog']").forEach((button) => {
       button.addEventListener("click", () => $("#wechat-dialog").close());
     });
-    $("#placement-form").addEventListener("submit", (event) => {
+    $("#placement-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       const next = formToPlacement(event.currentTarget);
       const index = placements.findIndex((item) => item.id === next.id);
@@ -2481,20 +2569,22 @@
       else placements.unshift(next);
       savePlacements();
       syncCreatorsFromPlacements();
+      await flushServerSave();
       $("#placement-dialog").close();
       renderAll();
       toast("投放记录已保存");
     });
-    $("[data-delete]").addEventListener("click", () => {
+    $("[data-delete]").addEventListener("click", async () => {
       const id = $("#placement-form").elements.id.value;
       placements = placements.filter((item) => item.id !== id);
       savePlacements();
       syncCreatorsFromPlacements();
+      await flushServerSave();
       $("#placement-dialog").close();
       renderAll();
       toast("投放记录已删除");
     });
-    $("#placement-table").addEventListener("click", (event) => {
+    $("#placement-table").addEventListener("click", async (event) => {
       const briefId = event.target.closest("[data-brief]")?.dataset.brief;
       const editId = event.target.closest("[data-edit]")?.dataset.edit;
       const removeId = event.target.closest("[data-remove]")?.dataset.remove;
@@ -2504,6 +2594,7 @@
         placements = placements.filter((item) => item.id !== removeId);
         savePlacements();
         syncCreatorsFromPlacements();
+        await flushServerSave();
         renderAll();
         toast("投放记录已删除");
       }
@@ -2512,11 +2603,11 @@
       const editId = event.target.closest("[data-edit]")?.dataset.edit;
       if (editId) openForm(placements.find((item) => item.id === editId));
     });
-    $("#followup-list").addEventListener("submit", (event) => {
+    $("#followup-list").addEventListener("submit", async (event) => {
       const form = event.target.closest("[data-review-form]");
       if (!form) return;
       event.preventDefault();
-      savePerformanceReview(form);
+      await savePerformanceReview(form);
     });
     $("#overview-period").addEventListener("change", (event) => {
       overviewPeriod = event.target.value;
@@ -2613,7 +2704,7 @@
     });
     $("#classification-workbench").addEventListener("click", async (event) => {
       if (event.target.closest("[data-classification-save]")) {
-        saveClassificationCreator($("#classification-form"));
+        await saveClassificationCreator($("#classification-form"));
         return;
       }
       const selectId = event.target.closest("[data-classification-select]")?.dataset.classificationSelect;
@@ -2641,11 +2732,11 @@
       const preview = $("#classification-tier-preview");
       if (preview) preview.textContent = creatorTierByFans(fanCountFromText(event.target.value));
     });
-    $("#classification-workbench").addEventListener("submit", (event) => {
+    $("#classification-workbench").addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (event.target.id === "classification-form") saveClassificationCreator(event.target);
+      if (event.target.id === "classification-form") await saveClassificationCreator(event.target);
     });
-    $("#creator-form").addEventListener("submit", (event) => {
+    $("#creator-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       const next = formToCreator(event.currentTarget);
       const index = creators.findIndex((item) => item.id === next.id);
@@ -2656,12 +2747,13 @@
         saveCustomCreatorTypes();
       }
       saveCreators();
+      await flushServerSave();
       $("#creator-dialog").close();
       hydrateControls();
       renderCreators();
       toast("达人资料已保存");
     });
-    $("#blacklist-list").addEventListener("click", (event) => {
+    $("#blacklist-list").addEventListener("click", async (event) => {
       const id = event.target.closest("[data-clear-blacklist]")?.dataset.clearBlacklist;
       if (!id) return;
       const creator = creators.find((item) => item.id === id);
@@ -2669,16 +2761,18 @@
       creator.isBlacklisted = false;
       creator.blacklistReason = "";
       saveCreators();
+      await flushServerSave();
       renderCreators();
       toast("已移出黑名单");
     });
-    $("#add-creator-type").addEventListener("click", () => {
+    $("#add-creator-type").addEventListener("click", async () => {
       const input = $("#new-creator-type");
       const value = input.value.trim();
       if (!value) return;
       if (!creatorTypeOptions().includes(value)) {
         customCreatorTypes.push(value);
         saveCustomCreatorTypes();
+        await flushServerSave();
       }
       input.value = "";
       hydrateControls();
@@ -2687,6 +2781,7 @@
     });
     $("#resync-creators").addEventListener("click", async () => {
       syncCreatorsFromPlacements();
+      await flushServerSave();
       renderAll();
       toast("已根据当前真实台账同步合作记录");
     });
@@ -2707,6 +2802,7 @@
         savePlacements();
         saveCreators();
         syncCreatorsFromPlacements();
+        await flushServerSave();
         renderAll();
         toast("数据已导入");
       } catch {
@@ -2726,6 +2822,7 @@
         placements = [...imported, ...placements];
         savePlacements();
         syncCreatorsFromPlacements();
+        await flushServerSave();
         renderAll();
         toast(`已导入 ${imported.length} 条CSV记录`);
       } catch {
@@ -2763,6 +2860,21 @@
     $$(".view").forEach((view) => view.classList.toggle("active", view.id === `${name}-view`));
   }
 
+  function sendPendingStateOnUnload() {
+    if (!hasPendingLocalSync() || !hasUsefulXhsState({ creators, placements })) return;
+    clearTimeout(remoteSaveTimer);
+    try {
+      fetch(API_URL, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(xhsStatePayload()),
+        keepalive: true,
+      });
+    } catch {
+      // The local pending-sync flag remains, so the next open will retry.
+    }
+  }
+
   hydrateControls();
   bindEvents();
   window.addEventListener("storage", (event) => {
@@ -2774,9 +2886,17 @@
     if (Object.values(WHOLESALE_KEYS).includes(event.key)) loadWholesaleProducts();
   });
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) loadWholesaleProducts();
+    if (document.hidden) sendPendingStateOnUnload();
+    else loadWholesaleProducts();
   });
-  syncCreatorsFromPlacements();
+  window.addEventListener("pagehide", sendPendingStateOnUnload);
+  window.addEventListener("beforeunload", (event) => {
+    if (!hasPendingLocalSync()) return;
+    sendPendingStateOnUnload();
+    event.preventDefault();
+    event.returnValue = "";
+  });
+  syncCreatorsFromPlacements({ markDirty: false, remote: false });
   renderAll();
   loadServerState().then(() => {
     if (!apiOnline) loadRecoveredSnapshot().finally(loadMorningRecovery);
