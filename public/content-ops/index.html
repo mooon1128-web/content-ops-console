@@ -10,7 +10,7 @@
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/app-icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/app-icon.svg" />
-  <link rel="stylesheet" href="/assets/styles" />
+  <link rel="stylesheet" href="/assets/styles?v=bottomnav" />
 </head>
 <body>
   <header class="topbar">
@@ -22,13 +22,14 @@
       </div>
     </div>
     <nav class="tabs" aria-label="主要视图">
-      <button class="tab active" data-view="dashboard">总览</button>
-      <button class="tab" data-view="titles">爆款标题库</button>
-      <button class="tab" data-view="accounts">账号频率</button>
-      <button class="tab" data-view="products">产品库存</button>
-      <button class="tab" data-view="posts">发布记录</button>
-      <button class="tab" data-view="stats">数据统计</button>
-      <button class="tab" data-view="insights">建议</button>
+      <button class="tab mobile-primary active" data-view="dashboard">总览</button>
+      <button class="tab mobile-secondary" data-view="titles">爆款标题库</button>
+      <button class="tab mobile-secondary" data-view="accounts">账号频率</button>
+      <button class="tab mobile-secondary" data-view="products">产品库存</button>
+      <button class="tab mobile-primary" data-view="posts">发布记录</button>
+      <button class="tab mobile-primary" data-view="stats">数据统计</button>
+      <button class="tab mobile-secondary" data-view="insights">建议</button>
+      <button class="tab mobile-more-tab" id="mobile-more-toggle" type="button">更多</button>
     </nav>
     <div class="top-actions">
       <button class="secondary-button small migration-button" id="migrate-file-data" type="button">迁移到测试服务</button>
@@ -42,6 +43,26 @@
     </div>
   </header>
 
+  <div class="mobile-more-panel" id="mobile-more-panel" aria-hidden="true">
+    <button class="mobile-more-backdrop" id="mobile-more-backdrop" type="button" aria-label="关闭更多入口"></button>
+    <section class="mobile-more-sheet" aria-label="更多功能入口">
+      <div class="mobile-sheet-handle"></div>
+      <div class="mobile-sheet-head">
+        <div>
+          <span class="eyebrow">MORE</span>
+          <h2>更多功能</h2>
+        </div>
+        <button class="icon-button" id="mobile-more-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="mobile-more-grid">
+        <button type="button" data-view-jump="titles"><strong>标题库</strong><span>收集爆款标题</span></button>
+        <button type="button" data-view-jump="accounts"><strong>账号</strong><span>频率和定位</span></button>
+        <button type="button" data-view-jump="products"><strong>产品</strong><span>库存与主推</span></button>
+        <button type="button" data-view-jump="insights"><strong>建议</strong><span>下周选题提醒</span></button>
+      </div>
+    </section>
+  </div>
+
   <main class="shell">
     <section class="view active" id="dashboard-view">
       <div class="view-heading">
@@ -51,6 +72,20 @@
         </div>
         <button class="primary-button" data-open="post-dialog">新增发布记录</button>
       </div>
+      <section class="mobile-quick-panel">
+        <div class="panel-head">
+          <div>
+            <span class="eyebrow">SHORTCUTS</span>
+            <h2>快捷入口</h2>
+          </div>
+        </div>
+        <div class="mobile-quick-grid">
+          <button type="button" data-view-jump="titles">标题库</button>
+          <button type="button" data-view-jump="accounts">账号</button>
+          <button type="button" data-view-jump="products">产品</button>
+          <button type="button" data-view-jump="insights">建议</button>
+        </div>
+      </section>
       <section class="recommended-products-panel">
         <div class="panel-head">
           <div>
@@ -462,7 +497,25 @@
   </dialog>
 
   <datalist id="niche-list"></datalist>
+  <nav class="mobile-bottom-nav" aria-label="手机主要视图">
+    <button class="mobile-nav-button active" type="button" data-mobile-view="dashboard">
+      <span class="mobile-nav-icon home"></span>
+      <span>总览</span>
+    </button>
+    <button class="mobile-nav-button" type="button" data-mobile-view="posts">
+      <span class="mobile-nav-icon calendar"></span>
+      <span>发布</span>
+    </button>
+    <button class="mobile-nav-button" type="button" data-mobile-view="stats">
+      <span class="mobile-nav-icon stats"></span>
+      <span>数据</span>
+    </button>
+    <button class="mobile-nav-button" type="button" data-mobile-more>
+      <span class="mobile-nav-icon more"></span>
+      <span>更多</span>
+    </button>
+  </nav>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/assets/app"></script>
+  <script src="/assets/app?v=bottomnav"></script>
 </body>
 </html>

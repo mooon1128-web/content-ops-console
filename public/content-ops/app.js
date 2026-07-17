@@ -1576,15 +1576,39 @@
   }
 
   function bindEvents() {
+    const closeMobileMore = () => {
+      $("#mobile-more-panel")?.classList.remove("open");
+      $("#mobile-more-panel")?.setAttribute("aria-hidden", "true");
+    };
+
     document.addEventListener("click", (event) => {
       const jump = event.target.closest("[data-view-jump]");
       if (!jump) return;
       $$(".form-dialog[open]").forEach((dialog) => dialog.close());
+      closeMobileMore();
       switchView(jump.dataset.viewJump);
     });
-    $$(".tab").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
+    $$(".tab[data-view]").forEach((button) => button.addEventListener("click", () => {
+      closeMobileMore();
+      switchView(button.dataset.view);
+    }));
+    const openMobileMore = () => {
+      const panel = $("#mobile-more-panel");
+      panel.classList.add("open");
+      panel.setAttribute("aria-hidden", "false");
+    };
+    $("#mobile-more-toggle")?.addEventListener("click", openMobileMore);
+    $$("[data-mobile-more]").forEach((button) => button.addEventListener("click", openMobileMore));
+    $$("[data-mobile-view]").forEach((button) => button.addEventListener("click", () => {
+      closeMobileMore();
+      switchView(button.dataset.mobileView);
+    }));
+    ["mobile-more-close", "mobile-more-backdrop"].forEach((id) => {
+      $(`#${id}`)?.addEventListener("click", closeMobileMore);
+    });
     $$("[data-view-jump]").forEach((button) => button.addEventListener("click", () => {
       $$(".form-dialog[open]").forEach((dialog) => dialog.close());
+      closeMobileMore();
       switchView(button.dataset.viewJump);
     }));
     $$("[data-open]").forEach((button) => button.addEventListener("click", () => {
@@ -1889,8 +1913,13 @@
   }
 
   function switchView(view) {
-    $$(".tab").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
+    const secondaryViews = ["titles", "accounts", "products", "insights"];
+    $$(".tab[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
+    $("#mobile-more-toggle")?.classList.toggle("active", secondaryViews.includes(view));
+    $$("[data-mobile-view]").forEach((button) => button.classList.toggle("active", button.dataset.mobileView === view));
+    $$("[data-mobile-more]").forEach((button) => button.classList.toggle("active", secondaryViews.includes(view)));
     $$(".view").forEach((section) => section.classList.toggle("active", section.id === `${view}-view`));
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function exportData() {
