@@ -29,6 +29,7 @@ const mime = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -220,8 +221,8 @@ function hasUsefulXhsState(state) {
 function isDangerousXhsOverwrite(nextState, currentState) {
   const next = xhsStateCounts(nextState);
   const current = xhsStateCounts(currentState);
-  if (!hasUsefulXhsState(currentState)) return false;
   if (!hasUsefulXhsState(nextState)) return true;
+  if (!hasUsefulXhsState(currentState)) return false;
   if (current.creators >= 50 && next.creators < Math.floor(current.creators * 0.5)) return true;
   if (current.placements >= 10 && next.placements < Math.floor(current.placements * 0.5)) return true;
   return false;
