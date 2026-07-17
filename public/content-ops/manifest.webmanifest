@@ -1,0 +1,19 @@
+{
+  "name": "内容运营管理台",
+  "short_name": "内容运营台",
+  "description": "爆款标题库、发布排期、数据统计和账号频率管理工具。",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f5f7f2",
+  "theme_color": "#1f7a72",
+  "icons": [
+    {
+      "src": "/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

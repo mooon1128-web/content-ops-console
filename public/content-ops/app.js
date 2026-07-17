@@ -1,4 +1,10 @@
 (() => {
+  if ("serviceWorker" in navigator && location.protocol !== "file:") {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("/service-worker.js").catch(() => {});
+    });
+  }
+
   const API_URL = "/api/content-ops/state";
   const WHOLESALE_PRODUCTS_API = "/api/content-ops/wholesale-products";
   const DEFAULT_WHOLESALE_ADMIN_URL = "https://pupuhome-wholesale.onrender.com/admin.html";
