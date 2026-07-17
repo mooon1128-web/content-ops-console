@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
+import { readFile, writeFile, mkdir, stat, readdir } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -174,11 +174,44 @@ async function writeContentOpsState(state, options = {}) {
   return nextState;
 }
 
+function emptyXhsState() {
+  return { creators: [], placements: [], customCreatorTypes: [], updatedAt: new Date().toISOString() };
+}
+
+async function restoreLatestXhsBackup() {
+  try {
+    const files = (await readdir(xhsBackupDir))
+      .filter((file) => file.endsWith(".json"))
+      .sort()
+      .reverse();
+    for (const file of files) {
+      try {
+        const parsed = JSON.parse(await readFile(join(xhsBackupDir, file), "utf8"));
+        if (!validXhsState(parsed) || !hasUsefulXhsState(parsed)) continue;
+        await mkdir(dirname(xhsDataFile), { recursive: true });
+        await writeFile(xhsDataFile, JSON.stringify(parsed, null, 2));
+        console.warn(`Restored XHS data from backup ${file}`);
+        return parsed;
+      } catch (error) {
+        console.warn(`Could not restore XHS backup ${file}: ${error.message}`);
+      }
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") console.warn(`Could not inspect XHS backups: ${error.message}`);
+  }
+  return null;
+}
+
 async function ensureXhsDataFile() {
   try {
     await stat(xhsDataFile);
   } catch {
-    let initial = { creators: [], placements: [], customCreatorTypes: [], updatedAt: new Date().toISOString() };
+    const restored = await restoreLatestXhsBackup();
+    if (restored) return;
+    if (process.env.XHS_MEDIA_DATA) {
+      throw new Error("XHS media data file is missing and no non-empty backup is available; restore data before serving");
+    }
+    let initial = emptyXhsState();
     const seedFiles = [bundledXhsDataFile, join(xhsPublicDir, "current-data.json")];
     for (const source of seedFiles) {
       try {
@@ -228,9 +261,19 @@ function isDangerousXhsOverwrite(nextState, currentState) {
   return false;
 }
 
-async function readXhsStateFile() {
-  await ensureXhsDataFile();
-  return JSON.parse(await readFile(xhsDataFile, "utf8"));
+async function readXhsStateFile(options = {}) {
+  try {
+    await ensureXhsDataFile();
+  } catch (error) {
+    if (options.allowEmpty) return emptyXhsState();
+    throw error;
+  }
+  const parsed = JSON.parse(await readFile(xhsDataFile, "utf8"));
+  if (hasUsefulXhsState(parsed)) return parsed;
+  const restored = await restoreLatestXhsBackup();
+  if (restored) return restored;
+  if (options.allowEmpty) return parsed;
+  throw new Error("XHS media data is empty; restore data before serving");
 }
 
 function parseProductsScript(source) {
@@ -589,7 +632,7 @@ const server = createServer(async (request, response) => {
         }
         parsed.customCreatorTypes = parsed.customCreatorTypes || [];
         parsed.updatedAt = new Date().toISOString();
-        const current = await readXhsStateFile();
+        const current = await readXhsStateFile({ allowEmpty: true });
         if (isDangerousXhsOverwrite(parsed, current)) {
           send(response, 409, {
             error: "Refusing to overwrite existing XHS media data with empty or much smaller state",
