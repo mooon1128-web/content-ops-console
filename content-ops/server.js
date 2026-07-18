@@ -15,6 +15,8 @@ const xhsDataFile = process.env.XHS_MEDIA_DATA || bundledXhsDataFile;
 const xhsMediaPassword = process.env.XHS_MEDIA_PASSWORD || "xhs2026";
 const xhsMediaAuthSecret = process.env.XHS_MEDIA_AUTH_SECRET || xhsMediaPassword;
 const xhsMediaAuthCookie = "xhs_media_auth";
+const wholesaleAdminUsername = process.env.WHOLESALE_ADMIN_USERNAME || "";
+const wholesaleAdminPassword = process.env.WHOLESALE_ADMIN_PASSWORD || "";
 const backupDir = join(dirname(dataFile), "backups");
 const xhsBackupDir = join(dirname(xhsDataFile), "xhs-media-backups");
 const supabaseUrl = process.env.SUPABASE_URL?.replace(/\/$/, "");
@@ -175,7 +177,7 @@ async function writeContentOpsState(state, options = {}) {
 }
 
 function emptyXhsState() {
-  return { creators: [], placements: [], customCreatorTypes: [], updatedAt: new Date().toISOString() };
+  return { creators: [], placements: [], customCreatorTypes: [], monthlyBudgets: {}, updatedAt: new Date().toISOString() };
 }
 
 async function restoreLatestXhsBackup() {
@@ -220,6 +222,7 @@ async function ensureXhsDataFile() {
           creators: Array.isArray(parsed.creators) ? parsed.creators : [],
           placements: Array.isArray(parsed.placements) ? parsed.placements : [],
           customCreatorTypes: Array.isArray(parsed.customCreatorTypes) ? parsed.customCreatorTypes : [],
+          monthlyBudgets: parsed.monthlyBudgets && typeof parsed.monthlyBudgets === "object" && !Array.isArray(parsed.monthlyBudgets) ? parsed.monthlyBudgets : {},
           updatedAt: new Date().toISOString(),
         };
         break;
@@ -236,7 +239,8 @@ function validXhsState(parsed) {
   return parsed &&
     Array.isArray(parsed.creators) &&
     Array.isArray(parsed.placements) &&
-    (!parsed.customCreatorTypes || Array.isArray(parsed.customCreatorTypes));
+    (!parsed.customCreatorTypes || Array.isArray(parsed.customCreatorTypes)) &&
+    (!parsed.monthlyBudgets || (typeof parsed.monthlyBudgets === "object" && !Array.isArray(parsed.monthlyBudgets)));
 }
 
 function xhsStateCounts(state) {
@@ -288,6 +292,101 @@ function parseStockNumber(value) {
   return numbers.reduce((sum, item) => sum + Number(item), 0);
 }
 
+function parseCostTerms(formula) {
+  const expression = String(formula || "").replace(/^=/, "").trim();
+  if (!expression || !/^[\d.+\-\s]+$/.test(expression)) return [];
+  return expression.split("+").map((item) => Number(item.trim())).filter(Number.isFinite);
+}
+
+function normalizeCostComponents(components) {
+  return Array.isArray(components) ? components.map((item, index) => ({
+    id: String(item?.id || `cost-${index + 1}`),
+    name: String(item?.name || `成本项 ${index + 1}`).trim() || `成本项 ${index + 1}`,
+    amount: Number(item?.amount || 0),
+  })) : [];
+}
+
+function unitCostFromRecord(record) {
+  return normalizeCostComponents(record?.components).reduce((sum, item) => sum + Number(item.amount || 0), 0);
+}
+
+function costFromSeed(seed) {
+  if (!seed) return null;
+  const shippingDeduction = 2;
+  if (Array.isArray(seed.styles) && seed.styles.length) {
+    const components = seed.styles.map(([name, amount], index) => ({
+      id: `style-${index + 1}`,
+      name: `${name || `款式 ${index + 1}`}（调整后）`,
+      amount: Number(amount || 0) - shippingDeduction,
+    }));
+    return {
+      unitCost: unitCostFromRecord({ components }),
+      components,
+      source: `${seed.source || "成本表"}；每款均已减单件运费 ¥${shippingDeduction}`,
+      includedShippingCost: Number(seed.includedShippingCost || 0),
+    };
+  }
+  const terms = parseCostTerms(seed.formula);
+  const components = terms.length ? terms.map((amount, index) => ({
+    id: `seed-${index + 1}`,
+    name: index === 0 ? "产品主体/制作成本" : index === terms.length - 1 ? "原表单件运费" : `成本项 ${index + 1}`,
+    amount,
+  })) : [{ id: "seed-total", name: "表格成本（含单件运费）", amount: Number(seed.includedShippingCost || 0) }];
+  components.push({ id: "shipping-adjustment", name: "运费减免调整", amount: -shippingDeduction });
+  return {
+    unitCost: unitCostFromRecord({ components }),
+    components,
+    source: seed.source || "成本表",
+    includedShippingCost: Number(seed.includedShippingCost || 0),
+  };
+}
+
+function inheritedCostSeed(seeds, code) {
+  const seed = seeds?.[code];
+  if (!seed) return null;
+  if (seed.inherit && seeds[seed.inherit]) return { ...seeds[seed.inherit], ...seed, formula: seed.formula || seeds[seed.inherit].formula };
+  return seed;
+}
+
+function productCostInfo(product, costSettings = {}, costSeeds = {}) {
+  const saved = costSettings[product.id];
+  if (saved && Array.isArray(saved.components)) {
+    const components = normalizeCostComponents(saved.components);
+    return {
+      unitCost: unitCostFromRecord({ components }),
+      components,
+      source: saved.source || "订货后台成本设置",
+      costConnected: true,
+    };
+  }
+  const seedCost = costFromSeed(inheritedCostSeed(costSeeds, product.code));
+  if (seedCost) return { ...seedCost, costConnected: true };
+  return { unitCost: 0, components: [], source: "", costConnected: false };
+}
+
+async function loadWholesalePrivateData(baseUrl) {
+  if (!wholesaleAdminUsername || !wholesaleAdminPassword) return { costSettings: {}, costSeeds: {}, orders: [], connected: false, reason: "missing-credentials" };
+  const loginResponse = await fetch(new URL("/api/login", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: wholesaleAdminUsername, password: wholesaleAdminPassword }),
+  });
+  if (!loginResponse.ok) return { costSettings: {}, costSeeds: {}, orders: [], connected: false, reason: "login-failed" };
+  const cookie = loginResponse.headers.getSetCookie?.().join("; ") || loginResponse.headers.get("set-cookie") || "";
+  const bootstrapResponse = await fetch(new URL("/api/bootstrap", baseUrl), {
+    headers: cookie ? { Cookie: cookie } : {},
+  });
+  if (!bootstrapResponse.ok) return { costSettings: {}, costSeeds: {}, orders: [], connected: false, reason: "bootstrap-failed" };
+  const payload = await bootstrapResponse.json();
+  return {
+    costSettings: payload.state?.mtm_wholesale_cost_settings_v1 || {},
+    costSeeds: payload.costSeeds || {},
+    orders: Array.isArray(payload.orders) ? payload.orders : [],
+    connected: true,
+    reason: "",
+  };
+}
+
 function mapContentCategory(category = "", name = "") {
   if (/箱包/.test(category)) return "箱包";
   if (/文创|文具|手帐/.test(category)) return "文创文具";
@@ -297,7 +396,7 @@ function mapContentCategory(category = "", name = "") {
   return "毛绒玩具";
 }
 
-function normalizeWholesaleProduct(product, baseUrl) {
+function normalizeWholesaleProduct(product, baseUrl, costInfo = {}) {
   const stockText = String(product.stockText || "").trim();
   const status = String(product.status || "需确认").trim();
   const stock = stockText ? parseStockNumber(stockText) : status === "有货" ? Number(product.packQty || 0) : 0;
@@ -317,6 +416,12 @@ function normalizeWholesaleProduct(product, baseUrl) {
     selected: false,
     focusOrder: 0,
     price: product.price ?? "",
+    unitCost: costInfo.unitCost || "",
+    cost: costInfo.unitCost || "",
+    costSource: costInfo.source || "",
+    costConnected: Boolean(costInfo.costConnected),
+    costComponents: costInfo.components || [],
+    unit: product.unit || "件",
     packText: product.packText || "",
     specifications: product.specifications || "",
     sellingPoint: product.detailDescription || product.specifications || product.packText || "",
@@ -585,8 +690,20 @@ const server = createServer(async (request, response) => {
       const productResponse = await fetch(new URL("/data/products.js", baseUrl));
       if (!productResponse.ok) throw new Error("Could not load wholesale products");
       const script = await productResponse.text();
-      const products = parseProductsScript(script).map((product) => normalizeWholesaleProduct(product, baseUrl));
-      send(response, 200, { products, sourceUrl, syncedAt: new Date().toISOString() });
+      const privateData = await loadWholesalePrivateData(baseUrl);
+      const costSettings = privateData.costSettings || {};
+      const costSeeds = privateData.costSeeds || {};
+      const products = parseProductsScript(script).map((product) => normalizeWholesaleProduct(product, baseUrl, productCostInfo(product, costSettings, costSeeds)));
+      send(response, 200, {
+        products,
+        sourceUrl,
+        syncedAt: new Date().toISOString(),
+        costConnected: privateData.connected,
+        costConnectionReason: privateData.reason,
+        costSettingsCount: Object.keys(costSettings).length,
+        costSeedCount: Object.keys(costSeeds).length,
+        orderCount: privateData.orders.length,
+      });
       return;
     }
     if (request.url?.startsWith("/api/content-ops/state")) {
@@ -631,6 +748,7 @@ const server = createServer(async (request, response) => {
           return;
         }
         parsed.customCreatorTypes = parsed.customCreatorTypes || [];
+        parsed.monthlyBudgets = parsed.monthlyBudgets && typeof parsed.monthlyBudgets === "object" && !Array.isArray(parsed.monthlyBudgets) ? parsed.monthlyBudgets : {};
         parsed.updatedAt = new Date().toISOString();
         const current = await readXhsStateFile({ allowEmpty: true });
         if (isDangerousXhsOverwrite(parsed, current)) {
