@@ -2233,6 +2233,7 @@
       fanCount,
       tier: creatorTierByFans(fanCount),
       creatorType: String(data.creatorType || "").trim() || "未分类",
+      updatedAt: new Date().toISOString(),
     };
     saveCreators();
     await flushServerSave();
@@ -2428,6 +2429,7 @@
       item[field] = number(input?.value);
     });
     item.performanceReviewedAt = new Date().toISOString();
+    item.updatedAt = item.performanceReviewedAt;
     savePlacements();
     syncCreatorsFromPlacements();
     await flushServerSave();
@@ -2705,6 +2707,7 @@
 
   function formToPlacement(form) {
     const data = Object.fromEntries(new FormData(form).entries());
+    const current = placements.find((item) => item.id === data.id) || {};
     const selectedProducts = selectedWholesaleProductsFromForm();
     ["fee", "extraCost", "sampleQuantity", "exposure", "clicks", "likes", "saves", "comments", "shares", "leads", "orders", "gmv", "followUpCount"].forEach((key) => {
       data[key] = number(data[key]);
@@ -2726,6 +2729,8 @@
     data.platform = placementPlatform(data);
     data.status = normalizePlacementStatus(data.status, data);
     data.id = data.id || uid();
+    data.createdAt = current.createdAt || today();
+    data.updatedAt = new Date().toISOString();
     return data;
   }
 
@@ -3142,7 +3147,7 @@
       downloadText(`xhs-media-template-${today()}.csv`, buildCsvTemplate(), "text/csv;charset=utf-8");
     });
     $("#export-data").addEventListener("click", () => {
-      downloadText(`xhs-media-${today()}.json`, JSON.stringify({ placements, creators }, null, 2), "application/json");
+      downloadText(`xhs-media-${today()}.json`, JSON.stringify({ placements, creators, customCreatorTypes, monthlyBudgets }, null, 2), "application/json");
     });
     $("#import-data").addEventListener("change", async (event) => {
       const file = event.target.files?.[0];
@@ -3152,8 +3157,12 @@
         placements = Array.isArray(data) ? data : data.placements;
         if (!Array.isArray(placements)) throw new Error("invalid data");
         if (Array.isArray(data.creators)) creators = data.creators.map(normalizeCreator);
+        if (Array.isArray(data.customCreatorTypes)) customCreatorTypes = data.customCreatorTypes;
+        if (data.monthlyBudgets && typeof data.monthlyBudgets === "object" && !Array.isArray(data.monthlyBudgets)) monthlyBudgets = data.monthlyBudgets;
         savePlacements();
         saveCreators();
+        saveCustomCreatorTypes();
+        saveMonthlyBudgets();
         syncCreatorsFromPlacements();
         await flushServerSave();
         renderAll();
