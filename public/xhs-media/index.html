@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>小红书媒介投放跟踪台</title>
-  <link rel="stylesheet" href="styles.css?v=20260717-safe-save" />
+  <link rel="stylesheet" href="styles.css?v=20260717-budget-costs" />
 </head>
 <body>
   <header class="topbar">
@@ -61,6 +61,7 @@
         </div>
       </div>
       <div id="metric-grid" class="metric-grid"></div>
+      <section class="panel budget-panel" id="budget-panel" aria-label="月度合作预算与成本"></section>
       <section class="panel annual-trend-panel" id="annual-trend-panel" hidden>
         <div class="panel-head">
           <div>
@@ -230,6 +231,15 @@
           <option value="optimize">需优化</option>
           <option value="pause">暂停观察</option>
         </select>
+        <select id="data-entry-filter">
+          <option value="all">全部数据状态</option>
+          <option value="missing">未填写数据</option>
+          <option value="filled">已填写数据</option>
+        </select>
+        <select id="metric-sort">
+          <option value="time">按发布时间排序</option>
+          <option value="likes">按点赞高到低</option>
+        </select>
       </div>
       <div class="table-wrap">
         <table class="data-table placement-data-table">
@@ -293,6 +303,8 @@
           </div>
         </label>
         <label>库存状态<input name="productStatusDisplay" disabled /></label>
+        <label>样品数量<input name="sampleQuantity" type="number" min="1" step="1" /></label>
+        <label>自动产品成本<input name="productCostDisplay" disabled /></label>
         <label class="wide product-link-row"><a id="product-stock-link" href="../wholesale-portal/partner.html" target="_blank" rel="noreferrer">打开订货站查看库存</a></label>
         <label>内容类型<select name="contentType"></select></label>
         <label>平台<select name="platform"></select></label>
@@ -363,6 +375,35 @@
         </div>
         <button type="button" class="icon-button" data-close="outreach-dialog" aria-label="关闭">×</button>
       </div>
+      <div class="outreach-toolbar">
+        <label>新增时间
+          <select id="outreach-added-filter">
+            <option value="today">今天新增</option>
+            <option value="yesterday">昨天新增</option>
+            <option value="7days">近7天新增</option>
+            <option value="all">全部新增时间</option>
+            <option value="no-date">未记录新增时间</option>
+          </select>
+        </label>
+        <label>邮件状态
+          <select id="outreach-email-filter">
+            <option value="unsent-email">有邮箱且未发过</option>
+            <option value="email">全部有邮箱</option>
+            <option value="sent">已发过邮件</option>
+            <option value="all">包含缺邮箱</option>
+          </select>
+        </label>
+        <label>建联状态
+          <select id="outreach-status-filter">
+            <option value="all">全部状态</option>
+            <option value="待建联">待建联</option>
+            <option value="草稿已生成">草稿已生成</option>
+            <option value="已发出">已发出</option>
+            <option value="已回复">已回复</option>
+          </select>
+        </label>
+      </div>
+      <div id="outreach-filter-summary" class="outreach-filter-summary"></div>
       <div id="outreach-preview" class="outreach-draft-list"></div>
       <div class="dialog-actions brief-actions">
         <button type="button" class="secondary-button" data-close="outreach-dialog">取消</button>
@@ -428,6 +469,6 @@
   <datalist id="creator-type-list"></datalist>
   <datalist id="creator-name-list"></datalist>
   <div id="toast" class="toast" role="status"></div>
-  <script src="app.js?v=20260717-safe-save"></script>
+  <script src="app.js?v=20260717-budget-costs"></script>
 </body>
 </html>

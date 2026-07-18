@@ -6,6 +6,7 @@
   const CREATORS_BACKUP_STORAGE_KEY = "xhs_media_creators_before_last_classification_v1";
   const CREATOR_TYPES_STORAGE_KEY = "xhs_media_creator_types_v1";
   const LOCAL_META_STORAGE_KEY = "xhs_media_local_meta_v1";
+  const MONTHLY_BUDGETS_STORAGE_KEY = "xhs_media_monthly_budgets_v1";
   const RECOVERY_DONE_KEY = "xhs_media_recovery_20260712_done";
   const SNAPSHOT_RESTORE_DONE_KEY = "xhs_media_snapshot_restore_20260712_done";
   const MORNING_RECOVERY_DONE_KEY = "xhs_media_morning_recovery_20260713_done";
@@ -19,12 +20,15 @@
   const MIN_SEED_CREATOR_ROWS = 450;
   const LEGACY_TEST_PLACEMENT_IDS = new Set(["placement-1", "placement-2", "placement-3"]);
   const LEGACY_TEST_CREATORS = new Set(["梨梨爱护肤", "小鱼的生活研究所", "月月穿搭日记"]);
-  const WHOLESALE_PRODUCTS_URL = "../wholesale-portal/data/products.json";
+  const WHOLESALE_PRODUCTS_API = "/api/content-ops/wholesale-products";
+  const DEFAULT_WHOLESALE_ADMIN_URL = "https://pupuhome-wholesale.onrender.com/admin.html";
+  const WHOLESALE_PRODUCTS_FALLBACK_URL = "../wholesale-portal/data/products.json";
   const WHOLESALE_PORTAL_URL = "../wholesale-portal/partner.html";
   const WHOLESALE_KEYS = {
     inventory: "mtm_wholesale_inventory_v1",
     productSettings: "mtm_wholesale_product_settings_v1",
     customProducts: "mtm_wholesale_custom_products_v1",
+    costSettings: "mtm_wholesale_cost_settings_v1",
   };
   const statuses = ["待建联", "待寄样", "已寄样", "已签收", "脚本已确认", "等待发布", "已发布"];
   const sampleStatuses = ["未寄样", "待寄样", "寄样中", "已签收", "无需寄样"];
@@ -234,7 +238,9 @@
   let placements = loadPlacements();
   let creators = loadCreators();
   let customCreatorTypes = loadCustomCreatorTypes();
+  let monthlyBudgets = loadMonthlyBudgets();
   let productCatalog = [];
+  let wholesaleCostStatus = { connected: false, orderCount: 0, costSettingsCount: 0, costSeedCount: 0, reason: "" };
   let selectedProduct = "all";
   let classificationCreatorId = "";
   let activeBriefPlacementId = "";
@@ -560,6 +566,21 @@
     if (options.remote !== false) scheduleServerSave();
   }
 
+  function loadMonthlyBudgets() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(MONTHLY_BUDGETS_STORAGE_KEY));
+      return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveMonthlyBudgets(options = {}) {
+    localStorage.setItem(MONTHLY_BUDGETS_STORAGE_KEY, JSON.stringify(monthlyBudgets));
+    if (options.markDirty !== false) markLocalChanged();
+    if (options.remote !== false) scheduleServerSave();
+  }
+
   function savePlacements(options = {}) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(placements));
     if (options.markDirty !== false) markLocalChanged();
@@ -572,6 +593,7 @@
     MIRROR_CREATORS_STORAGE_KEYS.forEach((key) => localStorage.setItem(key, JSON.stringify(creators)));
     localStorage.setItem(STORAGE_KEY, JSON.stringify(placements));
     localStorage.setItem(CREATOR_TYPES_STORAGE_KEY, JSON.stringify(customCreatorTypes));
+    localStorage.setItem(MONTHLY_BUDGETS_STORAGE_KEY, JSON.stringify(monthlyBudgets));
   }
 
   function xhsStateCounts(state) {
@@ -601,6 +623,7 @@
     localStorage.setItem(`xhs_media_creators_backup_${reason}_${stamp}`, JSON.stringify(creators));
     localStorage.setItem(`xhs_media_placements_backup_${reason}_${stamp}`, JSON.stringify(placements));
     localStorage.setItem(`xhs_media_creator_types_backup_${reason}_${stamp}`, JSON.stringify(customCreatorTypes));
+    localStorage.setItem(`xhs_media_monthly_budgets_backup_${reason}_${stamp}`, JSON.stringify(monthlyBudgets));
   }
 
   function xhsStatePayload() {
@@ -609,6 +632,7 @@
       creators,
       placements,
       customCreatorTypes,
+      monthlyBudgets,
       clientUpdatedAt: meta.clientUpdatedAt || new Date().toISOString(),
     };
   }
@@ -678,7 +702,7 @@
       if (!response.ok) throw new Error("server unavailable");
       const data = await response.json();
       if (!Array.isArray(data.creators) || !Array.isArray(data.placements)) throw new Error("invalid server state");
-      const localState = { creators, placements, customCreatorTypes };
+      const localState = { creators, placements, customCreatorTypes, monthlyBudgets };
       if (localStateIsNewerThanRemote(data, localState)) {
         apiOnline = true;
         $("#save-status").textContent = "检测到本机有未同步改动，正在同步云端";
@@ -696,6 +720,7 @@
       creators = data.creators.map(normalizeCreator).filter((item) => !isLegacyTestCreator(item));
       placements = data.placements.filter((item) => !isLegacyTestPlacement(item)).map((item) => ({ ...item, status: normalizePlacementStatus(item.status, item) }));
       customCreatorTypes = Array.isArray(data.customCreatorTypes) ? data.customCreatorTypes : customCreatorTypes;
+      monthlyBudgets = data.monthlyBudgets && typeof data.monthlyBudgets === "object" && !Array.isArray(data.monthlyBudgets) ? data.monthlyBudgets : monthlyBudgets;
       writeLocalState();
       markServerSynced(data.updatedAt, data.clientUpdatedAt);
       apiOnline = true;
@@ -719,15 +744,30 @@
     }
   }
 
+  function firstNumber(...values) {
+    for (const value of values) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    return 0;
+  }
+
   function normalizeProduct(product) {
+    const unitCost = firstNumber(product.unitCost, product.cost, product.productCost, product.purchaseCost);
     return {
       id: String(product.id || product.code || product.name || ""),
-      code: String(product.code || ""),
+      code: String(product.code || product.sku || product.productCode || ""),
       name: String(product.name || ""),
       category: String(product.category || ""),
-      status: String(product.status || "需确认"),
+      status: String(product.status || product.stockStatus || "需确认"),
       price: number(product.price),
-      image: String(product.image || ""),
+      unitCost,
+      costSource: String(product.costSource || (unitCost ? "订货后台成本" : "")),
+      costConnected: Boolean(product.costConnected && unitCost),
+      costComponents: Array.isArray(product.costComponents) ? product.costComponents : [],
+      unit: String(product.unit || "件"),
+      image: String(product.image || product.imageUrl || ""),
+      backendUrl: String(product.backendUrl || ""),
       specifications: String(product.specifications || ""),
       packText: String(product.packText || ""),
     };
@@ -735,9 +775,18 @@
 
   async function loadWholesaleProducts() {
     try {
-      const response = await fetch(WHOLESALE_PRODUCTS_URL, { cache: "no-store" });
+      let baseProducts = [];
+      const response = await fetch(`${WHOLESALE_PRODUCTS_API}?url=${encodeURIComponent(DEFAULT_WHOLESALE_ADMIN_URL)}`, { cache: "no-store" });
       if (!response.ok) throw new Error("products unavailable");
-      const baseProducts = await response.json();
+      const payload = await response.json();
+      baseProducts = Array.isArray(payload.products) ? payload.products : [];
+      wholesaleCostStatus = {
+        connected: Boolean(payload.costConnected),
+        orderCount: number(payload.orderCount),
+        costSettingsCount: number(payload.costSettingsCount),
+        costSeedCount: number(payload.costSeedCount),
+        reason: String(payload.costConnectionReason || ""),
+      };
       const customProducts = loadLocalJson(WHOLESALE_KEYS.customProducts, []);
       const settings = loadLocalJson(WHOLESALE_KEYS.productSettings, {});
       const inventory = loadLocalJson(WHOLESALE_KEYS.inventory, {});
@@ -754,11 +803,22 @@
       hydrateControls();
       renderAll();
     } catch {
-      productCatalog = [];
+      try {
+        const response = await fetch(WHOLESALE_PRODUCTS_FALLBACK_URL, { cache: "no-store" });
+        if (!response.ok) throw new Error("fallback products unavailable");
+        const baseProducts = await response.json();
+        wholesaleCostStatus = { connected: false, orderCount: 0, costSettingsCount: 0, costSeedCount: 0, reason: "fallback" };
+        productCatalog = Array.from(new Map((Array.isArray(baseProducts) ? baseProducts : []).map(normalizeProduct).filter((item) => item.id && item.name).map((item) => [item.id, item])).values());
+        hydrateControls();
+        renderAll();
+      } catch {
+        productCatalog = [];
+      }
     }
   }
 
   function productUrl(product) {
+    if (product?.backendUrl) return product.backendUrl;
     const query = encodeURIComponent(product?.code || product?.name || "");
     return `${WHOLESALE_PORTAL_URL}${query ? `?product=${query}` : ""}`;
   }
@@ -786,6 +846,39 @@
     const products = placementProducts(item);
     if (products.length) return products.map((product) => product.name).join("、");
     return item.product || "未填产品";
+  }
+
+  function sampleQuantity(item) {
+    const quantity = number(item.sampleQuantity || item.productQuantity || 1);
+    return quantity > 0 ? quantity : 1;
+  }
+
+  function productUnitCost(product) {
+    return firstNumber(product?.unitCost, product?.cost, product?.productCost, product?.purchaseCost);
+  }
+
+  function productCostLabel(product) {
+    const cost = productUnitCost(product);
+    return cost ? `${money(cost)} ${product.costSource ? `· ${product.costSource}` : ""}` : "成本未连接";
+  }
+
+  function productsCostTotal(products, quantity = 1) {
+    return uniqueProducts(products).reduce((sum, product) => sum + productUnitCost(product) * quantity, 0);
+  }
+
+  function placementProductCost(item) {
+    const products = placementProducts(item);
+    const liveCost = productsCostTotal(products, sampleQuantity(item));
+    if (liveCost) return liveCost;
+    return item.productCostConnected ? number(item.productCostSnapshot) : 0;
+  }
+
+  function placementCostStatus(item) {
+    const products = placementProducts(item);
+    if (!products.length) return { linked: false, complete: false, missing: true, label: "未关联产品" };
+    const missing = products.filter((product) => !productUnitCost(product)).length;
+    if (missing) return { linked: true, complete: false, missing: true, label: `${missing} 个产品缺成本` };
+    return { linked: true, complete: true, missing: false, label: "已关联成本" };
   }
 
   function placementDate(item) {
@@ -984,6 +1077,14 @@
     return String(item?.createdAt || "").slice(0, 10);
   }
 
+  function creatorEmailSentDate(item) {
+    return String(item?.outreachEmailSentAt || "").slice(0, 10);
+  }
+
+  function creatorHasSentEmail(item) {
+    return Boolean(creatorEmailSentDate(item) || creatorOutreachStatus(item) === "已发出");
+  }
+
   function matchesCreatorAddedFilter(item, filter) {
     const createdAt = creatorCreatedDate(item);
     if (filter === "all") return true;
@@ -1013,6 +1114,62 @@
     ].join("\n");
   }
 
+  function outreachDialogRows() {
+    const addedFilter = $("#outreach-added-filter")?.value || "today";
+    const emailFilter = $("#outreach-email-filter")?.value || "unsent-email";
+    const statusFilter = $("#outreach-status-filter")?.value || "all";
+    return creators
+      .filter((item) => activeOutreachCreatorIds.includes(item.id))
+      .filter(canOutreachTarget)
+      .filter((item) => {
+        if (!matchesCreatorAddedFilter(item, addedFilter)) return false;
+        const hasEmail = Boolean(creatorEmail(item));
+        const hasSent = creatorHasSentEmail(item);
+        if (emailFilter === "unsent-email" && (!hasEmail || hasSent)) return false;
+        if (emailFilter === "email" && !hasEmail) return false;
+        if (emailFilter === "sent" && !hasSent) return false;
+        if (statusFilter !== "all" && creatorOutreachStatus(item) !== statusFilter) return false;
+        return true;
+      });
+  }
+
+  function renderOutreachDialog() {
+    const items = outreachDialogRows();
+    const selectedCount = activeOutreachCreatorIds.length;
+    const emailCount = items.filter((item) => creatorEmail(item)).length;
+    const sentCount = items.filter(creatorHasSentEmail).length;
+    $("#outreach-email-target").textContent = `已选择 ${selectedCount} 位达人，当前筛选 ${items.length} 位`;
+    $("#outreach-filter-summary").innerHTML = `
+      <span>当前可发邮箱 ${emailCount} 位</span>
+      <span>已发过邮件 ${sentCount} 位</span>
+      <span>筛选会保留手动勾选的达人范围</span>
+    `;
+    $("#outreach-preview").innerHTML = items.length ? items.map((item) => {
+      const emailSentAt = creatorEmailSentDate(item);
+      return `
+        <article class="outreach-draft" data-outreach-draft="${escapeHtml(item.id)}">
+          <div class="outreach-draft-head">
+            <div>
+              <span class="eyebrow">DRAFT</span>
+              <strong>${escapeHtml(item.name)}</strong>
+              <div class="outreach-draft-meta">
+                <span>新增：${escapeHtml(creatorCreatedDate(item) || "未记录")}</span>
+                <span>邮件：${emailSentAt ? `已发 ${escapeHtml(emailSentAt)}` : "未发"}</span>
+                ${item.outreachEmailSentCount ? `<span>次数：${number(item.outreachEmailSentCount)}</span>` : ""}
+              </div>
+            </div>
+            <span class="pill ${creatorEmail(item) ? "green" : "amber"}">${creatorEmail(item) ? "有邮箱" : "缺邮箱"}</span>
+          </div>
+          <div class="outreach-editor-grid">
+            <label>收件邮箱<input data-outreach-to value="${escapeHtml(creatorEmail(item))}" placeholder="没有邮箱时可先复制正文" /></label>
+            <label>邮件标题<input data-outreach-subject value="${escapeHtml(creatorOutreachSubject(item))}" /></label>
+            <label class="wide">邮件正文<textarea data-outreach-body rows="8">${escapeHtml(creatorOutreachText(item))}</textarea></label>
+          </div>
+        </article>
+      `;
+    }).join("") : `<div class="empty-state">当前筛选下没有可建联达人。可以切换新增时间或邮件状态。</div>`;
+  }
+
   function openCreatorOutreachDialog(rows) {
     const items = rows.filter(canOutreachTarget);
     if (!items.length) {
@@ -1020,23 +1177,11 @@
       return;
     }
     activeOutreachCreatorIds = items.map((item) => item.id);
-    $("#outreach-email-target").textContent = `已选择 ${items.length} 位达人，可逐条编辑后批量处理`;
-    $("#outreach-preview").innerHTML = items.map((item) => `
-      <article class="outreach-draft" data-outreach-draft="${escapeHtml(item.id)}">
-        <div class="outreach-draft-head">
-          <div>
-            <span class="eyebrow">DRAFT</span>
-            <strong>${escapeHtml(item.name)}</strong>
-          </div>
-          <span class="pill ${creatorEmail(item) ? "green" : "amber"}">${creatorEmail(item) ? "有邮箱" : "缺邮箱"}</span>
-        </div>
-        <div class="outreach-editor-grid">
-          <label>收件邮箱<input data-outreach-to value="${escapeHtml(creatorEmail(item))}" placeholder="没有邮箱时可先复制正文" /></label>
-          <label>邮件标题<input data-outreach-subject value="${escapeHtml(creatorOutreachSubject(item))}" /></label>
-          <label class="wide">邮件正文<textarea data-outreach-body rows="8">${escapeHtml(creatorOutreachText(item))}</textarea></label>
-        </div>
-      </article>
-    `).join("");
+    const hasToday = items.some((item) => matchesCreatorAddedFilter(item, "today"));
+    $("#outreach-added-filter").value = hasToday ? "today" : "all";
+    $("#outreach-email-filter").value = "unsent-email";
+    $("#outreach-status-filter").value = "all";
+    renderOutreachDialog();
     $("#outreach-dialog").showModal();
   }
 
@@ -1049,16 +1194,22 @@
     }));
   }
 
-  function updateCreatorsFromOutreachDrafts(drafts, status) {
+  function updateCreatorsFromOutreachDrafts(drafts, status, options = {}) {
     drafts.forEach((draft) => {
       const creator = creators.find((item) => item.id === draft.id);
       if (!creator) return;
       if (draft.email) creator.email = draft.email;
       if (!String(creator.wechat || "").trim()) creator.outreachStatus = status;
       creator.lastOutreachAt = today();
+      if (options.emailSent && draft.email) {
+        creator.outreachEmailSentAt = today();
+        creator.outreachEmailSentCount = number(creator.outreachEmailSentCount) + 1;
+        creator.outreachEmailSubject = draft.subject;
+      }
     });
     saveCreators();
     renderCreators();
+    if ($("#outreach-dialog")?.open) renderOutreachDialog();
   }
 
   async function copyOutreachDrafts() {
@@ -1088,8 +1239,8 @@
         window.location.href = `mailto:${draft.email}?subject=${subject}&body=${body}`;
       }, index * 650);
     });
-    updateCreatorsFromOutreachDrafts(drafts, "草稿已生成");
-    toast(`已准备打开 ${emailDrafts.length} 封邮件草稿`);
+    updateCreatorsFromOutreachDrafts(emailDrafts, "已发出", { emailSent: true });
+    toast(`已准备打开 ${emailDrafts.length} 封邮件草稿，并已记录发送日期`);
   }
 
   function openWechatQueueDialog(rows) {
@@ -1264,6 +1415,7 @@
 
   function feedbackType(item, values = calc(item)) {
     if (item.status !== "已发布") return "optimize";
+    if (!hasPlacementPerformanceData(item)) return "pending-data";
     if (number(item.likes) < 200) return "pause";
     if (number(item.likes) >= 500 || number(item.saves) >= 200 || number(item.comments) >= 50) return "scale";
     return "optimize";
@@ -1272,17 +1424,20 @@
   function feedbackLabel(type) {
     if (type === "scale") return "可加投";
     if (type === "pause") return "暂停观察";
+    if (type === "pending-data") return "待填数据";
     return "需优化";
   }
 
   function feedbackClass(type) {
     if (type === "scale") return "";
     if (type === "pause") return "coral";
+    if (type === "pending-data") return "blue";
     return "amber";
   }
 
   function feedbackReason(item) {
     if (item.status !== "已发布") return "还未进入完整数据期，先盯排期、脚本卖点和发布时间。";
+    if (!hasPlacementPerformanceData(item)) return `${publishedAgeText(item) || "已发布"}，先补录点赞、收藏、评论后再判断反馈。`;
     if (number(item.likes) < 200) return `点赞 ${compact(item.likes)}，数据较差，优先复查选人和内容方向。`;
     if (number(item.likes) >= 500 || number(item.saves) >= 200 || number(item.comments) >= 50) {
       return `${compact(item.likes)}赞 · ${compact(item.saves)}收藏 · ${compact(item.comments)}评论，互动表现较好。`;
@@ -1388,6 +1543,47 @@
     });
   }
 
+  function budgetMonthsForPeriod(period) {
+    if (/^\d{4}$/.test(period)) {
+      return Array.from({ length: 12 }, (_, index) => `${period}-${String(index + 1).padStart(2, "0")}`);
+    }
+    return /^\d{4}-\d{2}$/.test(period) ? [period] : [];
+  }
+
+  function budgetForPeriod(period) {
+    return budgetMonthsForPeriod(period).reduce((sum, month) => sum + number(monthlyBudgets[month]), 0);
+  }
+
+  function periodFinanceSummary(period) {
+    const rows = placementsForPeriod(period);
+    const paidCooperation = rows.reduce((sum, item) => sum + number(item.fee), 0);
+    const fulfillmentCost = rows.reduce((sum, item) => sum + number(item.extraCost), 0);
+    const productCost = rows.reduce((sum, item) => sum + placementProductCost(item), 0);
+    const orders = rows.reduce((sum, item) => sum + number(item.orders), 0);
+    const gmv = rows.reduce((sum, item) => sum + number(item.gmv), 0);
+    const budget = budgetForPeriod(period);
+    const linkedProducts = rows.filter((item) => placementCostStatus(item).linked).length;
+    const missingCost = rows.filter((item) => placementCostStatus(item).missing).length;
+    const paidCount = rows.filter((item) => number(item.fee) > 0).length;
+    const totalCost = paidCooperation + fulfillmentCost + productCost;
+    return {
+      rows,
+      budget,
+      paidCooperation,
+      paidCount,
+      remaining: budget - paidCooperation,
+      budgetRate: budget ? paidCooperation / budget : 0,
+      fulfillmentCost,
+      productCost,
+      totalCost,
+      orders,
+      gmv,
+      linkedProducts,
+      missingCost,
+      roas: totalCost ? gmv / totalCost : NaN,
+    };
+  }
+
   function filterSelectedProduct(rows) {
     if (selectedProduct === "all") return rows;
     return rows.filter((item) => {
@@ -1440,7 +1636,7 @@
           const products = placementProducts(item);
           return products.length ? products.some((catalogProduct) => catalogProduct.name === product) : item.product === product;
         });
-        const spend = rows.reduce((sum, item) => sum + calc(item).spend, 0);
+        const spend = rows.reduce((sum, item) => sum + calc(item).spend + placementProductCost(item), 0);
         const gmv = rows.reduce((sum, item) => sum + number(item.gmv), 0);
         const latest = rows.map(placementDate).sort().at(-1) || "暂无日期";
         const catalog = rows.flatMap(placementProducts).find((item) => item.name === product) || productForPlacement(rows[0] || {});
@@ -1450,21 +1646,65 @@
       .sort((a, b) => b.rows.length - a.rows.length || String(b.latest).localeCompare(String(a.latest)))
       .slice(0, 3);
     if (selectedProduct !== "all" && !products.some((item) => item.product === selectedProduct)) selectedProduct = "all";
-    const totalSpend = periodRows.reduce((sum, item) => sum + calc(item).spend, 0);
+    const totalSpend = periodRows.reduce((sum, item) => sum + calc(item).spend + placementProductCost(item), 0);
     const totalGmv = periodRows.reduce((sum, item) => sum + number(item.gmv), 0);
     $("#product-board-title").textContent = `${label} 合作产品 Top 3`;
     $("#product-board").innerHTML = `
       <div class="product-chip ${selectedProduct === "all" ? "active" : ""}" data-product="all" role="button" tabindex="0">
         <strong>${label} 全部产品</strong>
-        <span>${periodRows.length} 条 · ROAS ${totalSpend ? ratio(totalGmv / totalSpend) : "无"}</span>
+          <span>${periodRows.length} 条 · 含产品成本 ROAS ${totalSpend ? ratio(totalGmv / totalSpend) : "无"}</span>
       </div>
       ${products.map((item) => `
         <div class="product-chip ${selectedProduct === item.product ? "active" : ""}" data-product="${escapeHtml(item.product)}" role="button" tabindex="0">
           <strong>${escapeHtml(item.product)}</strong>
-          <span>${item.rows.length} 条 · ROAS ${item.spend ? ratio(item.gmv / item.spend) : "无"}</span>
+          <span>${item.rows.length} 条 · 含产品成本 ROAS ${item.spend ? ratio(item.gmv / item.spend) : "无"}</span>
           ${item.catalog ? `<a href="${escapeHtml(productUrl(item.catalog))}" target="_blank" rel="noreferrer" class="product-stock-link">库存</a>` : ""}
         </div>
       `).join("")}
+    `;
+  }
+
+  function renderBudgetPanel() {
+    const panel = $("#budget-panel");
+    if (!panel) return;
+    const label = periodLabel(overviewPeriod);
+    const summary = periodFinanceSummary(overviewPeriod);
+    const isMonthly = /^\d{4}-\d{2}$/.test(overviewPeriod);
+    const progress = summary.budget ? Math.min(summary.budgetRate, 1) : 0;
+    const tone = summary.budget && summary.paidCooperation > summary.budget ? "over" : summary.budgetRate >= 0.8 ? "warning" : "";
+    const budgetNote = isMonthly
+      ? "只扣合作费；免费合作不会占用预算"
+      : "全年视图汇总已设置的月度预算";
+    const inputValue = isMonthly ? number(monthlyBudgets[overviewPeriod]) || "" : "";
+    const connectionNote = wholesaleCostStatus.connected
+      ? `订货后台已连接：${wholesaleCostStatus.costSeedCount + wholesaleCostStatus.costSettingsCount} 组成本，${wholesaleCostStatus.orderCount} 笔订单`
+      : "订货后台成本未连接，请先配置后台账号环境变量";
+    const costNote = summary.missingCost
+      ? `${summary.missingCost} 条投放未完整关联真实成本`
+      : "已按订货后台真实成本累计";
+    panel.innerHTML = `
+      <div class="budget-head">
+        <div>
+          <span class="eyebrow">MONTHLY BUDGET</span>
+          <h2>${escapeHtml(label)} 合作预算与成本</h2>
+          <p>${escapeHtml(`${budgetNote}；${connectionNote}`)}</p>
+        </div>
+        <label class="budget-input">
+          <span>${isMonthly ? "本月合作预算" : "月预算汇总"}</span>
+          <input id="monthly-budget-input" type="number" min="0" step="100" value="${escapeHtml(inputValue)}" ${isMonthly ? "" : "disabled"} placeholder="${isMonthly ? "填写预算" : money(summary.budget)}" />
+        </label>
+      </div>
+      <div class="budget-progress ${tone}">
+        <span style="width:${Math.round(progress * 100)}%"></span>
+      </div>
+      <div class="budget-grid">
+        <div><span>付费合作已用</span><strong>${money(summary.paidCooperation)}</strong><small>${summary.paidCount} 条付费合作</small></div>
+        <div><span>预算剩余</span><strong class="${summary.remaining < 0 ? "negative" : ""}">${summary.budget ? money(summary.remaining) : "未设置"}</strong><small>${summary.budget ? `已用 ${Math.round(summary.budgetRate * 100)}%` : "先填写本月预算"}</small></div>
+        <div><span>产品成本累计</span><strong>${summary.productCost ? money(summary.productCost) : "未连接"}</strong><small>${escapeHtml(costNote)}</small></div>
+        <div><span>样品/履约成本</span><strong>${money(summary.fulfillmentCost)}</strong><small>来自台账手填成本</small></div>
+        <div><span>订单与GMV</span><strong>${compact(summary.orders)} 单</strong><small>GMV ${money(summary.gmv)}</small></div>
+        <div><span>总成本口径</span><strong>${money(summary.totalCost)}</strong><small>合作费 + 产品成本 + 履约成本</small></div>
+      </div>
     `;
   }
 
@@ -1473,13 +1713,13 @@
     const likes = rows.reduce((sum, item) => sum + number(item.likes), 0);
     const saves = rows.reduce((sum, item) => sum + number(item.saves), 0);
     const comments = rows.reduce((sum, item) => sum + number(item.comments), 0);
-    const poor = rows.filter((item) => number(item.likes) < 200).length;
+    const poor = rows.filter((item) => hasPlacementPerformanceData(item) && number(item.likes) < 200).length;
     const metrics = [
       ["已发布投放", compact(rows.length), periodLabel(overviewPeriod), "accent-teal"],
       ["点赞", compact(likes), `平均 ${rows.length ? compact(Math.round(likes / rows.length)) : 0}`, "accent-blue"],
       ["收藏", compact(saves), `平均 ${rows.length ? compact(Math.round(saves / rows.length)) : 0}`, "accent-amber"],
       ["评论", compact(comments), `平均 ${rows.length ? compact(Math.round(comments / rows.length)) : 0}`, "accent-violet"],
-      ["数据较差", compact(poor), "点赞少于 200，台账置顶", "accent-coral"],
+      ["数据较差", compact(poor), "已录入数据且点赞少于 200", "accent-coral"],
     ];
     $("#metric-grid").innerHTML = metrics.map(([label, value, note, cls]) => `
       <article class="metric-card ${cls}">
@@ -1497,21 +1737,24 @@
       const names = placementProducts(item).map((product) => product.name);
       const productNamesForRow = names.length ? names : [item.product || "未填产品"];
       productNamesForRow.forEach((name) => {
-        const group = map.get(name) || { name, rows: [], spend: 0, gmv: 0, exposure: 0, interactions: 0, clicks: 0, leads: 0 };
+        const group = map.get(name) || { name, rows: [], spend: 0, productCost: 0, gmv: 0, exposure: 0, interactions: 0, clicks: 0, leads: 0, orders: 0 };
         const values = calc(item);
         group.rows.push(item);
         group.spend += values.spend;
+        group.productCost += placementProductCost(item);
         group.gmv += number(item.gmv);
         group.exposure += number(item.exposure);
         group.interactions += values.interactions;
         group.clicks += number(item.clicks);
         group.leads += number(item.leads);
+        group.orders += number(item.orders);
         map.set(name, group);
       });
       return map;
     }, new Map()).values()).map((group) => ({
       ...group,
-      roas: group.spend ? group.gmv / group.spend : 0,
+      totalCost: group.spend + group.productCost,
+      roas: group.spend + group.productCost ? group.gmv / (group.spend + group.productCost) : 0,
       interactionRate: group.clicks ? group.interactions / group.clicks : 0,
     }));
     const creatorsByLikes = Array.from(rows.reduce((map, item) => {
@@ -1530,7 +1773,7 @@
         ${items.length ? `<ol>${items.map((item) => `
           <li>
             <strong>${escapeHtml(item.name)}</strong>
-            <span>${item.rows.length} 条 · ROAS ${ratio(item.roas)} · 互动率 ${percent(item.interactionRate)}</span>
+            <span>${item.rows.length} 条 · 订单 ${compact(item.orders)} · 产品成本 ${money(item.productCost)} · ROAS ${ratio(item.roas)}</span>
           </li>
         `).join("")}</ol>` : `<p class="muted">${empty}</p>`}
       </article>
@@ -1793,7 +2036,8 @@
         </td>
         <td>
           <span class="pill ${outreachStatusClass(creatorOutreachStatus(item))}">${escapeHtml(creatorOutreachStatus(item))}</span>
-          <div class="muted">${escapeHtml(item.lastOutreachAt || "尚未建联")}</div>
+          <div class="muted">邮件：${creatorEmailSentDate(item) ? `已发 ${escapeHtml(creatorEmailSentDate(item))}` : "未发"}</div>
+          <div class="muted">最近建联：${escapeHtml(item.lastOutreachAt || "未记录")}</div>
         </td>
         <td>
           ${item.isBlacklisted ? `<span class="pill coral">黑名单</span><div class="muted">${escapeHtml(item.blacklistReason || "未填写原因")}</div>` : `<span class="pill gray">正常</span>`}
@@ -2018,71 +2262,144 @@
     const status = $("#status-filter")?.value || "all";
     const content = $("#content-filter")?.value || "all";
     const result = $("#result-filter")?.value || "all";
+    const dataEntry = $("#data-entry-filter")?.value || "all";
     return filterSelectedProduct(placementsForPeriod(ledgerPeriod)).filter((item) => {
       const haystack = [item.creator, item.product, item.noteTitle, item.owner, item.contactMethod, item.creatorResponse, item.notes, placementPlatform(item)].join(" ").toLowerCase();
       if (query && !haystack.includes(query)) return false;
       if (status !== "all" && item.status !== status) return false;
       if (content !== "all" && item.contentType !== content) return false;
       if (result !== "all" && feedbackType(item) !== result) return false;
+      if (dataEntry === "missing" && hasPlacementPerformanceData(item)) return false;
+      if (dataEntry === "filled" && !hasPlacementPerformanceData(item)) return false;
       return true;
-    }).sort((a, b) => {
-      const day7A = isDay7ReviewDue(a);
-      const day7B = isDay7ReviewDue(b);
-      const poorA = Boolean(a.publishedAt) && number(a.likes) < 200;
-      const poorB = Boolean(b.publishedAt) && number(b.likes) < 200;
-      return Number(day7B) - Number(day7A) || Number(poorB) - Number(poorA) || String(b.publishedAt || b.agreedPublishAt || "").localeCompare(String(a.publishedAt || a.agreedPublishAt || ""));
     });
+  }
+
+  function publishedAge(item) {
+    if (item.status !== "已发布" || !item.publishedAt) return NaN;
+    return daysSince(item.publishedAt);
+  }
+
+  function publishedAgeText(item) {
+    if (item.status !== "已发布") return "";
+    if (!item.publishedAt) return "已发布 · 实际日期未填";
+    const age = publishedAge(item);
+    return Number.isFinite(age) ? `已发布${age}天` : "已发布 · 日期待确认";
+  }
+
+  function missingMetricSort(a, b) {
+    const dueA = isDay7ReviewDue(a);
+    const dueB = isDay7ReviewDue(b);
+    const ageA = Number.isFinite(publishedAge(a)) ? publishedAge(a) : -1;
+    const ageB = Number.isFinite(publishedAge(b)) ? publishedAge(b) : -1;
+    return Number(dueB) - Number(dueA) ||
+      ageB - ageA ||
+      String(b.publishedAt || b.agreedPublishAt || b.plannedAt || "").localeCompare(String(a.publishedAt || a.agreedPublishAt || a.plannedAt || ""));
+  }
+
+  function filledMetricSort(a, b) {
+    const mode = $("#metric-sort")?.value || "time";
+    if (mode === "likes") {
+      return number(b.likes) - number(a.likes) ||
+        number(b.saves) - number(a.saves) ||
+        number(b.comments) - number(a.comments) ||
+        String(b.publishedAt || b.agreedPublishAt || "").localeCompare(String(a.publishedAt || a.agreedPublishAt || ""));
+    }
+    return String(b.publishedAt || b.agreedPublishAt || b.plannedAt || "").localeCompare(String(a.publishedAt || a.agreedPublishAt || a.plannedAt || "")) ||
+      number(b.likes) - number(a.likes);
+  }
+
+  function ledgerGroupHeader(title, count, note, tone = "gray") {
+    return `
+      <tr class="ledger-group-row ${tone}">
+        <td colspan="8">
+          <div class="ledger-group-title">
+            <strong>${escapeHtml(title)}</strong>
+            <span>${compact(count)} 条</span>
+            <small>${escapeHtml(note)}</small>
+          </div>
+        </td>
+      </tr>
+    `;
+  }
+
+  function placementRow(item) {
+    const values = calc(item);
+    const type = feedbackType(item, values);
+    const task = followupTask(item);
+    const catalogProducts = placementProducts(item);
+    const productText = catalogProducts.length
+      ? catalogProducts.map((product) => `<a href="${escapeHtml(productUrl(product))}" target="_blank" rel="noreferrer">${escapeHtml(product.name)}</a>`).join("、")
+      : escapeHtml(placementProductName(item));
+    const creatorRecord = creators.find((creator) => creatorKey(creator.name) === creatorKey(item.creator));
+    const creatorProfile = normalizeProfileLink(creatorRecord?.profileLink || item.creatorProfile);
+    const creatorName = creatorProfile
+      ? `<a class="creator-profile-link" href="${escapeHtml(creatorProfile)}" target="_blank" rel="noreferrer">${escapeHtml(item.creator)}</a>`
+      : `<span>${escapeHtml(item.creator)}</span>`;
+    const agreedPublishAt = item.agreedPublishAt || "未填写";
+    const publishedAt = item.publishedAt || "未填写";
+    const ageText = publishedAgeText(item);
+    const placementNotes = String(item.notes || "").trim() || "未填写";
+    const platform = placementPlatform(item);
+    const missingMetrics = !hasPlacementPerformanceData(item);
+    const isDay7Due = isDay7ReviewDue(item);
+    const isPoorPerformance = hasPlacementPerformanceData(item) && Boolean(item.publishedAt) && number(item.likes) < 200;
+    const productCost = placementProductCost(item);
+    const costStatus = placementCostStatus(item);
+    const link = item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.noteTitle || item.product)}</a>` : `<strong>${escapeHtml(item.noteTitle || item.product)}</strong>`;
+    return `
+      <tr class="${isPoorPerformance ? "poor-performance-row" : ""} ${isDay7Due ? "day7-due-row" : ""}">
+        <td><span class="pill ${statusClass(item.status)}">${escapeHtml(item.status)}</span></td>
+        <td>
+          <div class="cell-title">
+            <div class="placement-title-line">${link}${isPoorPerformance ? `<span class="pill coral">数据较差</span>` : ""}${isDay7Due ? `<span class="pill coral">发布7天待填</span>` : ""}</div>
+            <span class="muted">${creatorName} · ${escapeHtml(item.creatorTier)} · ${productText}</span>
+            <span class="placement-detail-line">
+              <span>约定发布：${escapeHtml(agreedPublishAt)}</span>
+              <span>实际发布：${escapeHtml(publishedAt)}</span>
+              ${ageText ? `<span class="${missingMetrics && item.status === "已发布" ? "publish-age-warning" : ""}">${escapeHtml(ageText)}</span>` : ""}
+              <span>备注：${escapeHtml(placementNotes)}</span>
+            </span>
+            <span class="platform-badge ${platform === "抖音" ? "douyin" : "xhs"}">${escapeHtml(platform)}</span>
+          </div>
+        </td>
+        <td>${money(values.spend)}<div class="muted">合作 ${money(item.fee)} / 其他 ${money(item.extraCost)}</div><div class="muted">产品 ${money(productCost)} · ${escapeHtml(costStatus.label)}</div></td>
+        <td>
+          ${ledgerMetricsDisplay(item)}
+        </td>
+        <td>${compact(item.leads)} 线索<div class="muted">${compact(item.orders)} 单 · ${money(item.gmv)}</div></td>
+        <td><span class="pill ${task.priority === "最高" ? "coral" : task.priority === "高" ? "amber" : task.priority === "中" ? "blue" : "gray"}">${task.priority}</span><div class="muted">${escapeHtml(task.action)}</div></td>
+        <td><span class="pill ${feedbackClass(type)}">${feedbackLabel(type)}</span><div class="muted">${feedbackReason(item)}</div></td>
+        <td>
+          <button class="text-button" data-brief="${escapeHtml(item.id)}">合作确认</button>
+          <button class="text-button" data-edit="${item.id}">编辑</button>
+          <button class="text-button danger-text" data-remove="${item.id}">删除</button>
+        </td>
+      </tr>
+    `;
   }
 
   function renderTable() {
     const rows = filteredPlacements();
-    $("#placement-table").innerHTML = rows.length ? rows.map((item) => {
-      const values = calc(item);
-      const type = feedbackType(item, values);
-      const task = followupTask(item);
-      const catalogProducts = placementProducts(item);
-      const productText = catalogProducts.length
-        ? catalogProducts.map((product) => `<a href="${escapeHtml(productUrl(product))}" target="_blank" rel="noreferrer">${escapeHtml(product.name)}</a>`).join("、")
-        : escapeHtml(placementProductName(item));
-      const creatorRecord = creators.find((creator) => creatorKey(creator.name) === creatorKey(item.creator));
-      const creatorProfile = normalizeProfileLink(creatorRecord?.profileLink || item.creatorProfile);
-      const creatorName = creatorProfile
-        ? `<a class="creator-profile-link" href="${escapeHtml(creatorProfile)}" target="_blank" rel="noreferrer">${escapeHtml(item.creator)}</a>`
-        : `<span>${escapeHtml(item.creator)}</span>`;
-      const agreedPublishAt = item.agreedPublishAt || "未填写";
-      const placementNotes = String(item.notes || "").trim() || "未填写";
-      const platform = placementPlatform(item);
-      const isPoorPerformance = Boolean(item.publishedAt) && number(item.likes) < 200;
-      const link = item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.noteTitle || item.product)}</a>` : `<strong>${escapeHtml(item.noteTitle || item.product)}</strong>`;
-      return `
-        <tr class="${isPoorPerformance ? "poor-performance-row" : ""}">
-          <td><span class="pill ${statusClass(item.status)}">${escapeHtml(item.status)}</span></td>
-          <td>
-            <div class="cell-title">
-              <div class="placement-title-line">${link}${isPoorPerformance ? `<span class="pill coral">数据较差</span>` : ""}</div>
-              <span class="muted">${creatorName} · ${escapeHtml(item.creatorTier)} · ${productText}</span>
-              <span class="placement-detail-line">
-                <span>约定发布：${escapeHtml(agreedPublishAt)}</span>
-                <span>备注：${escapeHtml(placementNotes)}</span>
-              </span>
-              <span class="platform-badge ${platform === "抖音" ? "douyin" : "xhs"}">${escapeHtml(platform)}</span>
-            </div>
-          </td>
-          <td>${money(values.spend)}<div class="muted">合作 ${money(item.fee)} / 其他 ${money(item.extraCost)}</div></td>
-          <td>
-            ${ledgerMetricsDisplay(item)}
-          </td>
-          <td>${compact(item.leads)} 线索<div class="muted">${compact(item.orders)} 单 · ${money(item.gmv)}</div></td>
-          <td><span class="pill ${task.priority === "最高" ? "coral" : task.priority === "高" ? "amber" : task.priority === "中" ? "blue" : "gray"}">${task.priority}</span><div class="muted">${escapeHtml(task.action)}</div></td>
-          <td><span class="pill ${feedbackClass(type)}">${feedbackLabel(type)}</span><div class="muted">${feedbackReason(item)}</div></td>
-          <td>
-            <button class="text-button" data-brief="${escapeHtml(item.id)}">合作确认</button>
-            <button class="text-button" data-edit="${item.id}">编辑</button>
-            <button class="text-button danger-text" data-remove="${item.id}">删除</button>
-          </td>
-        </tr>
-      `;
-    }).join("") : `<tr><td colspan="8"><div class="empty-state">暂无匹配投放记录。</div></td></tr>`;
+    if (!rows.length) {
+      $("#placement-table").innerHTML = `<tr><td colspan="8"><div class="empty-state">暂无匹配投放记录。</div></td></tr>`;
+      return;
+    }
+    const missingRows = rows.filter((item) => !hasPlacementPerformanceData(item)).sort(missingMetricSort);
+    const filledRows = rows.filter(hasPlacementPerformanceData).sort(filledMetricSort);
+    const dataEntry = $("#data-entry-filter")?.value || "all";
+    const sections = [];
+    if (dataEntry !== "filled" && missingRows.length) {
+      const dueCount = missingRows.filter(isDay7ReviewDue).length;
+      sections.push(ledgerGroupHeader("未填写互动数据", missingRows.length, dueCount ? `${dueCount} 条已发布满7天，已置顶` : "已发布内容会显示发布天数", "coral"));
+      sections.push(...missingRows.map(placementRow));
+    }
+    if (dataEntry !== "missing" && filledRows.length) {
+      const sortLabel = ($("#metric-sort")?.value || "time") === "likes" ? "按点赞从高到低" : "按发布时间从新到旧";
+      sections.push(ledgerGroupHeader("已填写互动数据", filledRows.length, sortLabel, "teal"));
+      sections.push(...filledRows.map(placementRow));
+    }
+    $("#placement-table").innerHTML = sections.join("") || `<tr><td colspan="8"><div class="empty-state">当前筛选下没有记录。</div></td></tr>`;
   }
 
   function ledgerMetricsDisplay(item) {
@@ -2151,6 +2468,7 @@
     renderProductBoard();
     renderCreators();
     renderMetrics();
+    renderBudgetPanel();
     renderMonthlyStats();
     renderAnnualTrend();
     renderStatusBoard();
@@ -2216,6 +2534,18 @@
     return uniqueProducts(ids.map(findCatalogProduct).filter(Boolean));
   }
 
+  function updatePlacementProductCostDisplay() {
+    const form = $("#placement-form");
+    if (!form?.elements.productCostDisplay) return;
+    const products = selectedWholesaleProductsFromForm();
+    const quantity = sampleQuantity({ sampleQuantity: form.elements.sampleQuantity?.value || 1 });
+    const cost = productsCostTotal(products, quantity);
+    const missing = products.filter((product) => !productUnitCost(product)).length;
+    form.elements.productCostDisplay.value = products.length
+      ? `${cost ? money(cost) : "成本未连接"}${quantity > 1 ? `（每个产品 ${quantity} 件）` : ""}${missing ? `，${missing} 个缺真实成本` : ""}`
+      : "未关联订货产品";
+  }
+
   function renderProductPickerOptions() {
     const menu = $("#product-picker-menu");
     const list = $("#product-picker-options");
@@ -2234,7 +2564,7 @@
           <span class="checkmark">${selected ? "✓" : ""}</span>
           <span>
             <strong>${escapeHtml(productOptionLabel(product))}</strong>
-            <small>${escapeHtml(product.category || "未分类")} · ${escapeHtml(product.status || "需确认")}</small>
+            <small>${escapeHtml(product.category || "未分类")} · ${escapeHtml(product.status || "需确认")} · 成本 ${escapeHtml(productCostLabel(product))}</small>
           </span>
         </button>
       `;
@@ -2276,6 +2606,7 @@
     form.elements.productStatusDisplay.value = selected.length ? selected.map((product) => `${product.code || product.name}：${product.status || "需确认"}`).join("；") : "";
     form.elements.productUrl.value = selected.length === 1 ? productUrl(selected[0]) : "";
     if (selected.length && updateProductText) form.elements.product.value = selected.map((product) => product.name).join("、");
+    updatePlacementProductCostDisplay();
     if (link) {
       link.href = selected.length === 1 ? productUrl(selected[0]) : WHOLESALE_PORTAL_URL;
       link.textContent = selected.length === 1
@@ -2297,6 +2628,7 @@
         if (form.elements[key]) form.elements[key].value = value;
       });
       form.elements.requiresDraftReview.value = needsDraftReview(item) ? "yes" : "no";
+      form.elements.sampleQuantity.value = sampleQuantity(item);
       applyWholesaleProductsToForm(placementProducts(item));
     } else {
       form.elements.id.value = "";
@@ -2309,6 +2641,7 @@
       form.elements.deliverableProgress.value = "0/1";
       form.elements.followUpCount.value = 0;
       form.elements.plannedAt.value = today();
+      form.elements.sampleQuantity.value = 1;
       applyWholesaleProductsToForm([]);
     }
     dialog.showModal();
@@ -2373,9 +2706,10 @@
   function formToPlacement(form) {
     const data = Object.fromEntries(new FormData(form).entries());
     const selectedProducts = selectedWholesaleProductsFromForm();
-    ["fee", "extraCost", "exposure", "clicks", "likes", "saves", "comments", "shares", "leads", "orders", "gmv", "followUpCount"].forEach((key) => {
+    ["fee", "extraCost", "sampleQuantity", "exposure", "clicks", "likes", "saves", "comments", "shares", "leads", "orders", "gmv", "followUpCount"].forEach((key) => {
       data[key] = number(data[key]);
     });
+    data.sampleQuantity = sampleQuantity(data);
     data.productIds = selectedProducts.map((product) => product.id);
     data.productCodes = selectedProducts.map((product) => product.code).filter(Boolean);
     data.productId = data.productIds[0] || "";
@@ -2383,6 +2717,10 @@
     data.productCategory = Array.from(new Set(selectedProducts.map((product) => product.category).filter(Boolean))).join(" / ");
     data.productStatus = Array.from(new Set(selectedProducts.map((product) => product.status).filter(Boolean))).join(" / ");
     data.productUrl = selectedProducts.length === 1 ? productUrl(selectedProducts[0]) : "";
+    const missingCost = selectedProducts.some((product) => !productUnitCost(product));
+    data.productCostSnapshot = missingCost ? 0 : productsCostTotal(selectedProducts, data.sampleQuantity);
+    data.productCostConnected = selectedProducts.length > 0 && !missingCost;
+    data.productCostSource = data.productCostConnected ? "订货后台真实成本" : "";
     if (selectedProducts.length) data.product = selectedProducts.map((product) => product.name).join("、");
     data.creatorTier = form.elements.creatorTier.value || data.creatorTier || "";
     data.platform = placementPlatform(data);
@@ -2401,7 +2739,9 @@
   function buildReport() {
     const rows = scopedPlacements();
     const published = rows.filter((item) => item.status === "已发布");
-    const spend = rows.reduce((sum, item) => sum + calc(item).spend, 0);
+    const cooperationSpend = rows.reduce((sum, item) => sum + calc(item).spend, 0);
+    const productCost = rows.reduce((sum, item) => sum + placementProductCost(item), 0);
+    const spend = cooperationSpend + productCost;
     const gmv = rows.reduce((sum, item) => sum + number(item.gmv), 0);
     const scale = rows.filter((item) => feedbackType(item) === "scale");
     const optimize = rows.filter((item) => feedbackType(item) === "optimize");
@@ -2410,7 +2750,7 @@
     return [
       `小红书媒介投放复盘${selectedProduct === "all" ? "" : `｜${selectedProduct}`}`,
       `投放记录：${rows.length} 条，已发布：${published.length} 条`,
-      `总花费：${money(spend)}，GMV：${money(gmv)}，总 ROAS：${spend ? ratio(gmv / spend) : "无"}`,
+      `总花费：${money(spend)}（合作/履约 ${money(cooperationSpend)}，产品成本 ${money(productCost)}），GMV：${money(gmv)}，总 ROAS：${spend ? ratio(gmv / spend) : "无"}`,
       `今日跟进：${urgent.map((item) => `${item.creator}（${item.task.priority}）`).join("、") || "暂无"}`,
       `可加投：${scale.map((item) => item.creator).join("、") || "暂无"}`,
       `需优化：${optimize.map((item) => item.creator).join("、") || "暂无"}`,
@@ -2474,10 +2814,10 @@
     URL.revokeObjectURL(url);
   }
 
-  const csvHeaders = ["达人昵称", "达人主页", "联系方式", "达人类型", "订货站产品ID", "产品货号", "产品/活动", "平台", "内容类型", "负责人", "投放状态", "样品状态", "样品签收日期", "内容进度", "约定发布日期", "稿件申请状态", "稿件申请日期", "上次联系日期", "跟进次数", "达人回复", "计划发布时间", "实际发布时间", "合作费", "样品/履约成本", "曝光", "阅读/点击", "点赞", "收藏", "评论", "分享", "新增私信/线索", "成交单数", "GMV", "笔记链接", "笔记标题", "备注"];
+  const csvHeaders = ["达人昵称", "达人主页", "联系方式", "达人类型", "订货站产品ID", "产品货号", "产品/活动", "平台", "内容类型", "负责人", "投放状态", "样品状态", "样品签收日期", "内容进度", "约定发布日期", "稿件申请状态", "稿件申请日期", "上次联系日期", "跟进次数", "达人回复", "计划发布时间", "实际发布时间", "合作费", "样品/履约成本", "样品数量", "产品成本快照", "曝光", "阅读/点击", "点赞", "收藏", "评论", "分享", "新增私信/线索", "成交单数", "GMV", "笔记链接", "笔记标题", "备注"];
 
   function buildCsvTemplate() {
-    const example = ["小红书达人A", "https://www.xiaohongshu.com/user/profile/example", "小红书私信", "KOC", "", "", "新品试用", "小红书", "测评种草", "Chloe", "已签收", "已签收", today(), "0/1", today(), "未申请", "", today(), "0", "已确认收到", today(), "", "1200", "150", "", "", "", "", "", "", "", "", "", "", "新品试用真实测评", "样品已签收，等待发布时间"];
+    const example = ["小红书达人A", "https://www.xiaohongshu.com/user/profile/example", "小红书私信", "KOC", "", "", "新品试用", "小红书", "测评种草", "Chloe", "已签收", "已签收", today(), "0/1", today(), "未申请", "", today(), "0", "已确认收到", today(), "", "1200", "150", "1", "", "", "", "", "", "", "", "", "", "", "", "新品试用真实测评", "样品已签收，等待发布时间"];
     return [csvHeaders, example].map((row) => row.map(csvValue).join(",")).join("\n");
   }
 
@@ -2521,6 +2861,8 @@
       publishedAt: get("实际发布时间", "First video posted date", "publishedAt"),
       fee: number(get("合作费", "fee")),
       extraCost: number(get("样品/履约成本", "extraCost")),
+      sampleQuantity: sampleQuantity({ sampleQuantity: get("样品数量", "sampleQuantity") || 1 }),
+      productCostSnapshot: number(get("产品成本快照", "productCostSnapshot")),
       exposure: number(get("曝光", "exposure")),
       clicks: number(get("阅读/点击", "clicks")),
       likes: number(get("点赞", "likes")),
@@ -2619,7 +2961,13 @@
       if (ledgerPeriod !== "unpublished") overviewPeriod = ledgerPeriod;
       renderAll();
     });
-    ["search-input", "status-filter", "content-filter", "result-filter"].forEach((id) => {
+    $("#budget-panel").addEventListener("change", (event) => {
+      if (event.target.id !== "monthly-budget-input" || !/^\d{4}-\d{2}$/.test(overviewPeriod)) return;
+      monthlyBudgets[overviewPeriod] = number(event.target.value);
+      saveMonthlyBudgets();
+      renderBudgetPanel();
+    });
+    ["search-input", "status-filter", "content-filter", "result-filter", "data-entry-filter", "metric-sort"].forEach((id) => {
       $(`#${id}`).addEventListener("input", renderTable);
     });
     ["creator-search", "creator-type-filter", "creator-tier-filter", "creator-outreach-filter", "creator-added-filter", "creator-contact-filter", "creator-sort"].forEach((id) => {
@@ -2638,7 +2986,9 @@
     $("#placement-form [name='product']").addEventListener("change", (event) => {
       const exactProducts = productsFromProductText(event.target.value);
       if (exactProducts.length && exactProducts.length === productSegments(event.target.value).length) applyWholesaleProductsToForm(exactProducts);
+      else updatePlacementProductCostDisplay();
     });
+    $("#placement-form [name='sampleQuantity']").addEventListener("input", updatePlacementProductCostDisplay);
     $("#product-picker-search").addEventListener("input", renderProductPickerOptions);
     $("#product-picker-toggle").addEventListener("click", () => {
       const menu = $("#product-picker-menu");
@@ -2677,6 +3027,9 @@
       renderCreators();
     });
     $("#copy-wechat-list").addEventListener("click", copyWechatQueue);
+    ["outreach-added-filter", "outreach-email-filter", "outreach-status-filter"].forEach((id) => {
+      $(`#${id}`)?.addEventListener("input", renderOutreachDialog);
+    });
     $("#wechat-preview").addEventListener("click", async (event) => {
       const id = event.target.closest("[data-copy-wechat]")?.dataset.copyWechat;
       if (!id) return;
