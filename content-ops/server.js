@@ -319,8 +319,9 @@ function mergeValue(currentValue, incomingValue) {
     return Number.isFinite(currentNumber) ? currentNumber : 0;
   }
   const incomingText = String(incomingValue ?? "").trim();
-  if (incomingText) return incomingValue;
   const currentText = String(currentValue ?? "").trim();
+  const placeholderValues = new Set(["未分类", "未填写", "请选择", "未命名达人", "undefined", "null"]);
+  if (incomingText && (!placeholderValues.has(incomingText) || !currentText || placeholderValues.has(currentText))) return incomingValue;
   if (currentText) return currentValue;
   return incomingValue ?? currentValue ?? "";
 }
@@ -879,7 +880,7 @@ const server = createServer(async (request, response) => {
         return;
       }
       if (request.method === "GET") {
-        send(response, 200, await readXhsStateStore(), { "Cache-Control": "no-store" });
+        send(response, 200, await readXhsStateStore({ allowEmpty: true }), { "Cache-Control": "no-store" });
         return;
       }
       if (request.method === "PUT") {
