@@ -22,6 +22,7 @@ const xhsBackupDir = join(dirname(xhsDataFile), "xhs-media-backups");
 const supabaseUrl = process.env.SUPABASE_URL?.replace(/\/$/, "");
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const contentOpsStateId = process.env.CONTENT_OPS_STATE_ID || "default";
+const xhsMediaStateId = process.env.XHS_MEDIA_STATE_ID || `${contentOpsStateId}-xhs-media`;
 const args = new Map(process.argv.slice(2).map((item, index, all) => item.startsWith("--") ? [item.slice(2), all[index + 1]] : [item, true]));
 const host = args.get("host") || process.env.HOST || "0.0.0.0";
 const port = Number(args.get("port") || process.env.PORT || 4322);
@@ -176,6 +177,25 @@ async function writeContentOpsState(state, options = {}) {
   return nextState;
 }
 
+async function readSupabaseStateRow(id) {
+  if (!hasSupabaseStateStore()) return null;
+  const rows = await supabaseRequest(`/content_ops_state?id=eq.${encodeURIComponent(id)}&select=state,updated_at`);
+  return Array.isArray(rows) && rows[0]?.state ? rows[0].state : null;
+}
+
+async function writeSupabaseStateRow(id, state, updatedAt) {
+  if (!hasSupabaseStateStore()) return;
+  await supabaseRequest("/content_ops_state?on_conflict=id", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+    body: JSON.stringify({
+      id,
+      state,
+      updated_at: updatedAt || state.updatedAt || new Date().toISOString(),
+    }),
+  });
+}
+
 function emptyXhsState() {
   return { creators: [], placements: [], customCreatorTypes: [], monthlyBudgets: {}, updatedAt: new Date().toISOString() };
 }
@@ -265,6 +285,98 @@ function isDangerousXhsOverwrite(nextState, currentState) {
   return false;
 }
 
+function compactKey(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, "");
+}
+
+function rowKey(row, fallbackFields = []) {
+  const id = compactKey(row?.id);
+  if (id) return id;
+  for (const field of fallbackFields) {
+    const value = compactKey(row?.[field]);
+    if (value) return `${field}:${value}`;
+  }
+  return "";
+}
+
+function rowTime(row) {
+  const parsed = Date.parse(row?.updatedAt || row?.clientUpdatedAt || row?.createdAt || "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function mergeValue(currentValue, incomingValue) {
+  if (Array.isArray(currentValue) || Array.isArray(incomingValue)) {
+    return Array.from(new Set([...(Array.isArray(currentValue) ? currentValue : []), ...(Array.isArray(incomingValue) ? incomingValue : [])].filter((item) => item !== "" && item !== null && item !== undefined)));
+  }
+  if (typeof incomingValue === "boolean") return incomingValue;
+  if (typeof currentValue === "boolean") return currentValue;
+  if (typeof incomingValue === "number" || typeof currentValue === "number") {
+    const incomingNumber = Number(incomingValue);
+    const currentNumber = Number(currentValue);
+    if (Number.isFinite(incomingNumber) && incomingNumber !== 0) return incomingNumber;
+    if (Number.isFinite(currentNumber) && currentNumber !== 0) return currentNumber;
+    if (Number.isFinite(incomingNumber)) return incomingNumber;
+    return Number.isFinite(currentNumber) ? currentNumber : 0;
+  }
+  const incomingText = String(incomingValue ?? "").trim();
+  if (incomingText) return incomingValue;
+  const currentText = String(currentValue ?? "").trim();
+  if (currentText) return currentValue;
+  return incomingValue ?? currentValue ?? "";
+}
+
+function mergeRecord(current = {}, incoming = {}) {
+  const currentTime = rowTime(current);
+  const incomingTime = rowTime(incoming);
+  const primary = incomingTime >= currentTime ? incoming : current;
+  const secondary = incomingTime >= currentTime ? current : incoming;
+  const keys = new Set([...Object.keys(secondary || {}), ...Object.keys(primary || {})]);
+  const merged = {};
+  for (const key of keys) merged[key] = mergeValue(secondary?.[key], primary?.[key]);
+  if (currentTime || incomingTime) {
+    merged.updatedAt = new Date(Math.max(currentTime, incomingTime)).toISOString();
+  }
+  return merged;
+}
+
+function mergeRows(currentRows, incomingRows, keyFields = []) {
+  const result = [];
+  const byKey = new Map();
+  for (const row of Array.isArray(currentRows) ? currentRows : []) {
+    const key = rowKey(row, keyFields);
+    if (!key) {
+      result.push(row);
+      continue;
+    }
+    byKey.set(key, row);
+  }
+  for (const row of Array.isArray(incomingRows) ? incomingRows : []) {
+    const key = rowKey(row, keyFields);
+    if (!key) {
+      result.push(row);
+      continue;
+    }
+    byKey.set(key, byKey.has(key) ? mergeRecord(byKey.get(key), row) : row);
+  }
+  return [...byKey.values(), ...result];
+}
+
+function mergeXhsStates(currentState, incomingState) {
+  if (!hasUsefulXhsState(currentState)) return incomingState;
+  if (!hasUsefulXhsState(incomingState)) return currentState;
+  return {
+    ...currentState,
+    ...incomingState,
+    creators: mergeRows(currentState.creators, incomingState.creators, ["name"]),
+    placements: mergeRows(currentState.placements, incomingState.placements, ["creator", "product", "noteTitle"]),
+    customCreatorTypes: Array.from(new Set([...(currentState.customCreatorTypes || []), ...(incomingState.customCreatorTypes || [])].filter(Boolean))),
+    monthlyBudgets: {
+      ...(currentState.monthlyBudgets || {}),
+      ...(incomingState.monthlyBudgets || {}),
+    },
+  };
+}
+
 async function readXhsStateFile(options = {}) {
   try {
     await ensureXhsDataFile();
@@ -278,6 +390,36 @@ async function readXhsStateFile(options = {}) {
   if (restored) return restored;
   if (options.allowEmpty) return parsed;
   throw new Error("XHS media data is empty; restore data before serving");
+}
+
+async function readXhsStateStore(options = {}) {
+  if (hasSupabaseStateStore()) {
+    const remoteState = await readSupabaseStateRow(xhsMediaStateId);
+    if (validXhsState(remoteState) && hasUsefulXhsState(remoteState)) return remoteState;
+    if (validXhsState(remoteState) && options.allowEmpty) return remoteState;
+  }
+  return readXhsStateFile(options);
+}
+
+async function writeXhsStateStore(state) {
+  const incomingState = {
+    ...state,
+    customCreatorTypes: Array.isArray(state.customCreatorTypes) ? state.customCreatorTypes : [],
+    monthlyBudgets: state.monthlyBudgets && typeof state.monthlyBudgets === "object" && !Array.isArray(state.monthlyBudgets) ? state.monthlyBudgets : {},
+    updatedAt: new Date().toISOString(),
+  };
+  if (!validXhsState(incomingState)) throw new Error("Invalid XHS media state shape");
+  const currentState = await readXhsStateStore({ allowEmpty: true });
+  const nextState = {
+    ...mergeXhsStates(currentState, incomingState),
+    updatedAt: incomingState.updatedAt,
+    clientUpdatedAt: incomingState.clientUpdatedAt || currentState.clientUpdatedAt || incomingState.updatedAt,
+  };
+  await writeSupabaseStateRow(xhsMediaStateId, nextState, nextState.updatedAt);
+  await mkdir(dirname(xhsDataFile), { recursive: true });
+  await backupFile(xhsDataFile, xhsBackupDir, "xhs-media");
+  await writeFile(xhsDataFile, JSON.stringify(nextState, null, 2));
+  return nextState;
 }
 
 function parseProductsScript(source) {
@@ -737,7 +879,7 @@ const server = createServer(async (request, response) => {
         return;
       }
       if (request.method === "GET") {
-        send(response, 200, await readXhsStateFile(), { "Cache-Control": "no-store" });
+        send(response, 200, await readXhsStateStore(), { "Cache-Control": "no-store" });
         return;
       }
       if (request.method === "PUT") {
@@ -749,8 +891,7 @@ const server = createServer(async (request, response) => {
         }
         parsed.customCreatorTypes = parsed.customCreatorTypes || [];
         parsed.monthlyBudgets = parsed.monthlyBudgets && typeof parsed.monthlyBudgets === "object" && !Array.isArray(parsed.monthlyBudgets) ? parsed.monthlyBudgets : {};
-        parsed.updatedAt = new Date().toISOString();
-        const current = await readXhsStateFile({ allowEmpty: true });
+        const current = await readXhsStateStore({ allowEmpty: true });
         if (isDangerousXhsOverwrite(parsed, current)) {
           send(response, 409, {
             error: "Refusing to overwrite existing XHS media data with empty or much smaller state",
@@ -759,10 +900,8 @@ const server = createServer(async (request, response) => {
           });
           return;
         }
-        await mkdir(dirname(xhsDataFile), { recursive: true });
-        await backupFile(xhsDataFile, xhsBackupDir, "xhs-media");
-        await writeFile(xhsDataFile, JSON.stringify(parsed, null, 2));
-        send(response, 200, { ok: true, updatedAt: parsed.updatedAt });
+        const saved = await writeXhsStateStore(parsed);
+        send(response, 200, { ok: true, updatedAt: saved.updatedAt, storage: hasSupabaseStateStore() ? "supabase" : "file" });
         return;
       }
       send(response, 405, { error: "Method not allowed" }, { Allow: "GET, PUT, OPTIONS" });
