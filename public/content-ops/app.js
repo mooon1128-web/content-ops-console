@@ -407,11 +407,21 @@
 
   function refreshAccountSelects() {
     const options = state.accounts.map((account) => `<option value="${account.id}">${escapeHtml(account.name)}｜${escapeHtml(account.platform)}</option>`).join("");
-    $$("[name='accountId']").forEach((select) => { select.innerHTML = `<option value="">未分配账号</option>${options}`; });
+    $$("[name='accountId']").forEach((select) => {
+      const currentAccount = select.value || "";
+      select.innerHTML = `<option value="">未分配账号</option>${options}`;
+      select.value = currentAccount === "" || state.accounts.some((account) => account.id === currentAccount) ? currentAccount : "";
+    });
     const postAccount = $("#post-account-filter");
+    const currentPostAccount = postAccount.value || "all";
     postAccount.innerHTML = `<option value="all">全部账号</option>${options}`;
+    postAccount.value = currentPostAccount === "all" || state.accounts.some((account) => account.id === currentPostAccount) ? currentPostAccount : "all";
     const statsAccount = $("#stats-account-filter");
-    if (statsAccount) statsAccount.innerHTML = `<option value="all">全部账号</option>${options}`;
+    if (statsAccount) {
+      const currentStatsAccount = statsAccount.value || "all";
+      statsAccount.innerHTML = `<option value="all">全部账号</option>${options}`;
+      statsAccount.value = currentStatsAccount === "all" || state.accounts.some((account) => account.id === currentStatsAccount) ? currentStatsAccount : "all";
+    }
   }
 
   function refreshTitleSelects() {
@@ -1273,8 +1283,12 @@
     return Math.floor((today - target) / 86400000);
   }
 
+  function postReviewDateTime(post) {
+    return post.publishedAt || post.scheduledAt || "";
+  }
+
   function postReviewAge(post) {
-    return daysSinceDate(post.publishedAt);
+    return daysSinceDate(postReviewDateTime(post));
   }
 
   function hasCoreStats(post) {
@@ -1283,7 +1297,7 @@
 
   function needsStatsReminder(post) {
     const age = postReviewAge(post);
-    return ["已发布", "复盘完成"].includes(post.status) && age != null && age >= 7 && !hasCoreStats(post);
+    return age != null && age >= 7 && !hasCoreStats(post);
   }
 
   function statsMonthOptions() {
@@ -1322,14 +1336,14 @@
   }
 
   function renderStatsReminders(posts) {
-    const due = posts.filter(needsStatsReminder).sort((a, b) => String(a.publishedAt).localeCompare(String(b.publishedAt)));
+    const due = posts.filter(needsStatsReminder).sort((a, b) => String(postReviewDateTime(a)).localeCompare(String(postReviewDateTime(b))));
     $("#stats-reminder-list").innerHTML = due.length ? due.map((post) => {
       const account = accountById(post.accountId);
       return `<article class="stats-reminder-card" data-reminder-post="${escapeHtml(post.id)}">
         <div class="stats-reminder-main">
           <div>
             <strong>${escapeHtml(post.headline || "未命名内容")}</strong>
-            <div class="row-meta">${escapeHtml(account?.name || "未关联账号")}｜发布 ${dateText(post.publishedAt)}｜已过 ${postReviewAge(post)} 天</div>
+            <div class="row-meta">${escapeHtml(account?.name || "未关联账号")}｜发布 ${dateText(postReviewDateTime(post))}｜已过 ${postReviewAge(post)} 天</div>
           </div>
           <span class="pill amber">待填写数据</span>
         </div>

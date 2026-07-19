@@ -1,4 +1,4 @@
-const CACHE_NAME = "content-ops-app-v3";
+const CACHE_NAME = "content-ops-app-v4";
 const APP_SHELL = [
   "/",
   "/assets/styles",
