@@ -157,9 +157,18 @@ async function readContentOpsState() {
 }
 
 async function writeContentOpsState(state, options = {}) {
-  const nextState = {
+  const incomingState = {
     ...state,
     updatedAt: options.preserveUpdatedAt ? state.updatedAt || new Date().toISOString() : new Date().toISOString(),
+  };
+  if (!validContentOpsState(incomingState)) throw new Error("Invalid state shape");
+  const currentState = hasSupabaseStateStore()
+    ? await readSupabaseStateRow(contentOpsStateId)
+    : await readFileState().catch(() => null);
+  const nextState = {
+    ...mergeContentOpsStates(currentState, incomingState),
+    updatedAt: incomingState.updatedAt,
+    clientUpdatedAt: incomingState.clientUpdatedAt || currentState?.clientUpdatedAt || incomingState.updatedAt,
   };
   if (!validContentOpsState(nextState)) throw new Error("Invalid state shape");
   if (hasSupabaseStateStore()) {
@@ -375,6 +384,27 @@ function mergeXhsStates(currentState, incomingState) {
       ...(currentState.monthlyBudgets || {}),
       ...(incomingState.monthlyBudgets || {}),
     },
+  };
+}
+
+function mergePlainObject(currentValue, incomingValue) {
+  return {
+    ...(currentValue && typeof currentValue === "object" && !Array.isArray(currentValue) ? currentValue : {}),
+    ...(incomingValue && typeof incomingValue === "object" && !Array.isArray(incomingValue) ? incomingValue : {}),
+  };
+}
+
+function mergeContentOpsStates(currentState, incomingState) {
+  if (!validContentOpsState(currentState)) return incomingState;
+  if (!validContentOpsState(incomingState)) return currentState;
+  return {
+    ...currentState,
+    ...incomingState,
+    titles: mergeRows(currentState.titles, incomingState.titles, ["title", "sourceUrl"]),
+    accounts: mergeRows(currentState.accounts, incomingState.accounts, ["name", "platform"]),
+    posts: mergeRows(currentState.posts, incomingState.posts, ["headline", "publishedAt", "scheduledAt"]),
+    products: mergeRows(currentState.products, incomingState.products, ["sku", "wholesaleId", "name"]),
+    inventorySettings: mergePlainObject(currentState.inventorySettings, incomingState.inventorySettings),
   };
 }
 
