@@ -317,6 +317,9 @@ function mergeValue(currentValue, incomingValue) {
   if (Array.isArray(currentValue) || Array.isArray(incomingValue)) {
     return Array.from(new Set([...(Array.isArray(currentValue) ? currentValue : []), ...(Array.isArray(incomingValue) ? incomingValue : [])].filter((item) => item !== "" && item !== null && item !== undefined)));
   }
+  if (isPlainObject(currentValue) || isPlainObject(incomingValue)) {
+    return mergePlainObject(currentValue, incomingValue);
+  }
   if (typeof incomingValue === "boolean") return incomingValue;
   if (typeof currentValue === "boolean") return currentValue;
   if (typeof incomingValue === "number" || typeof currentValue === "number") {
@@ -333,6 +336,10 @@ function mergeValue(currentValue, incomingValue) {
   if (incomingText && (!placeholderValues.has(incomingText) || !currentText || placeholderValues.has(currentText))) return incomingValue;
   if (currentText) return currentValue;
   return incomingValue ?? currentValue ?? "";
+}
+
+function isPlainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value);
 }
 
 function mergeRecord(current = {}, incoming = {}) {
@@ -388,10 +395,12 @@ function mergeXhsStates(currentState, incomingState) {
 }
 
 function mergePlainObject(currentValue, incomingValue) {
-  return {
-    ...(currentValue && typeof currentValue === "object" && !Array.isArray(currentValue) ? currentValue : {}),
-    ...(incomingValue && typeof incomingValue === "object" && !Array.isArray(incomingValue) ? incomingValue : {}),
-  };
+  const currentObject = isPlainObject(currentValue) ? currentValue : {};
+  const incomingObject = isPlainObject(incomingValue) ? incomingValue : {};
+  const keys = new Set([...Object.keys(currentObject), ...Object.keys(incomingObject)]);
+  const merged = {};
+  for (const key of keys) merged[key] = mergeValue(currentObject[key], incomingObject[key]);
+  return merged;
 }
 
 function mergeContentOpsStates(currentState, incomingState) {
