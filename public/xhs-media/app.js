@@ -31,7 +31,7 @@
     costSettings: "mtm_wholesale_cost_settings_v1",
   };
   const statuses = ["待建联", "待寄样", "已寄样", "已签收", "脚本已确认", "等待发布", "已发布"];
-  const sampleStatuses = ["未寄样", "待寄样", "寄样中", "已签收", "无需寄样"];
+  const sampleStatuses = ["未寄样", "待寄样", "已寄样", "寄样中", "已签收", "无需寄样"];
   const draftStatuses = ["未申请", "已申请", "已通过", "需修改", "无需申请"];
   const creatorTiers = ["素人", "KOC", "腰部达人", "头部达人", "垂类博主", "品牌合作方"];
   const creatorTypes = ["未分类", "美女头像博主", "好物开箱博主", "玩偶头像博主", "vlog博主", "口播博主", "剧情种草博主", "母婴博主", "宠物博主", "家居博主", "穿搭博主", "美妆护肤博主"];
@@ -109,9 +109,14 @@
       已发布: "已发布",
       复盘完成: "已发布",
     };
+    const normalizedValue = aliases[value] || value;
+    if (
+      String(item.sampleTrackingNumber || item.trackingNumber || item.shippingTrackingNumber || item.expressNo || item.logisticsNo || "").trim() &&
+      !["已签收", "脚本已确认", "等待发布", "已发布"].includes(normalizedValue)
+    ) return "已寄样";
     if (aliases[value]) return aliases[value];
     if (item.sampleStatus === "已签收") return "已签收";
-    if (item.sampleStatus === "寄样中") return "已寄样";
+    if (item.sampleStatus === "已寄样" || item.sampleStatus === "寄样中") return "已寄样";
     return "待建联";
   };
   const statusClass = (status) => ({
@@ -251,6 +256,9 @@
   let remoteSaveTimer = null;
   let remoteSaveInFlight = null;
   let remoteSaveQueued = false;
+  let remoteLoadInFlight = null;
+  let remoteRefreshTimer = null;
+  let hasCurrentSessionChanges = false;
   let overviewPeriod = today().slice(0, 7);
   let ledgerPeriod = today().slice(0, 7);
 
@@ -514,11 +522,13 @@
 
   function markLocalChanged() {
     const clientUpdatedAt = new Date().toISOString();
+    hasCurrentSessionChanges = true;
     writeLocalMeta({ clientUpdatedAt, needsSync: true });
     return clientUpdatedAt;
   }
 
   function markServerSynced(serverUpdatedAt, clientUpdatedAt) {
+    hasCurrentSessionChanges = false;
     writeLocalMeta({
       clientUpdatedAt: clientUpdatedAt || loadLocalMeta().clientUpdatedAt || serverUpdatedAt || new Date().toISOString(),
       serverUpdatedAt: serverUpdatedAt || new Date().toISOString(),
@@ -608,6 +618,47 @@
     return counts.creators > 0 || counts.placements > 0;
   }
 
+  function xhsRevisionTime(state) {
+    const parsed = Date.parse(state?.updatedAt || state?.clientUpdatedAt || "");
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function localServerRevisionTime() {
+    const parsed = Date.parse(loadLocalMeta().serverUpdatedAt || "");
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function localClientRevisionTime() {
+    const parsed = Date.parse(loadLocalMeta().clientUpdatedAt || "");
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function shouldSkipRemoteApply(remoteState, localState, options = {}) {
+    if (options.force) return false;
+    if (hasPendingLocalSync()) return false;
+    const remoteTime = xhsRevisionTime(remoteState);
+    if (!remoteTime || remoteTime > localServerRevisionTime()) return false;
+    const remote = xhsStateCounts(remoteState);
+    const local = xhsStateCounts(localState);
+    return remote.creators === local.creators && remote.placements === local.placements;
+  }
+
+  function remoteStateShouldWin(remoteState, localState) {
+    if (!hasUsefulXhsState(localState)) return true;
+    if (!hasUsefulXhsState(remoteState)) return false;
+    const remoteTime = xhsRevisionTime(remoteState);
+    const localTime = localClientRevisionTime();
+    const remote = xhsStateCounts(remoteState);
+    const local = xhsStateCounts(localState);
+    if (remoteTime && (!localTime || remoteTime >= localTime)) return true;
+    if (remote.creators > local.creators || remote.placements > local.placements) return true;
+    return false;
+  }
+
+  function hasOpenEditorDialog() {
+    return $$("dialog").some((dialog) => dialog.open);
+  }
+
   function isRemoteDataRegression(remoteState, localState) {
     const remote = xhsStateCounts(remoteState);
     const local = xhsStateCounts(localState);
@@ -648,6 +699,25 @@
     return saveServerState({ force: true });
   }
 
+  function syncServerInBackground() {
+    flushServerSave().then((ok) => {
+      if (ok) toast("云端已同步");
+    }).catch(() => {});
+  }
+
+  function scheduleServerRefresh(delay = 12000) {
+    clearTimeout(remoteRefreshTimer);
+    remoteRefreshTimer = setTimeout(async () => {
+      await loadServerState({ silent: true });
+      scheduleServerRefresh(document.hidden ? 45000 : 12000);
+    }, delay);
+  }
+
+  function refreshServerSoon(delay = 1200) {
+    clearTimeout(remoteRefreshTimer);
+    scheduleServerRefresh(delay);
+  }
+
   async function saveServerState(options = {}) {
     if (applyingServerState) return false;
     if (!apiOnline && !options.force) return false;
@@ -678,6 +748,7 @@
         apiOnline = true;
         markServerSynced(result.updatedAt, payload.clientUpdatedAt);
         $("#save-status").textContent = `云端已保存 ${new Date(result.updatedAt || Date.now()).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+        refreshServerSoon(1500);
         return true;
       } catch {
         apiOnline = false;
@@ -696,42 +767,76 @@
     }
   }
 
-  async function loadServerState() {
+  async function loadServerState(options = {}) {
+    if (remoteLoadInFlight) return remoteLoadInFlight;
+    if (!options.force && hasOpenEditorDialog()) {
+      refreshServerSoon(3500);
+      return false;
+    }
+    remoteLoadInFlight = (async () => {
+      try {
+        let response = await fetch(API_URL, { cache: "no-store" });
+        if (!response.ok) throw new Error("server unavailable");
+        let data = await response.json();
+        if (!Array.isArray(data.creators) || !Array.isArray(data.placements)) throw new Error("invalid server state");
+        let localState = { creators, placements, customCreatorTypes, monthlyBudgets };
+        if (hasPendingLocalSync() && hasUsefulXhsState(localState)) {
+          apiOnline = true;
+          const localShouldSave = hasCurrentSessionChanges || (localStateIsNewerThanRemote(data, localState) && !remoteStateShouldWin(data, localState));
+          if (localShouldSave) {
+            if (!options.silent) $("#save-status").textContent = "检测到本机有未同步改动，正在合并云端";
+            await saveServerState({ force: true });
+            response = await fetch(API_URL, { cache: "no-store" });
+            if (!response.ok) throw new Error("server unavailable");
+            data = await response.json();
+            if (!Array.isArray(data.creators) || !Array.isArray(data.placements)) throw new Error("invalid server state");
+            localState = { creators, placements, customCreatorTypes, monthlyBudgets };
+          } else {
+            backupLocalState("stale_pending_before_cloud_apply");
+            hasCurrentSessionChanges = false;
+            if (!options.silent) $("#save-status").textContent = "云端版本较新，已跳过本机旧缓存";
+          }
+        }
+        if (shouldSkipRemoteApply(data, localState, options)) {
+          apiOnline = true;
+          return true;
+        }
+        if (isRemoteDataRegression(data, localState)) {
+          apiOnline = true;
+          if (!options.silent) $("#save-status").textContent = "云端数据疑似为空，已保留本机并回写云端";
+          await saveServerState({ force: true });
+          return true;
+        }
+        const beforeCounts = xhsStateCounts(localState);
+        applyingServerState = true;
+        if (!options.silent && hasUsefulXhsState(localState)) backupLocalState("before_server_apply");
+        creators = data.creators.map(normalizeCreator).filter((item) => !isLegacyTestCreator(item));
+        placements = data.placements.filter((item) => !isLegacyTestPlacement(item)).map((item) => ({ ...item, status: normalizePlacementStatus(item.status, item) }));
+        customCreatorTypes = Array.isArray(data.customCreatorTypes) ? data.customCreatorTypes : customCreatorTypes;
+        monthlyBudgets = data.monthlyBudgets && typeof data.monthlyBudgets === "object" && !Array.isArray(data.monthlyBudgets) ? data.monthlyBudgets : monthlyBudgets;
+        writeLocalState();
+        markServerSynced(data.updatedAt, data.clientUpdatedAt);
+        apiOnline = true;
+        hydrateControls();
+        renderAll();
+        const afterCounts = xhsStateCounts({ creators, placements });
+        const countChanged = beforeCounts.creators !== afterCounts.creators || beforeCounts.placements !== afterCounts.placements;
+        if (!options.silent || countChanged) {
+          $("#save-status").textContent = `云端已同步 ${new Date(data.updatedAt || Date.now()).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+        }
+        return true;
+      } catch {
+        apiOnline = false;
+        if (!options.silent) $("#save-status").textContent = "本机数据已启用，服务器保存未连接";
+        return false;
+      } finally {
+        applyingServerState = false;
+      }
+    })();
     try {
-      const response = await fetch(API_URL, { cache: "no-store" });
-      if (!response.ok) throw new Error("server unavailable");
-      const data = await response.json();
-      if (!Array.isArray(data.creators) || !Array.isArray(data.placements)) throw new Error("invalid server state");
-      const localState = { creators, placements, customCreatorTypes, monthlyBudgets };
-      if (localStateIsNewerThanRemote(data, localState)) {
-        apiOnline = true;
-        $("#save-status").textContent = "检测到本机有未同步改动，正在同步云端";
-        await saveServerState({ force: true });
-        return;
-      }
-      if (isRemoteDataRegression(data, localState)) {
-        apiOnline = true;
-        $("#save-status").textContent = "云端数据疑似为空，已保留本机并回写云端";
-        await saveServerState();
-        return;
-      }
-      applyingServerState = true;
-      if (hasUsefulXhsState(localState)) backupLocalState("before_server_apply");
-      creators = data.creators.map(normalizeCreator).filter((item) => !isLegacyTestCreator(item));
-      placements = data.placements.filter((item) => !isLegacyTestPlacement(item)).map((item) => ({ ...item, status: normalizePlacementStatus(item.status, item) }));
-      customCreatorTypes = Array.isArray(data.customCreatorTypes) ? data.customCreatorTypes : customCreatorTypes;
-      monthlyBudgets = data.monthlyBudgets && typeof data.monthlyBudgets === "object" && !Array.isArray(data.monthlyBudgets) ? data.monthlyBudgets : monthlyBudgets;
-      writeLocalState();
-      markServerSynced(data.updatedAt, data.clientUpdatedAt);
-      apiOnline = true;
-      hydrateControls();
-      renderAll();
-      $("#save-status").textContent = `云端已连接 ${new Date(data.updatedAt || Date.now()).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
-    } catch {
-      apiOnline = false;
-      $("#save-status").textContent = "本机数据已启用，服务器保存未连接";
+      return await remoteLoadInFlight;
     } finally {
-      applyingServerState = false;
+      remoteLoadInFlight = null;
     }
   }
 
@@ -826,7 +931,15 @@
   function findCatalogProduct(value) {
     const key = String(value || "").trim();
     if (!key) return null;
-    return productCatalog.find((item) => item.id === key || item.code === key || item.name === key) || null;
+    const direct = productCatalog.find((item) => item.id === key || item.code === key || item.name === key);
+    if (direct) return direct;
+    const lookupKey = productLookupKey(key);
+    return productCatalog.find((item) => (
+      productLookupKey(item.id) === lookupKey ||
+      productLookupKey(item.code) === lookupKey ||
+      productLookupKey(item.name) === lookupKey ||
+      productLookupKey(productOptionLabel(item)) === lookupKey
+    )) || null;
   }
 
   function productForPlacement(item) {
@@ -846,6 +959,80 @@
     const products = placementProducts(item);
     if (products.length) return products.map((product) => product.name).join("、");
     return item.product || "未填产品";
+  }
+
+  function productKeysForPlacement(item) {
+    const values = [
+      item.product,
+      item.productId,
+      item.productCode,
+      ...(Array.isArray(item.productIds) ? item.productIds : String(item.productIds || "").split(",")),
+      ...(Array.isArray(item.productCodes) ? item.productCodes : String(item.productCodes || "").split(",")),
+      ...productSegments(item.product),
+      ...placementProducts(item).flatMap((product) => [product.id, product.code, product.name, productOptionLabel(product)]),
+    ];
+    return new Set(values.map(productLookupKey).filter(Boolean));
+  }
+
+  function productKeysForPlacementForm(form) {
+    const values = [
+      form.elements.product?.value,
+      form.elements.productId?.value,
+      form.elements.productCode?.value,
+      ...(form.elements.productIds?.value || "").split(","),
+      ...(form.elements.productCodes?.value || "").split(","),
+      ...productSegments(form.elements.product?.value || ""),
+      ...selectedWholesaleProductsFromForm().flatMap((product) => [product.id, product.code, product.name, productOptionLabel(product)]),
+    ];
+    return new Set(values.map(productLookupKey).filter(Boolean));
+  }
+
+  function findDuplicateCooperationsFromForm() {
+    const form = $("#placement-form");
+    if (!form) return [];
+    const creatorName = String(form.elements.creator?.value || "").trim();
+    if (!creatorName) return [];
+    const currentId = String(form.elements.id?.value || "");
+    const draftKeys = productKeysForPlacementForm(form);
+    if (!draftKeys.size) return [];
+    return placements
+      .filter((item) => item.id !== currentId && creatorKey(item.creator) === creatorKey(creatorName))
+      .map((item) => {
+        const matched = [...productKeysForPlacement(item)].filter((key) => draftKeys.has(key));
+        return matched.length ? { item, matched } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => String(placementDate(b.item) || b.item.updatedAt || "").localeCompare(String(placementDate(a.item) || a.item.updatedAt || "")));
+  }
+
+  function renderDuplicateCooperationWarning() {
+    const panel = $("#duplicate-cooperation-panel");
+    if (!panel) return;
+    const matches = findDuplicateCooperationsFromForm();
+    panel.hidden = !matches.length;
+    if (!matches.length) {
+      panel.innerHTML = "";
+      return;
+    }
+    const creatorName = $("#placement-form")?.elements.creator?.value || "这个达人";
+    panel.innerHTML = `
+      <div class="duplicate-cooperation-head">
+        <strong>${escapeHtml(creatorName)} 已合作过相同/相近产品</strong>
+        <span>${matches.length} 条历史记录</span>
+      </div>
+      <div class="duplicate-cooperation-list">
+        ${matches.map(({ item }) => `
+          <article class="duplicate-cooperation-item">
+            <div>
+              <strong>${escapeHtml(placementProductName(item))}</strong>
+              <span>状态 ${escapeHtml(item.status || "未填")} · 约定 ${escapeHtml(publishDueDate(item) || "未填")} · 实际 ${escapeHtml(item.publishedAt || "未填")}</span>
+              <small>${compact(item.likes)}赞 · ${compact(item.saves)}收藏 · ${compact(item.comments)}评论</small>
+            </div>
+            <button type="button" class="secondary-button small" data-duplicate-placement="${escapeHtml(item.id)}">查看记录</button>
+          </article>
+        `).join("")}
+      </div>
+    `;
   }
 
   function sampleQuantity(item) {
@@ -1317,6 +1504,7 @@
       isBlacklisted: Boolean(input.isBlacklisted),
       blacklistReason: input.blacklistReason || "",
       lastProduct: input.lastProduct || "",
+      collaboratedProductsManual: input.collaboratedProductsManual || input.collaboratedProducts || input.cooperatedProducts || "",
       lastCooperationAt: input.lastCooperationAt || "",
       source: input.source || "手动/投放台账",
     };
@@ -1362,6 +1550,7 @@
       updatedAt: normalized.updatedAt || current.updatedAt,
       isBlacklisted: current.isBlacklisted || normalized.isBlacklisted,
       blacklistReason: current.blacklistReason || normalized.blacklistReason,
+      collaboratedProductsManual: current.collaboratedProductsManual || normalized.collaboratedProductsManual,
     };
   }
 
@@ -1377,6 +1566,7 @@
         contactAddress: "",
         cooperationCount: 0,
         lastProduct: item.product,
+        collaboratedProductsManual: "",
         lastCooperationAt: item.publishedAt || item.agreedPublishAt || item.plannedAt || "",
       }, { increment: true, placementId: item.id });
     });
@@ -1454,6 +1644,47 @@
     return item.status === "已发布" && Number.isFinite(publishedDays) && publishedDays >= 7 && !hasPlacementPerformanceData(item);
   }
 
+  function isPublishedWaitingForDay7(item) {
+    const publishedDays = daysSince(item.publishedAt);
+    return item.status === "已发布" && Number.isFinite(publishedDays) && publishedDays >= 0 && publishedDays < 7 && !hasPlacementPerformanceData(item);
+  }
+
+  function publishDueDate(item) {
+    return item.agreedPublishAt || item.plannedAt || item.scheduledAt || "";
+  }
+
+  function publishDelayDays(item) {
+    if (String(item.publishedAt || "").trim() || item.status === "已发布") return NaN;
+    const dueDate = publishDueDate(item);
+    const delayedDays = daysSince(dueDate);
+    return Number.isFinite(delayedDays) && delayedDays >= 0 ? delayedDays : NaN;
+  }
+
+  function publishDelayLevel(days) {
+    if (!Number.isFinite(days)) return null;
+    if (days >= 10) return { key: "delay10", label: "发布拖延10天以上", tone: "coral", rank: 3, note: `拖延${days}天` };
+    if (days >= 5) return { key: "delay5", label: "发布拖延达5天", tone: "amber", rank: 2, note: `拖延${days}天` };
+    return { key: "overdue", label: "约定时间未发布", tone: "blue", rank: 1, note: days ? `拖延${days}天` : "今天到期" };
+  }
+
+  function sampleTrackingNumber(item) {
+    return String(item?.sampleTrackingNumber || item?.trackingNumber || item?.shippingTrackingNumber || item?.expressNo || item?.logisticsNo || "").trim();
+  }
+
+  function needsSampleShipment(item) {
+    if (String(item.publishedAt || "").trim() || ["已发布", "已签收", "脚本已确认", "等待发布"].includes(item.status)) return false;
+    if (["已签收", "无需寄样", "已寄样", "寄样中"].includes(item.sampleStatus)) return false;
+    return item.status === "待寄样" || (item.status !== "待建联" && ["待寄样", "未寄样"].includes(item.sampleStatus));
+  }
+
+  function isWaitingForPublication(item) {
+    if (String(item.publishedAt || "").trim() || item.status === "已发布") return false;
+    if (Number.isFinite(publishDelayDays(item))) return false;
+    if (needsSampleShipment(item)) return false;
+    if (["已寄样", "已签收", "脚本已确认", "等待发布"].includes(item.status)) return true;
+    return Boolean(publishDueDate(item) && ["已寄样", "寄样中", "已签收", "无需寄样"].includes(item.sampleStatus));
+  }
+
   function followupTask(item) {
     const itemProgress = progress(item.deliverableProgress);
     const deliveredDays = daysSince(item.sampleDeliveredAt);
@@ -1464,12 +1695,61 @@
     const notes = [item.notes, item.creatorResponse].join(" ");
     const publishedDays = daysSince(item.publishedAt);
     const day7ReviewDue = isDay7ReviewDue(item);
+    const delayedDays = publishDelayDays(item);
+    const delayLevel = publishDelayLevel(delayedDays);
+    const dueDate = publishDueDate(item);
     const warnings = [];
     if (item.sampleStatus === "已签收" && itemProgress.done === 0 && deliveredDays >= 7) warnings.push("样品签收超过7天仍未发布");
+    if (delayLevel) warnings.push(`${delayLevel.label}：${delayLevel.note}`);
     if (draftDueMissed) warnings.push("距约定发布日期不足2天，稿件申请仍未完成");
     if (number(item.followUpCount) >= 2 && itemProgress.done < itemProgress.required && !String(item.creatorResponse || "").includes("已确认")) warnings.push("已跟进2次以上仍未完成");
     if (itemProgress.done > 0 && itemProgress.done < itemProgress.required && daysSince(item.publishedAt) >= 5) warnings.push("首篇发布超过5天仍缺剩余内容");
     if (/失联|不回复|无回复|不愿|不配合|拒绝|拖/i.test(notes)) warnings.push("备注中出现长期无回复或配合风险");
+
+    if (needsSampleShipment(item)) {
+      return {
+        priority: "高",
+        rank: priorityRank["高"],
+        kind: "sample-shipping",
+        reason: "当前状态是待寄样，尚未填写快递单号。",
+        action: "尽快寄样，并在这里填写快递单号；填写后会自动变成已寄样。",
+        warnings,
+      };
+    }
+
+    if (delayLevel) {
+      return {
+        priority: "最高",
+        rank: priorityRank["最高"],
+        kind: "publish-overdue",
+        delayLevel,
+        delayDays: delayedDays,
+        reason: `${delayLevel.label}：约定发布日期是${dueDate}，目前仍未填写实际发布时间。`,
+        action: delayedDays >= 10
+          ? "严重拖延，优先确认是否还能发布，必要时暂停后续合作。"
+          : delayedDays >= 5
+            ? "已拖延5天以上，催确认最终发布时间，并标记风险。"
+            : "约定时间已到，确认今天是否发布或重新约定时间。",
+        warnings,
+      };
+    }
+
+    if (isWaitingForPublication(item)) {
+      const due = publishDueDate(item);
+      const daysUntil = Number.isFinite(daysSince(due)) ? -daysSince(due) : NaN;
+      return {
+        priority: "中",
+        rank: priorityRank["中"],
+        kind: "waiting-publish",
+        reason: due
+          ? Number.isFinite(daysUntil) && daysUntil >= 0
+            ? `等待发布，距离约定发布时间还有${daysUntil}天。`
+            : `等待发布，约定发布时间是${due}。`
+          : "等待发布，尚未填写约定发布时间。",
+        action: "集中观察排期，到约定日期仍未发布会自动转到发布时间提醒。",
+        warnings,
+      };
+    }
 
     if (day7ReviewDue) {
       return {
@@ -1478,6 +1758,17 @@
         kind: "day7-review",
         reason: `已发布${publishedDays}天，点赞、收藏、评论仍未录入。`,
         action: item.url ? "打开笔记，填写点赞、收藏、评论。" : "先补充笔记链接，再填写点赞、收藏、评论。",
+        warnings,
+      };
+    }
+    if (isPublishedWaitingForDay7(item)) {
+      const remainingDays = Math.max(0, 7 - publishedDays);
+      return {
+        priority: "低",
+        rank: priorityRank["低"],
+        kind: "published-waiting",
+        reason: `已发布${publishedDays}天，未到7天数据统计期。`,
+        action: remainingDays ? `还有${remainingDays}天到7天，先放在跟进任务里观察。` : "今天进入7天统计期，可准备补录数据。",
         warnings,
       };
     }
@@ -1505,7 +1796,14 @@
   function followupTasks() {
     return placements
       .map((item) => ({ ...item, task: followupTask(item) }))
-      .sort((a, b) => Number(b.task.kind === "day7-review") - Number(a.task.kind === "day7-review") || a.task.rank - b.task.rank || (daysSince(b.sampleDeliveredAt) || 0) - (daysSince(a.sampleDeliveredAt) || 0));
+      .sort((a, b) => (
+        Number(b.task.kind === "publish-overdue") - Number(a.task.kind === "publish-overdue") ||
+        number(b.task.delayLevel?.rank) - number(a.task.delayLevel?.rank) ||
+        number(b.task.delayDays) - number(a.task.delayDays) ||
+        Number(b.task.kind === "day7-review") - Number(a.task.kind === "day7-review") ||
+        a.task.rank - b.task.rank ||
+        (daysSince(b.sampleDeliveredAt) || 0) - (daysSince(a.sampleDeliveredAt) || 0)
+      ));
   }
 
   function productNames() {
@@ -1513,6 +1811,37 @@
       const products = placementProducts(item);
       return products.length ? products.map((product) => product.name) : [item.product].filter(Boolean);
     })));
+  }
+
+  function productTextList(value) {
+    if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
+    return productSegments(value).filter(Boolean);
+  }
+
+  function creatorPlacementProducts(creatorName) {
+    return placements
+      .filter((item) => creatorKey(item.creator) === creatorKey(creatorName))
+      .flatMap((item) => {
+        const products = placementProducts(item);
+        return products.length ? products.map((product) => product.name) : productTextList(item.product);
+      });
+  }
+
+  function creatorManualProducts(item) {
+    return productTextList(item?.collaboratedProductsManual || item?.collaboratedProducts || item?.cooperatedProducts || "");
+  }
+
+  function creatorCooperatedProducts(item) {
+    return Array.from(new Set([...creatorPlacementProducts(item?.name), ...creatorManualProducts(item)]));
+  }
+
+  function creatorDelayTag(item) {
+    const delays = placements
+      .filter((placement) => creatorKey(placement.creator) === creatorKey(item?.name))
+      .map(publishDelayDays)
+      .filter(Number.isFinite);
+    if (!delays.length) return null;
+    return publishDelayLevel(Math.max(...delays));
   }
 
   function creatorTypeOptions() {
@@ -1596,6 +1925,24 @@
     return filterSelectedProduct(placementsForPeriod(overviewPeriod));
   }
 
+  function cooperationStarted(item) {
+    if (item.status === "待建联") return false;
+    if (sampleTrackingNumber(item)) return true;
+    if (["已寄样", "寄样中", "已签收"].includes(item.sampleStatus)) return true;
+    return ["已寄样", "已签收", "脚本已确认", "等待发布", "已发布"].includes(item.status);
+  }
+
+  function cooperationStartedAt(item) {
+    return [item.sampleDeliveredAt, item.plannedAt, item.agreedPublishAt, item.publishedAt, item.createdAt, item.updatedAt]
+      .map((value) => String(value || "").slice(0, 10))
+      .find((value) => /^\d{4}-\d{2}-\d{2}$/.test(value)) || "";
+  }
+
+  function monthlyStartedPlacements(period) {
+    const month = /^\d{4}-\d{2}$/.test(period) ? period : today().slice(0, 7);
+    return placements.filter((item) => cooperationStarted(item) && cooperationStartedAt(item).startsWith(month));
+  }
+
   function reportYears() {
     return Array.from(new Set([
       today().slice(0, 4),
@@ -1648,7 +1995,14 @@
     if (selectedProduct !== "all" && !products.some((item) => item.product === selectedProduct)) selectedProduct = "all";
     const totalSpend = periodRows.reduce((sum, item) => sum + calc(item).spend + placementProductCost(item), 0);
     const totalGmv = periodRows.reduce((sum, item) => sum + number(item.gmv), 0);
+    const startedRows = monthlyStartedPlacements(overviewPeriod);
+    const startedPeriod = /^\d{4}-\d{2}$/.test(overviewPeriod) ? overviewPeriod : today().slice(0, 7);
     $("#product-board-title").textContent = `${label} 合作产品 Top 3`;
+    $("#monthly-started-card").innerHTML = `
+      <span>${escapeHtml(startedPeriod.replace("-", "年"))}月已发起合作</span>
+      <strong>${startedRows.length}</strong>
+      <small>已寄快递/进入寄样后续，不含待建联</small>
+    `;
     $("#product-board").innerHTML = `
       <div class="product-chip ${selectedProduct === "all" ? "active" : ""}" data-product="all" role="button" tabindex="0">
         <strong>${label} 全部产品</strong>
@@ -1885,51 +2239,145 @@
 
   function renderFollowups() {
     const tasks = followupTasks();
-    const actionable = tasks.filter((item) => item.task.priority !== "暂无");
-    const failedWarnings = tasks.filter((item) => item.task.warnings.length);
-    const summary = [
-      ["今日需跟进", actionable.length, "触发任一跟进规则", "accent-teal"],
-      ["发布7天待填", tasks.filter((item) => item.task.kind === "day7-review").length, "待录入点赞、收藏、评论", "accent-coral"],
-      ["最高优先级", tasks.filter((item) => item.task.priority === "最高").length, "签收后仍未发布", "accent-coral"],
-      ["高优先级", tasks.filter((item) => item.task.priority === "高").length, "部分内容待交付", "accent-amber"],
-      ["失败候选", failedWarnings.length, "仅提示，不自动标失败", "accent-violet"],
+    const bucket = (predicate) => tasks.filter((item) => predicate(item));
+    const buckets = {
+      sampleShipping: bucket((item) => item.task.kind === "sample-shipping"),
+      waitingPublish: bucket((item) => item.task.kind === "waiting-publish"),
+      publishOverdue: bucket((item) => item.task.kind === "publish-overdue" && item.task.delayLevel?.key === "overdue"),
+      publishDelay5: bucket((item) => item.task.kind === "publish-overdue" && item.task.delayLevel?.key === "delay5"),
+      publishDelay10: bucket((item) => item.task.kind === "publish-overdue" && item.task.delayLevel?.key === "delay10"),
+      publishedWaiting: bucket((item) => item.task.kind === "published-waiting"),
+      day7Review: bucket((item) => item.task.kind === "day7-review"),
+    };
+    const summaryGroups = [
+      {
+        title: "合作推进",
+        note: "寄样和等待发布先放这里",
+        cards: [
+          ["新增合作未寄样", buckets.sampleShipping.length, "寄了后勾选并填单号", "accent-amber", "followup-sample-shipping"],
+          ["等待发布", buckets.waitingPublish.length, "已推进到发布排期", "accent-blue", "followup-waiting-publish"],
+        ],
+      },
+      {
+        title: "发布",
+        note: "只看约定时间到了但没发布的",
+        cards: [
+          ["约定时间未发布", buckets.publishOverdue.length, "到期0-4天", "accent-coral", "followup-publish-overdue"],
+          ["发布拖延达5天", buckets.publishDelay5.length, "拖延5-9天", "accent-amber", "followup-publish-delay5"],
+          ["发布拖延10天以上", buckets.publishDelay10.length, "严重拖延", "accent-coral", "followup-publish-delay10"],
+        ],
+      },
+      {
+        title: "填数据",
+        note: "发布后的7天数据补录",
+        cards: [
+          ["已发布未满7天", buckets.publishedWaiting.length, "先观察，到7天再填", "accent-teal", "followup-published-waiting"],
+          ["已发布达7天待填", buckets.day7Review.length, "录入点赞、收藏、评论", "accent-violet", "followup-day7-review"],
+        ],
+      },
     ];
-    $("#followup-summary").innerHTML = summary.map(([label, value, note, cls]) => `
-      <article class="metric-card ${cls}">
-        <span>${label}</span>
-        <strong>${value}</strong>
-        <small>${note}</small>
-      </article>
+    $("#followup-summary").innerHTML = summaryGroups.map((group) => `
+      <section class="followup-summary-group">
+        <div class="followup-summary-head">
+          <h2>${escapeHtml(group.title)}</h2>
+          <span>${escapeHtml(group.note)}</span>
+        </div>
+        <div class="followup-summary-cards">
+          ${group.cards.map(([label, value, note, cls, target]) => `
+            <button class="metric-card followup-jump-card ${cls}" type="button" data-jump-target="${target}">
+              <span>${label}</span>
+              <strong>${value}</strong>
+              <small>${note}</small>
+            </button>
+          `).join("")}
+        </div>
+      </section>
     `).join("");
-    $("#followup-list").innerHTML = actionable.length ? actionable.map((item) => {
-      const task = item.task;
-      const cls = task.priority === "最高" ? "coral" : task.priority === "高" ? "amber" : task.priority === "中" ? "blue" : "gray";
-      return `
-        <article class="task-card ${task.kind === "day7-review" ? "day7-review-card" : ""}">
+    const groups = [
+      {
+        title: "合作推进",
+        note: "先处理寄样和发布排期，不和数据统计混在一起。",
+        sections: [
+          ["followup-sample-shipping", "新增合作未寄样", "寄出后直接勾选，并填写快递单号。", buckets.sampleShipping],
+          ["followup-waiting-publish", "等待发布", "已经进入发布排期，但还没到约定时间。", buckets.waitingPublish],
+        ],
+      },
+      {
+        title: "发布",
+        note: "只看约定时间到了但还没有实际发布时间的记录。",
+        sections: [
+          ["followup-publish-overdue", "约定时间未发布", "拖延5天以内，先确认是否今天发布或改期。", buckets.publishOverdue],
+          ["followup-publish-delay5", "发布拖延达5天", "拖延5-9天，建议标记风险并催最终时间。", buckets.publishDelay5],
+          ["followup-publish-delay10", "发布拖延10天以上", "严重拖延，优先处理是否暂停合作。", buckets.publishDelay10],
+        ],
+      },
+      {
+        title: "填数据",
+        note: "发布后按7天统计周期管理数据补录。",
+        sections: [
+          ["followup-published-waiting", "已发布未满7天", "先观察，不急着填最终数据。", buckets.publishedWaiting],
+          ["followup-day7-review", "已发布达7天等待填写数据", "到期后直接在这里填点赞、收藏、评论。", buckets.day7Review],
+        ],
+      },
+    ];
+    $("#followup-list").innerHTML = groups.map((group) => `
+      <section class="followup-block">
+        <div class="followup-block-head">
+          <h2>${escapeHtml(group.title)}</h2>
+          <span class="muted">${escapeHtml(group.note)}</span>
+        </div>
+        <div class="followup-section-list">
+          ${group.sections.map(([id, title, note, items]) => followupBucket(id, title, note, items)).join("")}
+        </div>
+      </section>
+    `).join("");
+  }
+
+  function followupBucket(id, title, note, items) {
+    return `
+      <section class="followup-bucket" id="${escapeHtml(id)}">
+        <div class="followup-bucket-head">
           <div>
-            <h3>${escapeHtml(item.creator)} · ${escapeHtml(item.product)}</h3>
-            <p>${escapeHtml(task.reason)}</p>
-            <p>${escapeHtml(task.action)}</p>
-            <div class="task-meta">
-              <span class="pill ${cls}">${task.priority}优先级</span>
-              <span class="pill gray">进度 ${escapeHtml(progress(item.deliverableProgress).label)}</span>
-              <span class="pill gray">实际发布 ${escapeHtml(item.publishedAt || "未填")}</span>
-              <span class="pill gray">约定发布 ${escapeHtml(item.agreedPublishAt || "未填")}</span>
-              <span class="pill gray">稿件 ${escapeHtml(item.draftStatus || "未填")}</span>
-              <span class="pill gray">签收 ${escapeHtml(item.sampleDeliveredAt || "未填")}</span>
-              <span class="pill gray">跟进 ${number(item.followUpCount)} 次</span>
-            </div>
-            ${task.kind === "day7-review" ? performanceReviewForm(item) : ""}
-            ${task.warnings.length ? `<p><strong>失败候选提醒：</strong>${task.warnings.map(escapeHtml).join("；")}。</p>` : ""}
+            <h3>${escapeHtml(title)}</h3>
+            <span class="muted">${escapeHtml(note)}</span>
           </div>
-          <div class="task-action">
-            ${task.kind === "day7-review" && normalizeProfileLink(item.url) ? `<a class="secondary-button small" href="${escapeHtml(normalizeProfileLink(item.url))}" target="_blank" rel="noreferrer">打开笔记</a>` : ""}
-            <button class="secondary-button small" data-edit="${item.id}">${task.kind === "day7-review" ? "编辑全部" : "编辑记录"}</button>
-            <span class="muted">${escapeHtml(item.contactMethod || "未填联系方式")}</span>
+          <strong>${items.length}</strong>
+        </div>
+        <div class="task-list">
+          ${items.length ? items.map(renderFollowupTaskCard).join("") : `<div class="empty-state">暂无记录。</div>`}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderFollowupTaskCard(item) {
+    const task = item.task;
+    const delayLevel = task.delayLevel;
+    const cls = delayLevel?.tone || (task.priority === "最高" ? "coral" : task.priority === "高" ? "amber" : task.priority === "中" ? "blue" : "gray");
+    return `
+      <article class="task-card ${task.kind === "publish-overdue" ? "publish-overdue-card" : ""} ${task.kind === "sample-shipping" ? "sample-shipping-card" : ""} ${task.kind === "day7-review" ? "day7-review-card" : ""}">
+        <div>
+          <h3>${escapeHtml(item.creator)} · ${escapeHtml(item.product)}</h3>
+          <p>${escapeHtml(task.reason)}</p>
+          <p>${escapeHtml(task.action)}</p>
+          <div class="task-meta">
+            <span class="pill ${cls}">${task.priority}优先级</span>
+            ${delayLevel ? `<span class="pill ${delayLevel.tone}">${escapeHtml(delayLevel.label)} · ${escapeHtml(delayLevel.note)}</span>` : ""}
+            <span class="pill gray">实际发布 ${escapeHtml(item.publishedAt || "未填")}</span>
+            <span class="pill gray">约定发布 ${escapeHtml(publishDueDate(item) || "未填")}</span>
+            <span class="pill gray">单号 ${escapeHtml(sampleTrackingNumber(item) || "未填")}</span>
           </div>
-        </article>
-      `;
-    }).join("") : `<div class="empty-state">今天没有触发跟进规则的达人。</div>`;
+          ${task.kind === "sample-shipping" ? sampleShipmentForm(item) : ""}
+          ${task.kind === "day7-review" ? performanceReviewForm(item) : ""}
+          ${task.warnings.length ? `<p><strong>风险提醒：</strong>${task.warnings.map(escapeHtml).join("；")}。</p>` : ""}
+        </div>
+        <div class="task-action">
+          ${task.kind === "day7-review" && normalizeProfileLink(item.url) ? `<a class="secondary-button small" href="${escapeHtml(normalizeProfileLink(item.url))}" target="_blank" rel="noreferrer">打开笔记</a>` : ""}
+          <button class="secondary-button small" data-edit="${item.id}">${task.kind === "day7-review" ? "编辑全部" : "编辑记录"}</button>
+          <span class="muted">${escapeHtml(item.contactMethod || "未填联系方式")}</span>
+        </div>
+      </article>
+    `;
   }
 
   function performanceReviewForm(item) {
@@ -1953,7 +2401,9 @@
     const sort = $("#creator-sort")?.value || "fans";
     const rows = creators.filter((item) => {
       const status = creatorOutreachStatus(item);
-      const haystack = [item.name, item.email, item.wechat, item.contactAddress, item.lastProduct, item.source, status, creatorCreatedDate(item)].join(" ").toLowerCase();
+      const products = creatorCooperatedProducts(item).join(" ");
+      const delayTag = creatorDelayTag(item)?.label || "";
+      const haystack = [item.name, item.email, item.wechat, item.contactAddress, item.lastProduct, products, delayTag, item.source, status, creatorCreatedDate(item)].join(" ").toLowerCase();
       if (query && !haystack.includes(query)) return false;
       if (type !== "all" && item.creatorType !== type) return false;
       if (tier !== "all" && item.tier !== tier) return false;
@@ -1987,6 +2437,7 @@
     const needsOutreach = creators.filter(canOutreachCreator).length;
     const hasWechat = creators.filter((item) => creatorOutreachStatus(item) === "已加微信").length;
     const blacklisted = creators.filter((item) => item.isBlacklisted).length;
+    const delayTagged = creators.filter(creatorDelayTag).length;
     const summary = [
       ["达人总数", total, "Excel与合作台账合并去重", "accent-teal"],
       ["待建联", needsOutreach, "未加微信且未拉黑", "accent-amber"],
@@ -1997,6 +2448,7 @@
       ["素人达人", amateur, "粉丝数 500-3k", "accent-violet"],
       ["资料已完善", completedProfiles, "主页、粉丝数与类型均已填写", "accent-violet"],
       ["黑名单", blacklisted, "原因可在表格内维护", "accent-coral"],
+      ["拖延标签", delayTagged, "约定发布后仍未发布", "accent-coral"],
     ];
     $("#creator-summary").innerHTML = summary.map(([label, value, note, cls]) => `
       <article class="metric-card ${cls}">
@@ -2008,46 +2460,56 @@
     renderClassificationWorkbench();
 
     const rows = filteredCreators();
-    $("#creator-table").innerHTML = rows.length ? rows.map((item) => `
-      <tr>
-        <td>
-          <input type="checkbox" data-select-creator="${escapeHtml(item.id)}" ${selectedCreatorIds.has(item.id) ? "checked" : ""} ${canSelectCreator(item) ? "" : "disabled"} aria-label="选择${escapeHtml(item.name)}建联" />
-        </td>
-        <td>
-          <div class="cell-title">
-            <strong>${escapeHtml(item.name)}</strong>
-            ${item.profileLink ? `<a href="${escapeHtml(item.profileLink)}" target="_blank" rel="noreferrer">打开主页</a>` : ""}
-            <span class="muted">${escapeHtml(item.source || "达人库")} · ${escapeHtml(item.id)}</span>
-            <span class="muted">新增：${escapeHtml(creatorCreatedDate(item) || "未记录")}</span>
-          </div>
-        </td>
-        <td><span class="pill gray">${escapeHtml(item.creatorType || "未分类")}</span></td>
-        <td><span class="pill ${item.tier === "头部" ? "coral" : item.tier === "中部" ? "amber" : item.tier === "尾部" ? "blue" : "gray"}">${escapeHtml(item.tier)}</span></td>
-        <td>
-          <strong>${escapeHtml(item.fansText || compact(item.fanCount))}</strong>
-          <div class="muted">${compact(item.fanCount)}</div>
-        </td>
-        <td>${compact(item.cooperationCount)}</td>
-        <td>${escapeHtml(item.lastProduct || "未记录")}<div class="muted">${escapeHtml(item.lastCooperationAt || "暂无日期")}</div></td>
-        <td>
-          <div class="muted">邮箱：${escapeHtml(creatorEmail(item) || "未填")}</div>
-          <div class="muted">微信：${escapeHtml(item.wechat || "未填")}</div>
-          <div class="muted">地址：${escapeHtml(item.contactAddress || "未填")}</div>
-        </td>
-        <td>
-          <span class="pill ${outreachStatusClass(creatorOutreachStatus(item))}">${escapeHtml(creatorOutreachStatus(item))}</span>
-          <div class="muted">邮件：${creatorEmailSentDate(item) ? `已发 ${escapeHtml(creatorEmailSentDate(item))}` : "未发"}</div>
-          <div class="muted">最近建联：${escapeHtml(item.lastOutreachAt || "未记录")}</div>
-        </td>
-        <td>
-          ${item.isBlacklisted ? `<span class="pill coral">黑名单</span><div class="muted">${escapeHtml(item.blacklistReason || "未填写原因")}</div>` : `<span class="pill gray">正常</span>`}
-        </td>
-        <td>
-          ${canOutreachTarget(item) ? `<button class="secondary-button small" data-creator-outreach="${escapeHtml(item.id)}">建联</button>` : ""}
-          <button class="secondary-button small" data-edit-creator="${escapeHtml(item.id)}">编辑</button>
-        </td>
-      </tr>
-    `).join("") : `<tr><td colspan="11"><div class="empty-state">暂无匹配达人。</div></td></tr>`;
+    $("#creator-table").innerHTML = rows.length ? rows.map((item) => {
+      const delayTag = creatorDelayTag(item);
+      const cooperatedProducts = creatorCooperatedProducts(item);
+      return `
+        <tr>
+          <td>
+            <input type="checkbox" data-select-creator="${escapeHtml(item.id)}" ${selectedCreatorIds.has(item.id) ? "checked" : ""} ${canSelectCreator(item) ? "" : "disabled"} aria-label="选择${escapeHtml(item.name)}建联" />
+          </td>
+          <td>
+            <div class="cell-title">
+              <strong>${escapeHtml(item.name)}</strong>
+              ${delayTag ? `<span class="pill ${delayTag.tone}">${escapeHtml(delayTag.label)}</span>` : ""}
+              ${item.profileLink ? `<a href="${escapeHtml(item.profileLink)}" target="_blank" rel="noreferrer">打开主页</a>` : ""}
+              <span class="muted">${escapeHtml(item.source || "达人库")} · ${escapeHtml(item.id)}</span>
+              <span class="muted">新增：${escapeHtml(creatorCreatedDate(item) || "未记录")}</span>
+            </div>
+          </td>
+          <td><span class="pill gray">${escapeHtml(item.creatorType || "未分类")}</span></td>
+          <td><span class="pill ${item.tier === "头部" ? "coral" : item.tier === "中部" ? "amber" : item.tier === "尾部" ? "blue" : "gray"}">${escapeHtml(item.tier)}</span></td>
+          <td>
+            <strong>${escapeHtml(item.fansText || compact(item.fanCount))}</strong>
+            <div class="muted">${compact(item.fanCount)}</div>
+          </td>
+          <td>${compact(item.cooperationCount)}</td>
+          <td>
+            <div class="creator-products-inline">
+              ${cooperatedProducts.slice(0, 5).map((product) => `<span class="pill gray">${escapeHtml(product)}</span>`).join("") || `<span class="muted">未记录</span>`}
+            </div>
+            <div class="muted">${escapeHtml(item.lastCooperationAt || "暂无日期")}</div>
+          </td>
+          <td>
+            <div class="muted">邮箱：${escapeHtml(creatorEmail(item) || "未填")}</div>
+            <div class="muted">微信：${escapeHtml(item.wechat || "未填")}</div>
+            <div class="muted">地址：${escapeHtml(item.contactAddress || "未填")}</div>
+          </td>
+          <td>
+            <span class="pill ${outreachStatusClass(creatorOutreachStatus(item))}">${escapeHtml(creatorOutreachStatus(item))}</span>
+            <div class="muted">邮件：${creatorEmailSentDate(item) ? `已发 ${escapeHtml(creatorEmailSentDate(item))}` : "未发"}</div>
+            <div class="muted">最近建联：${escapeHtml(item.lastOutreachAt || "未记录")}</div>
+          </td>
+          <td>
+            ${item.isBlacklisted ? `<span class="pill coral">黑名单</span><div class="muted">${escapeHtml(item.blacklistReason || "未填写原因")}</div>` : `<span class="pill gray">正常</span>`}
+          </td>
+          <td>
+            ${canOutreachTarget(item) ? `<button class="secondary-button small" data-creator-outreach="${escapeHtml(item.id)}">建联</button>` : ""}
+            <button class="secondary-button small" data-edit-creator="${escapeHtml(item.id)}">编辑</button>
+          </td>
+        </tr>
+      `;
+    }).join("") : `<tr><td colspan="11"><div class="empty-state">暂无匹配达人。</div></td></tr>`;
     const selectableRows = rows.filter(canSelectCreator);
     const selectAll = $("#select-all-outreach");
     if (selectAll) {
@@ -2276,6 +2738,23 @@
     });
   }
 
+  function ledgerNoProgressRecord(item) {
+    if (item.status !== "待建联") return false;
+    if (needsSampleShipment(item)) return false;
+    if (String(item.publishedAt || "").trim() || publishDueDate(item)) return false;
+    if (String(item.sampleDeliveredAt || "").trim() || sampleTrackingNumber(item)) return false;
+    if (String(item.draftSubmittedAt || "").trim() || String(item.lastContactAt || "").trim()) return false;
+    return progress(item.deliverableProgress).done === 0;
+  }
+
+  function ledgerCompletedRecord(item) {
+    return item.status === "已发布" && hasPlacementPerformanceData(item);
+  }
+
+  function ledgerVisibleRecord(item) {
+    return ledgerNoProgressRecord(item) || ledgerCompletedRecord(item);
+  }
+
   function publishedAge(item) {
     if (item.status !== "已发布" || !item.publishedAt) return NaN;
     return daysSince(item.publishedAt);
@@ -2358,6 +2837,7 @@
             <span class="placement-detail-line">
               <span>约定发布：${escapeHtml(agreedPublishAt)}</span>
               <span>实际发布：${escapeHtml(publishedAt)}</span>
+              <span>快递单号：${escapeHtml(sampleTrackingNumber(item) || "未填写")}</span>
               ${ageText ? `<span class="${missingMetrics && item.status === "已发布" ? "publish-age-warning" : ""}">${escapeHtml(ageText)}</span>` : ""}
               <span>备注：${escapeHtml(placementNotes)}</span>
             </span>
@@ -2382,25 +2862,25 @@
 
   function renderTable() {
     const rows = filteredPlacements();
-    if (!rows.length) {
-      $("#placement-table").innerHTML = `<tr><td colspan="8"><div class="empty-state">暂无匹配投放记录。</div></td></tr>`;
+    const ledgerRows = rows.filter(ledgerVisibleRecord);
+    if (!ledgerRows.length) {
+      $("#placement-table").innerHTML = `<tr><td colspan="8"><div class="empty-state">当前筛选下没有台账记录；已发布未满7天、7天待填、到期未发布等中间状态会集中到跟进任务。</div></td></tr>`;
       return;
     }
-    const missingRows = rows.filter((item) => !hasPlacementPerformanceData(item)).sort(missingMetricSort);
-    const filledRows = rows.filter(hasPlacementPerformanceData).sort(filledMetricSort);
+    const idleRows = ledgerRows.filter(ledgerNoProgressRecord).sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")) || String(b.id || "").localeCompare(String(a.id || "")));
+    const completedRows = ledgerRows.filter(ledgerCompletedRecord).sort(filledMetricSort);
     const dataEntry = $("#data-entry-filter")?.value || "all";
     const sections = [];
-    if (dataEntry !== "filled" && missingRows.length) {
-      const dueCount = missingRows.filter(isDay7ReviewDue).length;
-      sections.push(ledgerGroupHeader("未填写互动数据", missingRows.length, dueCount ? `${dueCount} 条已发布满7天，已置顶` : "已发布内容会显示发布天数", "coral"));
-      sections.push(...missingRows.map(placementRow));
+    if (dataEntry !== "filled" && idleRows.length) {
+      sections.push(ledgerGroupHeader("未启动 / 无进度", idleRows.length, "还没有排期、寄样、发布或跟进动作", "gray"));
+      sections.push(...idleRows.map(placementRow));
     }
-    if (dataEntry !== "missing" && filledRows.length) {
+    if (dataEntry !== "missing" && completedRows.length) {
       const sortLabel = ($("#metric-sort")?.value || "time") === "likes" ? "按点赞从高到低" : "按发布时间从新到旧";
-      sections.push(ledgerGroupHeader("已填写互动数据", filledRows.length, sortLabel, "teal"));
-      sections.push(...filledRows.map(placementRow));
+      sections.push(ledgerGroupHeader("已发布并已填写数据", completedRows.length, sortLabel, "teal"));
+      sections.push(...completedRows.map(placementRow));
     }
-    $("#placement-table").innerHTML = sections.join("") || `<tr><td colspan="8"><div class="empty-state">当前筛选下没有记录。</div></td></tr>`;
+    $("#placement-table").innerHTML = sections.join("") || `<tr><td colspan="8"><div class="empty-state">当前筛选下没有台账记录；请到跟进任务查看未到7天、7天待填和到期未发布。</div></td></tr>`;
   }
 
   function ledgerMetricsDisplay(item) {
@@ -2420,6 +2900,16 @@
     `;
   }
 
+  function sampleShipmentForm(item) {
+    return `
+      <form class="review-quick-form shipping-quick-form" data-shipment-form="${escapeHtml(item.id)}">
+        <label class="shipping-check-line"><input data-shipment-field="shipped" type="checkbox" /> 已寄出</label>
+        <label>快递单号<input data-shipment-field="sampleTrackingNumber" value="${escapeHtml(sampleTrackingNumber(item))}" maxlength="80" placeholder="填写单号" /></label>
+        <button class="primary-button small" type="submit">保存单号</button>
+      </form>
+    `;
+  }
+
   async function savePerformanceReview(form) {
     const id = form.dataset.reviewForm;
     const item = placements.find((placement) => placement.id === id);
@@ -2436,6 +2926,27 @@
     renderAll();
     toast("互动数据已保存，跟进任务已归档");
   }
+
+  async function saveSampleShipment(form) {
+    const id = form.dataset.shipmentForm;
+    const item = placements.find((placement) => placement.id === id);
+    if (!item) return;
+    const trackingNumber = String(form.querySelector("[data-shipment-field='sampleTrackingNumber']")?.value || "").trim();
+    if (!trackingNumber) {
+      toast("请先填写快递单号");
+      return;
+    }
+    item.sampleTrackingNumber = trackingNumber;
+    item.sampleStatus = "已寄样";
+    if (!["已签收", "脚本已确认", "等待发布", "已发布"].includes(item.status)) item.status = "已寄样";
+    item.updatedAt = new Date().toISOString();
+    savePlacements();
+    syncCreatorsFromPlacements();
+    renderAll();
+    toast("单号已保存，状态已变成已寄样");
+    syncServerInBackground();
+  }
+
 
   function renderFeedback() {
     const rows = scopedPlacements();
@@ -2511,12 +3022,35 @@
     return String(value || "").split(/[、,，+]/).map((item) => item.trim()).filter(Boolean);
   }
 
+  function productLookupKey(value) {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "")
+      .replace(/[·•・：:;；,，、()（）【】\[\]_\-—–]/g, "");
+  }
+
   function productsFromProductText(value) {
-    return productSegments(value).map((segment) => productCatalog.find((product) => (
-      product.name === segment ||
-      product.code === segment ||
-      productOptionLabel(product) === segment
-    ))).filter(Boolean);
+    const segments = productSegments(value);
+    const segmentMatches = segments.map((segment) => {
+      const direct = findCatalogProduct(segment);
+      if (direct) return direct;
+      const segmentKey = productLookupKey(segment);
+      return productCatalog.find((product) => {
+        const nameKey = productLookupKey(product.name);
+        const codeKey = productLookupKey(product.code);
+        return (nameKey && (segmentKey.includes(nameKey) || nameKey.includes(segmentKey))) ||
+          (codeKey && (segmentKey.includes(codeKey) || codeKey.includes(segmentKey)));
+      });
+    }).filter(Boolean);
+    if (segmentMatches.length) return uniqueProducts(segmentMatches);
+    const textKey = productLookupKey(value);
+    if (!textKey) return [];
+    return uniqueProducts(productCatalog.filter((product) => {
+      const nameKey = productLookupKey(product.name);
+      const codeKey = productLookupKey(product.code);
+      return (nameKey && textKey.includes(nameKey)) || (codeKey && textKey.includes(codeKey));
+    }));
   }
 
   function uniqueProducts(products) {
@@ -2531,9 +3065,9 @@
     const form = $("#placement-form");
     if (!form) return [];
     const byText = productsFromProductText(form.elements.product?.value || "");
-    if (byText.length) return uniqueProducts(byText);
     const ids = productSegments(form.elements.productIds?.value || "");
-    return uniqueProducts(ids.map(findCatalogProduct).filter(Boolean));
+    const byId = ids.map(findCatalogProduct).filter(Boolean);
+    return uniqueProducts([...byId, ...byText]);
   }
 
   function updatePlacementProductCostDisplay() {
@@ -2609,6 +3143,7 @@
     form.elements.productUrl.value = selected.length === 1 ? productUrl(selected[0]) : "";
     if (selected.length && updateProductText) form.elements.product.value = selected.map((product) => product.name).join("、");
     updatePlacementProductCostDisplay();
+    renderDuplicateCooperationWarning();
     if (link) {
       link.href = selected.length === 1 ? productUrl(selected[0]) : WHOLESALE_PORTAL_URL;
       link.textContent = selected.length === 1
@@ -2629,6 +3164,7 @@
       Object.entries(item).forEach(([key, value]) => {
         if (form.elements[key]) form.elements[key].value = value;
       });
+      form.elements.sampleTrackingNumber.value = sampleTrackingNumber(item);
       form.elements.requiresDraftReview.value = needsDraftReview(item) ? "yes" : "no";
       form.elements.sampleQuantity.value = sampleQuantity(item);
       applyWholesaleProductsToForm(placementProducts(item));
@@ -2646,6 +3182,7 @@
       form.elements.sampleQuantity.value = 1;
       applyWholesaleProductsToForm([]);
     }
+    renderDuplicateCooperationWarning();
     dialog.showModal();
   }
 
@@ -2664,6 +3201,11 @@
     form.elements.wechat.value = item?.wechat || "";
     form.elements.outreachStatus.value = item ? creatorOutreachStatus(item) : "待建联";
     form.elements.profileLink.value = item?.profileLink || "";
+    form.elements.collaboratedProductsManual.value = item?.collaboratedProductsManual || "";
+    const autoProducts = item ? Array.from(new Set(creatorPlacementProducts(item.name))) : [];
+    $("#creator-auto-products").innerHTML = autoProducts.length
+      ? autoProducts.map((product) => `<span class="pill gray">${escapeHtml(product)}</span>`).join("")
+      : `<span class="muted">暂无台账合作产品</span>`;
     form.elements.contactAddress.value = item?.contactAddress || "";
     form.elements.isBlacklisted.checked = Boolean(item?.isBlacklisted);
     form.elements.blacklistReason.value = item?.blacklistReason || "";
@@ -2688,6 +3230,7 @@
       wechat: String(data.wechat || "").trim(),
       outreachStatus: String(data.wechat || "").trim() ? "已加微信" : String(data.outreachStatus || "待建联").trim(),
       profileLink: String(data.profileLink || "").trim(),
+      collaboratedProductsManual: productTextList(data.collaboratedProductsManual).join("、"),
       contactAddress: String(data.contactAddress || "").trim(),
       isBlacklisted: form.elements.isBlacklisted.checked,
       blacklistReason: String(data.blacklistReason || "").trim(),
@@ -2709,9 +3252,24 @@
     const data = Object.fromEntries(new FormData(form).entries());
     const current = placements.find((item) => item.id === data.id) || {};
     const selectedProducts = selectedWholesaleProductsFromForm();
+    data.sampleStatus = data.sampleStatus || current.sampleStatus || "待寄样";
+    data.sampleDeliveredAt = data.sampleDeliveredAt || current.sampleDeliveredAt || "";
+    data.deliverableProgress = data.deliverableProgress || current.deliverableProgress || "0/1";
+    data.requiresDraftReview = data.requiresDraftReview || current.requiresDraftReview || "yes";
+    data.draftStatus = data.draftStatus || current.draftStatus || "未申请";
+    data.draftSubmittedAt = data.draftSubmittedAt || current.draftSubmittedAt || "";
+    data.lastContactAt = data.lastContactAt || current.lastContactAt || "";
+    data.creatorResponse = data.creatorResponse || current.creatorResponse || "";
+    data.plannedAt = data.plannedAt || current.plannedAt || data.agreedPublishAt || "";
+    data.followUpCount = data.followUpCount || current.followUpCount || 0;
     ["fee", "extraCost", "sampleQuantity", "exposure", "clicks", "likes", "saves", "comments", "shares", "leads", "orders", "gmv", "followUpCount"].forEach((key) => {
       data[key] = number(data[key]);
     });
+    data.sampleTrackingNumber = sampleTrackingNumber(data);
+    if (data.sampleTrackingNumber) {
+      if (!["已签收", "无需寄样"].includes(data.sampleStatus)) data.sampleStatus = "已寄样";
+      if (!["已签收", "脚本已确认", "等待发布", "已发布"].includes(data.status)) data.status = "已寄样";
+    }
     data.sampleQuantity = sampleQuantity(data);
     data.productIds = selectedProducts.map((product) => product.id);
     data.productCodes = selectedProducts.map((product) => product.code).filter(Boolean);
@@ -2819,10 +3377,10 @@
     URL.revokeObjectURL(url);
   }
 
-  const csvHeaders = ["达人昵称", "达人主页", "联系方式", "达人类型", "订货站产品ID", "产品货号", "产品/活动", "平台", "内容类型", "负责人", "投放状态", "样品状态", "样品签收日期", "内容进度", "约定发布日期", "稿件申请状态", "稿件申请日期", "上次联系日期", "跟进次数", "达人回复", "计划发布时间", "实际发布时间", "合作费", "样品/履约成本", "样品数量", "产品成本快照", "曝光", "阅读/点击", "点赞", "收藏", "评论", "分享", "新增私信/线索", "成交单数", "GMV", "笔记链接", "笔记标题", "备注"];
+  const csvHeaders = ["达人昵称", "达人主页", "联系方式", "达人类型", "订货站产品ID", "产品货号", "产品/活动", "平台", "内容类型", "负责人", "投放状态", "样品状态", "快递单号", "样品签收日期", "内容进度", "约定发布日期", "稿件申请状态", "稿件申请日期", "上次联系日期", "跟进次数", "达人回复", "计划发布时间", "实际发布时间", "合作费", "样品/履约成本", "样品数量", "产品成本快照", "曝光", "阅读/点击", "点赞", "收藏", "评论", "分享", "新增私信/线索", "成交单数", "GMV", "笔记链接", "笔记标题", "备注"];
 
   function buildCsvTemplate() {
-    const example = ["小红书达人A", "https://www.xiaohongshu.com/user/profile/example", "小红书私信", "KOC", "", "", "新品试用", "小红书", "测评种草", "Chloe", "已签收", "已签收", today(), "0/1", today(), "未申请", "", today(), "0", "已确认收到", today(), "", "1200", "150", "1", "", "", "", "", "", "", "", "", "", "", "", "新品试用真实测评", "样品已签收，等待发布时间"];
+    const example = ["小红书达人A", "https://www.xiaohongshu.com/user/profile/example", "小红书私信", "KOC", "", "", "新品试用", "小红书", "测评种草", "Chloe", "已签收", "已签收", "SF1234567890", today(), "0/1", today(), "未申请", "", today(), "0", "已确认收到", today(), "", "1200", "150", "1", "", "", "", "", "", "", "", "", "", "", "", "新品试用真实测评", "样品已签收，等待发布时间"];
     return [csvHeaders, example].map((row) => row.map(csvValue).join(",")).join("\n");
   }
 
@@ -2835,6 +3393,8 @@
     };
     const productIds = String(get("订货站产品ID", "productId", "productIds")).split(",").map((item) => item.trim()).filter(Boolean);
     const productCodes = String(get("产品货号", "productCode", "productCodes")).split(",").map((item) => item.trim()).filter(Boolean);
+    const trackingNumber = get("快递单号", "物流单号", "运单号", "sampleTrackingNumber", "trackingNumber", "expressNo", "logisticsNo");
+    const sampleStatus = trackingNumber ? "已寄样" : (get("样品状态", "Sample shipping status", "sampleStatus") || "未寄样");
     return {
       id: uid(),
       creator: get("达人昵称", "Creator username", "creator"),
@@ -2851,9 +3411,11 @@
       owner: get("负责人", "owner") || "Chloe",
       status: normalizePlacementStatus(get("投放状态", "Current status", "status") || "待建联", {
         publishedAt: get("实际发布时间", "First video posted date", "publishedAt"),
-        sampleStatus: get("样品状态", "sampleStatus"),
+        sampleStatus,
+        sampleTrackingNumber: trackingNumber,
       }),
-      sampleStatus: get("样品状态", "Sample shipping status", "sampleStatus") || "未寄样",
+      sampleStatus,
+      sampleTrackingNumber: trackingNumber,
       sampleDeliveredAt: get("样品签收日期", "Sample delivered date", "sampleDeliveredAt"),
       deliverableProgress: get("内容进度", "Video progress", "deliverableProgress") || "0/1",
       agreedPublishAt: get("约定发布日期", "Agreed publish date", "agreedPublishAt"),
@@ -2890,6 +3452,16 @@
     $$("[data-view-jump]").forEach((button) => {
       button.addEventListener("click", () => switchView(button.dataset.viewJump));
     });
+    $("#sync-cloud")?.addEventListener("click", async () => {
+      $("#save-status").textContent = "正在读取云端数据...";
+      const ok = await loadServerState({ force: true });
+      toast(ok ? "云端数据已刷新" : "云端暂时连接不上");
+    });
+    $("#followup-summary")?.addEventListener("click", (event) => {
+      const targetId = event.target.closest("[data-jump-target]")?.dataset.jumpTarget;
+      if (!targetId) return;
+      document.getElementById(targetId)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
     $$("[data-open='placement-dialog']").forEach((button) => {
       button.addEventListener("click", () => openForm());
     });
@@ -2916,10 +3488,10 @@
       else placements.unshift(next);
       savePlacements();
       syncCreatorsFromPlacements();
-      await flushServerSave();
       $("#placement-dialog").close();
       renderAll();
-      toast("投放记录已保存");
+      toast("投放记录已保存，正在同步云端");
+      syncServerInBackground();
     });
     $("[data-delete]").addEventListener("click", async () => {
       const id = $("#placement-form").elements.id.value;
@@ -2930,6 +3502,12 @@
       $("#placement-dialog").close();
       renderAll();
       toast("投放记录已删除");
+    });
+    $("#placement-form").addEventListener("click", (event) => {
+      const placementId = event.target.closest("[data-duplicate-placement]")?.dataset.duplicatePlacement;
+      if (!placementId) return;
+      const record = placements.find((item) => item.id === placementId);
+      if (record) openForm(record);
     });
     $("#placement-table").addEventListener("click", async (event) => {
       const briefId = event.target.closest("[data-brief]")?.dataset.brief;
@@ -2952,9 +3530,11 @@
     });
     $("#followup-list").addEventListener("submit", async (event) => {
       const form = event.target.closest("[data-review-form]");
-      if (!form) return;
+      const shipmentForm = event.target.closest("[data-shipment-form]");
+      if (!form && !shipmentForm) return;
       event.preventDefault();
-      await savePerformanceReview(form);
+      if (form) await savePerformanceReview(form);
+      if (shipmentForm) await saveSampleShipment(shipmentForm);
     });
     $("#overview-period").addEventListener("change", (event) => {
       overviewPeriod = event.target.value;
@@ -2990,10 +3570,23 @@
     });
     $("#placement-form [name='product']").addEventListener("change", (event) => {
       const exactProducts = productsFromProductText(event.target.value);
-      if (exactProducts.length && exactProducts.length === productSegments(event.target.value).length) applyWholesaleProductsToForm(exactProducts);
-      else updatePlacementProductCostDisplay();
+      if (exactProducts.length) applyWholesaleProductsToForm(exactProducts);
+      else {
+        updatePlacementProductCostDisplay();
+        renderDuplicateCooperationWarning();
+      }
     });
-    $("#placement-form [name='sampleQuantity']").addEventListener("input", updatePlacementProductCostDisplay);
+    $("#placement-form [name='product']").addEventListener("input", renderDuplicateCooperationWarning);
+    $("#placement-form [name='sampleQuantity']").addEventListener("input", () => {
+      updatePlacementProductCostDisplay();
+      renderDuplicateCooperationWarning();
+    });
+    $("#placement-form [name='sampleTrackingNumber']").addEventListener("input", (event) => {
+      if (!String(event.target.value || "").trim()) return;
+      const form = $("#placement-form");
+      if (!["已签收", "无需寄样"].includes(form.elements.sampleStatus.value)) form.elements.sampleStatus.value = "已寄样";
+      if (!["已签收", "脚本已确认", "等待发布", "已发布"].includes(form.elements.status.value)) form.elements.status.value = "已寄样";
+    });
     $("#product-picker-search").addEventListener("input", renderProductPickerOptions);
     $("#product-picker-toggle").addEventListener("click", () => {
       const menu = $("#product-picker-menu");
@@ -3011,6 +3604,7 @@
     ["input", "change"].forEach((eventName) => {
       $("#placement-form [name='creator']").addEventListener(eventName, (event) => {
         applyCreatorToPlacementForm(event.target.value);
+        renderDuplicateCooperationWarning();
       });
     });
     $("#add-creator").addEventListener("click", () => openCreatorForm());
@@ -3105,11 +3699,11 @@
         saveCustomCreatorTypes();
       }
       saveCreators();
-      await flushServerSave();
       $("#creator-dialog").close();
       hydrateControls();
       renderCreators();
-      toast("达人资料已保存");
+      toast("达人资料已保存，正在同步云端");
+      syncServerInBackground();
     });
     $("#blacklist-list").addEventListener("click", async (event) => {
       const id = event.target.closest("[data-clear-blacklist]")?.dataset.clearBlacklist;
@@ -3224,6 +3818,7 @@
 
   function sendPendingStateOnUnload() {
     if (!hasPendingLocalSync() || !hasUsefulXhsState({ creators, placements })) return;
+    if (!hasCurrentSessionChanges) return;
     clearTimeout(remoteSaveTimer);
     try {
       fetch(API_URL, {
@@ -3249,8 +3844,13 @@
   });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) sendPendingStateOnUnload();
-    else loadWholesaleProducts();
+    else {
+      loadWholesaleProducts();
+      loadServerState({ force: true, silent: true });
+      scheduleServerRefresh(12000);
+    }
   });
+  window.addEventListener("focus", () => loadServerState({ force: true, silent: true }));
   window.addEventListener("pagehide", sendPendingStateOnUnload);
   window.addEventListener("beforeunload", (event) => {
     if (!hasPendingLocalSync()) return;
@@ -3260,8 +3860,8 @@
   });
   syncCreatorsFromPlacements({ markDirty: false, remote: false });
   renderAll();
-  loadServerState().then(() => {
+  loadServerState({ force: true }).then(() => {
     if (!apiOnline) loadRecoveredSnapshot().finally(loadMorningRecovery);
-  });
+  }).finally(() => scheduleServerRefresh(12000));
   loadWholesaleProducts();
 })();
