@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>小红书媒介投放跟踪台</title>
-  <link rel="stylesheet" href="styles.css?v=20260717-budget-costs" />
+  <link rel="stylesheet" href="styles.css?v=20260721-followup-sections" />
 </head>
 <body>
   <header class="topbar">
@@ -23,6 +23,9 @@
       <button class="tab" data-view="feedback">反馈</button>
     </nav>
     <div class="top-actions">
+      <button class="icon-action" id="sync-cloud" title="同步云端数据" aria-label="同步云端数据">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 8a6 6 0 0 0-11.1-3M4 16a6 6 0 0 0 11.1 3M8 4v5H3m13 11v-5h5"/></svg>
+      </button>
       <button class="icon-action" id="download-template" title="下载CSV模板" aria-label="下载CSV模板">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h8l4 4v14H4V3h4m8 0v5h5M8 13h8M8 17h8"/></svg>
       </button>
@@ -45,6 +48,7 @@
       <div>
         <span class="eyebrow">PERIOD PRODUCTS</span>
         <h2 id="product-board-title">合作产品 Top 3</h2>
+        <div id="monthly-started-card" class="monthly-started-card"></div>
       </div>
       <div id="product-board" class="product-list"></div>
     </section>
@@ -203,8 +207,8 @@
         </div>
         <button class="secondary-button" id="copy-followups">复制跟进清单</button>
       </div>
-      <div id="followup-summary" class="metric-grid compact-metrics"></div>
-      <div id="followup-list" class="task-list"></div>
+      <div id="followup-summary" class="followup-summary-board"></div>
+      <div id="followup-list" class="task-list followup-board"></div>
     </section>
 
     <section class="view" id="placements-view">
@@ -232,9 +236,9 @@
           <option value="pause">暂停观察</option>
         </select>
         <select id="data-entry-filter">
-          <option value="all">全部数据状态</option>
-          <option value="missing">未填写数据</option>
-          <option value="filled">已填写数据</option>
+          <option value="all">全部台账记录</option>
+          <option value="missing">未启动/无进度</option>
+          <option value="filled">已发布已填数据</option>
         </select>
         <select id="metric-sort">
           <option value="time">按发布时间排序</option>
@@ -302,6 +306,7 @@
             </div>
           </div>
         </label>
+        <div id="duplicate-cooperation-panel" class="duplicate-cooperation-panel wide" hidden></div>
         <label>库存状态<input name="productStatusDisplay" disabled /></label>
         <label>样品数量<input name="sampleQuantity" type="number" min="1" step="1" /></label>
         <label>自动产品成本<input name="productCostDisplay" disabled /></label>
@@ -311,18 +316,19 @@
         <label>联系方式<input name="contactMethod" maxlength="40" placeholder="小红书私信、微信、邮箱" /></label>
         <label>负责人<input name="owner" maxlength="24" placeholder="例如：Chloe" /></label>
         <label>投放状态<select name="status"></select></label>
-        <label>样品状态<select name="sampleStatus"></select></label>
-        <label>样品签收日期<input name="sampleDeliveredAt" type="date" /></label>
-        <label>内容进度<input name="deliverableProgress" maxlength="12" placeholder="0/1、1/2、2/2" /></label>
+        <label>快递单号<input name="sampleTrackingNumber" maxlength="80" placeholder="填写后自动变成已寄样" /></label>
         <label>约定发布日期<input name="agreedPublishAt" type="date" /></label>
-        <label>稿件审核<select name="requiresDraftReview"><option value="yes">需要审核（默认）</option><option value="no">无需审核</option></select></label>
-        <label>稿件申请状态<select name="draftStatus"></select></label>
-        <label>稿件申请日期<input name="draftSubmittedAt" type="date" /></label>
-        <label>上次联系日期<input name="lastContactAt" type="date" /></label>
-        <label>跟进次数<input name="followUpCount" type="number" min="0" step="1" /></label>
-        <label>达人回复<input name="creatorResponse" maxlength="80" placeholder="未回复、已确认、需改脚本" /></label>
-        <label>计划发布时间<input name="plannedAt" type="date" /></label>
         <label>实际发布时间<input name="publishedAt" type="date" /></label>
+        <input name="sampleStatus" type="hidden" />
+        <input name="sampleDeliveredAt" type="hidden" />
+        <input name="deliverableProgress" type="hidden" />
+        <input name="requiresDraftReview" type="hidden" />
+        <input name="draftStatus" type="hidden" />
+        <input name="draftSubmittedAt" type="hidden" />
+        <input name="lastContactAt" type="hidden" />
+        <input name="followUpCount" type="hidden" />
+        <input name="creatorResponse" type="hidden" />
+        <input name="plannedAt" type="hidden" />
         <label>合作费<input name="fee" type="number" min="0" step="1" /></label>
         <label>样品/履约成本<input name="extraCost" type="number" min="0" step="1" /></label>
         <label>曝光<input name="exposure" type="number" min="0" step="1" /></label>
@@ -452,6 +458,11 @@
         <label>微信号<input name="wechat" maxlength="80" /></label>
         <label>建联状态<select name="outreachStatus"></select></label>
         <label class="wide">主页链接<input name="profileLink" type="url" /></label>
+        <div class="wide creator-products-panel">
+          <span>台账合作产品</span>
+          <div id="creator-auto-products" class="creator-product-tags"></div>
+        </div>
+        <label class="wide">手动补充合作产品<textarea name="collaboratedProductsManual" rows="2" placeholder="多个产品可用、隔开"></textarea></label>
         <label class="wide">地址/备注<input name="contactAddress" /></label>
         <label class="wide check-line editor-check">
           <input name="isBlacklisted" type="checkbox" />
@@ -469,6 +480,6 @@
   <datalist id="creator-type-list"></datalist>
   <datalist id="creator-name-list"></datalist>
   <div id="toast" class="toast" role="status"></div>
-  <script src="app.js?v=20260717-budget-costs"></script>
+  <script src="app.js?v=20260722-duplicate-check"></script>
 </body>
 </html>
