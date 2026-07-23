@@ -1047,10 +1047,14 @@ h3 { color: #172033; font-size: 16px; }
   font-weight: 850;
 }
 .creator-product-tags,
-.creator-products-inline {
+.creator-products-inline,
+.creator-tags-inline {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+.creator-tags-inline {
+  margin-top: 6px;
 }
 .creator-product-tags {
   min-height: 42px;
@@ -1059,7 +1063,12 @@ h3 { color: #172033; font-size: 16px; }
   border-radius: 14px;
   background: rgba(255,255,255,.74);
 }
-.dialog-actions { display: flex; justify-content: space-between; gap: 12px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+.dialog-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+.dialog-action-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
 .brief-dialog { width: min(720px, 94vw); }
 .brief-shell { padding: 24px; }
 .brief-preview {
@@ -1313,6 +1322,7 @@ h3 { color: #172033; font-size: 16px; }
   .review-quick-form { grid-template-columns: 1fr; max-width: none; }
   .followup-block-head, .followup-bucket-head { align-items: stretch; flex-direction: column; }
   .followup-bucket-head strong { text-align: left; }
+  .dialog-actions, .dialog-action-group { align-items: stretch; flex-direction: column; }
   .duplicate-cooperation-item { grid-template-columns: 1fr; }
   .duplicate-cooperation-item button { justify-self: start; }
   .toolbar .search-field { grid-column: auto; }
