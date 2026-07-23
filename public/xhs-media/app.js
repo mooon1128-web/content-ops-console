@@ -249,6 +249,7 @@
   let selectedProduct = "all";
   let classificationCreatorId = "";
   let activeBriefPlacementId = "";
+  let activeBriefDraft = null;
   let activeOutreachCreatorIds = [];
   let selectedCreatorIds = new Set();
   let apiOnline = false;
@@ -1093,7 +1094,7 @@
 
   function cooperationBriefData(item) {
     const reviewRequired = needsDraftReview(item);
-    const publishDate = item.agreedPublishAt || item.plannedAt || item.scheduledAt || "";
+    const publishDate = item.agreedPublishAt || "";
     return {
       creator: item.creator || "待确认",
       product: placementProductName(item) || "待确认",
@@ -1124,7 +1125,8 @@
 
   function openCooperationBrief(item) {
     if (!item) return;
-    activeBriefPlacementId = item.id;
+    activeBriefPlacementId = item.id || "";
+    activeBriefDraft = { ...item };
     const brief = cooperationBriefData(item);
     $("#brief-preview").innerHTML = `
       <div class="brief-creator">
@@ -1142,6 +1144,28 @@
       <p class="brief-confirmation">宝宝请确认一下以上的合作内容，特别是时间以及内容～</p>
     `;
     $("#brief-dialog").showModal();
+  }
+
+  function activeBriefItem() {
+    return activeBriefDraft || placements.find((placement) => placement.id === activeBriefPlacementId);
+  }
+
+  function placementFormDraft() {
+    const form = $("#placement-form");
+    if (!form.reportValidity()) return null;
+    return formToPlacement(form);
+  }
+
+  function openPlacementFormBrief() {
+    const item = placementFormDraft();
+    if (!item) return;
+    openCooperationBrief(item);
+  }
+
+  function downloadPlacementFormBriefImage() {
+    const item = placementFormDraft();
+    if (!item) return;
+    downloadCooperationBriefImage(item);
   }
 
   function canvasLines(context, text, maxWidth) {
@@ -1505,6 +1529,7 @@
       blacklistReason: input.blacklistReason || "",
       lastProduct: input.lastProduct || "",
       collaboratedProductsManual: input.collaboratedProductsManual || input.collaboratedProducts || input.cooperatedProducts || "",
+      creatorTags: creatorTagList(input.creatorTags || input.tags || input.creatorTagsText || input.labels || input.tagText || ""),
       lastCooperationAt: input.lastCooperationAt || "",
       source: input.source || "手动/投放台账",
     };
@@ -1551,6 +1576,7 @@
       isBlacklisted: current.isBlacklisted || normalized.isBlacklisted,
       blacklistReason: current.blacklistReason || normalized.blacklistReason,
       collaboratedProductsManual: current.collaboratedProductsManual || normalized.collaboratedProductsManual,
+      creatorTags: creatorTagList([...creatorTagList(current.creatorTags), ...creatorTagList(normalized.creatorTags)]),
     };
   }
 
@@ -1650,7 +1676,7 @@
   }
 
   function publishDueDate(item) {
-    return item.agreedPublishAt || item.plannedAt || item.scheduledAt || "";
+    return item.agreedPublishAt || "";
   }
 
   function publishDelayDays(item) {
@@ -1816,6 +1842,11 @@
   function productTextList(value) {
     if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
     return productSegments(value).filter(Boolean);
+  }
+
+  function creatorTagList(value) {
+    const raw = Array.isArray(value) ? value : String(value || "").split(/[、,，+;；\n\r\s]+/);
+    return Array.from(new Set(raw.map((item) => String(item || "").trim()).filter(Boolean)));
   }
 
   function creatorPlacementProducts(creatorName) {
@@ -2402,8 +2433,9 @@
     const rows = creators.filter((item) => {
       const status = creatorOutreachStatus(item);
       const products = creatorCooperatedProducts(item).join(" ");
+      const tags = creatorTagList(item.creatorTags).join(" ");
       const delayTag = creatorDelayTag(item)?.label || "";
-      const haystack = [item.name, item.email, item.wechat, item.contactAddress, item.lastProduct, products, delayTag, item.source, status, creatorCreatedDate(item)].join(" ").toLowerCase();
+      const haystack = [item.name, item.email, item.wechat, item.contactAddress, item.lastProduct, products, tags, delayTag, item.source, status, creatorCreatedDate(item)].join(" ").toLowerCase();
       if (query && !haystack.includes(query)) return false;
       if (type !== "all" && item.creatorType !== type) return false;
       if (tier !== "all" && item.tier !== tier) return false;
@@ -2463,6 +2495,7 @@
     $("#creator-table").innerHTML = rows.length ? rows.map((item) => {
       const delayTag = creatorDelayTag(item);
       const cooperatedProducts = creatorCooperatedProducts(item);
+      const creatorTags = creatorTagList(item.creatorTags);
       return `
         <tr>
           <td>
@@ -2475,6 +2508,7 @@
               ${item.profileLink ? `<a href="${escapeHtml(item.profileLink)}" target="_blank" rel="noreferrer">打开主页</a>` : ""}
               <span class="muted">${escapeHtml(item.source || "达人库")} · ${escapeHtml(item.id)}</span>
               <span class="muted">新增：${escapeHtml(creatorCreatedDate(item) || "未记录")}</span>
+              ${creatorTags.length ? `<div class="creator-tags-inline">${creatorTags.map((tag) => `<span class="pill blue">${escapeHtml(tag)}</span>`).join("")}</div>` : ""}
             </div>
           </td>
           <td><span class="pill gray">${escapeHtml(item.creatorType || "未分类")}</span></td>
@@ -2852,7 +2886,6 @@
         <td><span class="pill ${task.priority === "最高" ? "coral" : task.priority === "高" ? "amber" : task.priority === "中" ? "blue" : "gray"}">${task.priority}</span><div class="muted">${escapeHtml(task.action)}</div></td>
         <td><span class="pill ${feedbackClass(type)}">${feedbackLabel(type)}</span><div class="muted">${feedbackReason(item)}</div></td>
         <td>
-          <button class="text-button" data-brief="${escapeHtml(item.id)}">合作确认</button>
           <button class="text-button" data-edit="${item.id}">编辑</button>
           <button class="text-button danger-text" data-remove="${item.id}">删除</button>
         </td>
@@ -3178,7 +3211,7 @@
       form.elements.requiresDraftReview.value = "yes";
       form.elements.deliverableProgress.value = "0/1";
       form.elements.followUpCount.value = 0;
-      form.elements.plannedAt.value = today();
+      form.elements.plannedAt.value = "";
       form.elements.sampleQuantity.value = 1;
       applyWholesaleProductsToForm([]);
     }
@@ -3201,6 +3234,7 @@
     form.elements.wechat.value = item?.wechat || "";
     form.elements.outreachStatus.value = item ? creatorOutreachStatus(item) : "待建联";
     form.elements.profileLink.value = item?.profileLink || "";
+    form.elements.creatorTags.value = creatorTagList(item?.creatorTags || item?.tags || "").join("、");
     form.elements.collaboratedProductsManual.value = item?.collaboratedProductsManual || "";
     const autoProducts = item ? Array.from(new Set(creatorPlacementProducts(item.name))) : [];
     $("#creator-auto-products").innerHTML = autoProducts.length
@@ -3230,6 +3264,7 @@
       wechat: String(data.wechat || "").trim(),
       outreachStatus: String(data.wechat || "").trim() ? "已加微信" : String(data.outreachStatus || "待建联").trim(),
       profileLink: String(data.profileLink || "").trim(),
+      creatorTags: creatorTagList(data.creatorTags),
       collaboratedProductsManual: productTextList(data.collaboratedProductsManual).join("、"),
       contactAddress: String(data.contactAddress || "").trim(),
       isBlacklisted: form.elements.isBlacklisted.checked,
@@ -3260,7 +3295,7 @@
     data.draftSubmittedAt = data.draftSubmittedAt || current.draftSubmittedAt || "";
     data.lastContactAt = data.lastContactAt || current.lastContactAt || "";
     data.creatorResponse = data.creatorResponse || current.creatorResponse || "";
-    data.plannedAt = data.plannedAt || current.plannedAt || data.agreedPublishAt || "";
+    data.plannedAt = data.agreedPublishAt || "";
     data.followUpCount = data.followUpCount || current.followUpCount || 0;
     ["fee", "extraCost", "sampleQuantity", "exposure", "clicks", "likes", "saves", "comments", "shares", "leads", "orders", "gmv", "followUpCount"].forEach((key) => {
       data[key] = number(data[key]);
@@ -3509,11 +3544,11 @@
       const record = placements.find((item) => item.id === placementId);
       if (record) openForm(record);
     });
+    $("#open-placement-brief").addEventListener("click", openPlacementFormBrief);
+    $("#download-placement-brief-image").addEventListener("click", downloadPlacementFormBriefImage);
     $("#placement-table").addEventListener("click", async (event) => {
-      const briefId = event.target.closest("[data-brief]")?.dataset.brief;
       const editId = event.target.closest("[data-edit]")?.dataset.edit;
       const removeId = event.target.closest("[data-remove]")?.dataset.remove;
-      if (briefId) openCooperationBrief(placements.find((item) => item.id === briefId));
       if (editId) openForm(placements.find((item) => item.id === editId));
       if (removeId) {
         placements = placements.filter((item) => item.id !== removeId);
@@ -3794,12 +3829,12 @@
       await copyText(buildFollowupReport(), "跟进清单已复制");
     });
     $("#copy-brief").addEventListener("click", async () => {
-      const item = placements.find((placement) => placement.id === activeBriefPlacementId);
+      const item = activeBriefItem();
       if (!item) return;
       await copyText(cooperationBriefText(item), "合作要求已复制");
     });
     $("#download-brief-image").addEventListener("click", () => {
-      const item = placements.find((placement) => placement.id === activeBriefPlacementId);
+      const item = activeBriefItem();
       if (!item) return;
       downloadCooperationBriefImage(item);
     });
