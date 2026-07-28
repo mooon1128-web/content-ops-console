@@ -879,7 +879,13 @@
     };
   }
 
-  async function loadWholesaleProducts() {
+  async function loadWholesaleProducts(options = {}) {
+    const syncButton = $("#sync-wholesale-products");
+    const previousButtonText = syncButton?.textContent || "";
+    if (options.manual && syncButton) {
+      syncButton.disabled = true;
+      syncButton.textContent = "同步中...";
+    }
     try {
       let baseProducts = [];
       const response = await fetch(`${WHOLESALE_PRODUCTS_API}?url=${encodeURIComponent(DEFAULT_WHOLESALE_ADMIN_URL)}`, { cache: "no-store" });
@@ -908,6 +914,8 @@
       productCatalog = Array.from(new Map(merged.map(normalizeProduct).filter((item) => item.id && item.name).map((item) => [item.id, item])).values());
       hydrateControls();
       renderAll();
+      if (options.manual) toast(`订货产品已同步：${productCatalog.length} 个`);
+      return true;
     } catch {
       try {
         const response = await fetch(WHOLESALE_PRODUCTS_FALLBACK_URL, { cache: "no-store" });
@@ -917,8 +925,17 @@
         productCatalog = Array.from(new Map((Array.isArray(baseProducts) ? baseProducts : []).map(normalizeProduct).filter((item) => item.id && item.name).map((item) => [item.id, item])).values());
         hydrateControls();
         renderAll();
+        if (options.manual) toast(`订货后台暂未连接，已载入本地产品：${productCatalog.length} 个`);
+        return false;
       } catch {
         productCatalog = [];
+        if (options.manual) toast("订货产品同步失败，请稍后再试");
+        return false;
+      }
+    } finally {
+      if (options.manual && syncButton) {
+        syncButton.disabled = false;
+        syncButton.textContent = previousButtonText || "同步订货产品";
       }
     }
   }
@@ -952,14 +969,18 @@
     const codes = Array.isArray(item.productCodes) ? item.productCodes : String(item.productCodes || item.productCode || "").split(",");
     const products = [...ids, ...codes].map(findCatalogProduct).filter(Boolean);
     if (products.length) return Array.from(new Map(products.map((product) => [product.id, product])).values());
-    const single = productForPlacement(item);
-    return single ? [single] : [];
+    return productsFromProductText(item.product);
   }
 
   function placementProductName(item) {
+    return productNamesForPlacement(item).join("、") || "未填产品";
+  }
+
+  function placementProductDisplay(item) {
     const products = placementProducts(item);
-    if (products.length) return products.map((product) => product.name).join("、");
-    return item.product || "未填产品";
+    const manualProducts = manualProductSegmentsFromText(item.product, products);
+    const linkedProducts = products.map((product) => `<a href="${escapeHtml(productUrl(product))}" target="_blank" rel="noreferrer">${escapeHtml(product.name)}</a>`);
+    return [...linkedProducts, ...manualProducts.map(escapeHtml)].join("、") || escapeHtml(item.product || "未填产品");
   }
 
   function productKeysForPlacement(item) {
@@ -1820,7 +1841,7 @@
   }
 
   function followupTasks() {
-    return placements
+    return scopedPlacements()
       .map((item) => ({ ...item, task: followupTask(item) }))
       .sort((a, b) => (
         Number(b.task.kind === "publish-overdue") - Number(a.task.kind === "publish-overdue") ||
@@ -1833,15 +1854,47 @@
   }
 
   function productNames() {
-    return Array.from(new Set(placements.flatMap((item) => {
-      const products = placementProducts(item);
-      return products.length ? products.map((product) => product.name) : [item.product].filter(Boolean);
-    })));
+    return Array.from(new Set(placements.flatMap(productNamesForPlacement)));
   }
 
   function productTextList(value) {
     if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
     return productSegments(value).filter(Boolean);
+  }
+
+  function productKeysForCatalogProduct(product) {
+    if (!product) return [];
+    return [product?.id, product?.code, product?.name, productOptionLabel(product)].map(productLookupKey).filter(Boolean);
+  }
+
+  function productTextFromSelection(selectedProducts = [], manualSegments = []) {
+    const names = [...selectedProducts.filter(Boolean).map((product) => product.name), ...manualSegments].map((item) => String(item || "").trim()).filter(Boolean);
+    const seen = new Set();
+    return names.filter((name) => {
+      const key = productLookupKey(name);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).join("、");
+  }
+
+  function manualProductSegmentsFromText(value, selectedProducts = []) {
+    const selectedKeys = new Set(selectedProducts.flatMap(productKeysForCatalogProduct));
+    const seen = new Set();
+    return productTextList(value).filter((segment) => {
+      const key = productLookupKey(segment);
+      if (!key || seen.has(key) || selectedKeys.has(key)) return false;
+      const matched = findCatalogProduct(segment);
+      if (matched && productKeysForCatalogProduct(matched).some((itemKey) => selectedKeys.has(itemKey))) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function productNamesForPlacement(item) {
+    const products = placementProducts(item);
+    const manualProducts = manualProductSegmentsFromText(item?.product, products);
+    return productTextFromSelection(products, manualProducts).split("、").filter(Boolean);
   }
 
   function creatorTagList(value) {
@@ -1852,10 +1905,7 @@
   function creatorPlacementProducts(creatorName) {
     return placements
       .filter((item) => creatorKey(item.creator) === creatorKey(creatorName))
-      .flatMap((item) => {
-        const products = placementProducts(item);
-        return products.length ? products.map((product) => product.name) : productTextList(item.product);
-      });
+      .flatMap(productNamesForPlacement);
   }
 
   function creatorManualProducts(item) {
@@ -1879,12 +1929,14 @@
     return Array.from(new Set([...creatorTypes, ...customCreatorTypes, ...creators.map((item) => item.creatorType).filter(Boolean)]));
   }
 
+  function placementHasProduct(item, productName) {
+    const key = productLookupKey(productName);
+    return productNamesForPlacement(item).some((name) => productLookupKey(name) === key);
+  }
+
   function scopedPlacements() {
     if (selectedProduct === "all") return placements;
-    return placements.filter((item) => {
-      const products = placementProducts(item);
-      return products.length ? products.some((product) => product.name === selectedProduct) : item.product === selectedProduct;
-    });
+    return placements.filter((item) => placementHasProduct(item, selectedProduct));
   }
 
   function periodLabel(period) {
@@ -1903,6 +1955,26 @@
     });
   }
 
+  function dateMatchesPeriod(date, period) {
+    const value = String(date || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    return /^\d{4}$/.test(period) ? value.startsWith(`${period}-`) : value.slice(0, 7) === period;
+  }
+
+  function placementBudgetDate(item) {
+    return [item.createdAt, item.sampleDeliveredAt, item.agreedPublishAt, item.publishedAt, item.updatedAt]
+      .map((value) => String(value || "").slice(0, 10))
+      .find((value) => /^\d{4}-\d{2}-\d{2}$/.test(value)) || "";
+  }
+
+  function placementsForBudgetPeriod(period) {
+    if (!/^\d{4}(-\d{2})?$/.test(period)) return [];
+    return placements.filter((item) => {
+      if (!number(item.fee) && !number(item.extraCost) && !cooperationStarted(item)) return false;
+      return dateMatchesPeriod(placementBudgetDate(item), period);
+    });
+  }
+
   function budgetMonthsForPeriod(period) {
     if (/^\d{4}$/.test(period)) {
       return Array.from({ length: 12 }, (_, index) => `${period}-${String(index + 1).padStart(2, "0")}`);
@@ -1915,7 +1987,7 @@
   }
 
   function periodFinanceSummary(period) {
-    const rows = placementsForPeriod(period);
+    const rows = placementsForBudgetPeriod(period);
     const paidCooperation = rows.reduce((sum, item) => sum + number(item.fee), 0);
     const fulfillmentCost = rows.reduce((sum, item) => sum + number(item.extraCost), 0);
     const productCost = rows.reduce((sum, item) => sum + placementProductCost(item), 0);
@@ -1946,10 +2018,7 @@
 
   function filterSelectedProduct(rows) {
     if (selectedProduct === "all") return rows;
-    return rows.filter((item) => {
-      const products = placementProducts(item);
-      return products.length ? products.some((product) => product.name === selectedProduct) : item.product === selectedProduct;
-    });
+    return rows.filter((item) => placementHasProduct(item, selectedProduct));
   }
 
   function overviewPlacements() {
@@ -1960,7 +2029,7 @@
     if (item.status === "待建联") return false;
     if (sampleTrackingNumber(item)) return true;
     if (["已寄样", "寄样中", "已签收"].includes(item.sampleStatus)) return true;
-    return ["已寄样", "已签收", "脚本已确认", "等待发布", "已发布"].includes(item.status);
+    return ["待寄样", "已寄样", "已签收", "脚本已确认", "等待发布", "已发布"].includes(item.status);
   }
 
   function cooperationStartedAt(item) {
@@ -1972,6 +2041,35 @@
   function monthlyStartedPlacements(period) {
     const month = /^\d{4}-\d{2}$/.test(period) ? period : today().slice(0, 7);
     return placements.filter((item) => cooperationStarted(item) && cooperationStartedAt(item).startsWith(month));
+  }
+
+  function productsForBoardRow(item) {
+    const products = productNamesForPlacement(item).map((name) => findCatalogProduct(name) || { name });
+    const seen = new Set();
+    return products.filter((product) => {
+      const name = String(product?.name || "").trim();
+      if (!name || seen.has(name)) return false;
+      seen.add(name);
+      return true;
+    });
+  }
+
+  function productBoardGroups(rows) {
+    const groups = new Map();
+    rows.forEach((row) => {
+      productsForBoardRow(row).forEach((product) => {
+        const name = product.name;
+        const current = groups.get(name) || { product: name, rows: [], count: 0, spend: 0, gmv: 0, latest: "", catalog: product };
+        current.rows.push(row);
+        current.count += 1;
+        current.spend += calc(row).spend + productsCostTotal([product], sampleQuantity(row));
+        current.gmv += number(row.gmv);
+        current.latest = [current.latest, placementDate(row)].sort().at(-1) || "";
+        current.catalog = current.catalog?.id ? current.catalog : product;
+        groups.set(name, current);
+      });
+    });
+    return Array.from(groups.values()).sort((a, b) => b.count - a.count || String(b.latest).localeCompare(String(a.latest)) || a.product.localeCompare(b.product, "zh-CN"));
   }
 
   function reportYears() {
@@ -2008,41 +2106,30 @@
   function renderProductBoard() {
     const periodRows = placementsForPeriod(overviewPeriod);
     const label = periodLabel(overviewPeriod);
-    const products = productNames()
-      .map((product) => {
-        const rows = periodRows.filter((item) => {
-          const products = placementProducts(item);
-          return products.length ? products.some((catalogProduct) => catalogProduct.name === product) : item.product === product;
-        });
-        const spend = rows.reduce((sum, item) => sum + calc(item).spend + placementProductCost(item), 0);
-        const gmv = rows.reduce((sum, item) => sum + number(item.gmv), 0);
-        const latest = rows.map(placementDate).sort().at(-1) || "暂无日期";
-        const catalog = rows.flatMap(placementProducts).find((item) => item.name === product) || productForPlacement(rows[0] || {});
-        return { product, rows, spend, gmv, latest, catalog };
-      })
-      .filter((item) => item.rows.length)
-      .sort((a, b) => b.rows.length - a.rows.length || String(b.latest).localeCompare(String(a.latest)))
-      .slice(0, 3);
+    const startedRows = monthlyStartedPlacements(overviewPeriod);
+    const products = productBoardGroups(startedRows);
     if (selectedProduct !== "all" && !products.some((item) => item.product === selectedProduct)) selectedProduct = "all";
     const totalSpend = periodRows.reduce((sum, item) => sum + calc(item).spend + placementProductCost(item), 0);
     const totalGmv = periodRows.reduce((sum, item) => sum + number(item.gmv), 0);
-    const startedRows = monthlyStartedPlacements(overviewPeriod);
     const startedPeriod = /^\d{4}-\d{2}$/.test(overviewPeriod) ? overviewPeriod : today().slice(0, 7);
-    $("#product-board-title").textContent = `${label} 合作产品 Top 3`;
+    const productCount = products.reduce((sum, item) => sum + item.count, 0);
+    $("#product-board-title").textContent = `${periodLabel(startedPeriod)} 全部合作产品`;
     $("#monthly-started-card").innerHTML = `
       <span>${escapeHtml(startedPeriod.replace("-", "年"))}月已发起合作</span>
       <strong>${startedRows.length}</strong>
-      <small>已寄快递/进入寄样后续，不含待建联</small>
+      <small>${productCount} 个产品合作项；一条合作含多个产品会分别计数</small>
     `;
     $("#product-board").innerHTML = `
       <div class="product-chip ${selectedProduct === "all" ? "active" : ""}" data-product="all" role="button" tabindex="0">
-        <strong>${label} 全部产品</strong>
-          <span>${periodRows.length} 条 · 含产品成本 ROAS ${totalSpend ? ratio(totalGmv / totalSpend) : "无"}</span>
+        <strong>${escapeHtml(periodLabel(startedPeriod))} 全部合作产品</strong>
+        <b class="product-count">${productCount}</b>
+        <span>${startedRows.length} 条合作 · 已发布ROAS ${totalSpend ? ratio(totalGmv / totalSpend) : "无"}</span>
       </div>
       ${products.map((item) => `
         <div class="product-chip ${selectedProduct === item.product ? "active" : ""}" data-product="${escapeHtml(item.product)}" role="button" tabindex="0">
           <strong>${escapeHtml(item.product)}</strong>
-          <span>${item.rows.length} 条 · 含产品成本 ROAS ${item.spend ? ratio(item.gmv / item.spend) : "无"}</span>
+          <b class="product-count">${item.count}</b>
+          <span>${item.count} 次合作 · 最新 ${escapeHtml(item.latest || "未记录")}</span>
           ${item.catalog ? `<a href="${escapeHtml(productUrl(item.catalog))}" target="_blank" rel="noreferrer" class="product-stock-link">库存</a>` : ""}
         </div>
       `).join("")}
@@ -2058,8 +2145,8 @@
     const progress = summary.budget ? Math.min(summary.budgetRate, 1) : 0;
     const tone = summary.budget && summary.paidCooperation > summary.budget ? "over" : summary.budgetRate >= 0.8 ? "warning" : "";
     const budgetNote = isMonthly
-      ? "只扣合作费；免费合作不会占用预算"
-      : "全年视图汇总已设置的月度预算";
+      ? "按合作发起/录入月份扣合作费；未发布也会占用预算，免费合作不会占用预算"
+      : "全年视图按合作发起/录入月份汇总已设置的月度预算";
     const inputValue = isMonthly ? number(monthlyBudgets[overviewPeriod]) || "" : "";
     const connectionNote = wholesaleCostStatus.connected
       ? `订货后台已连接：${wholesaleCostStatus.costSeedCount + wholesaleCostStatus.costSettingsCount} 组成本，${wholesaleCostStatus.orderCount} 笔订单`
@@ -2119,9 +2206,8 @@
     const label = periodLabel(overviewPeriod);
     const rows = placementsForPeriod(overviewPeriod);
     const groups = Array.from(rows.reduce((map, item) => {
-      const names = placementProducts(item).map((product) => product.name);
-      const productNamesForRow = names.length ? names : [item.product || "未填产品"];
-      productNamesForRow.forEach((name) => {
+      const productNamesForRow = productNamesForPlacement(item);
+      (productNamesForRow.length ? productNamesForRow : ["未填产品"]).forEach((name) => {
         const group = map.get(name) || { name, rows: [], spend: 0, productCost: 0, gmv: 0, exposure: 0, interactions: 0, clicks: 0, leads: 0, orders: 0 };
         const values = calc(item);
         group.rows.push(item);
@@ -2841,10 +2927,7 @@
     const values = calc(item);
     const type = feedbackType(item, values);
     const task = followupTask(item);
-    const catalogProducts = placementProducts(item);
-    const productText = catalogProducts.length
-      ? catalogProducts.map((product) => `<a href="${escapeHtml(productUrl(product))}" target="_blank" rel="noreferrer">${escapeHtml(product.name)}</a>`).join("、")
-      : escapeHtml(placementProductName(item));
+    const productText = placementProductDisplay(item);
     const creatorRecord = creators.find((creator) => creatorKey(creator.name) === creatorKey(item.creator));
     const creatorProfile = normalizeProfileLink(creatorRecord?.profileLink || item.creatorProfile);
     const creatorName = creatorProfile
@@ -3141,12 +3224,15 @@
   }
 
   function toggleProductInForm(productId) {
+    const form = $("#placement-form");
     const product = findCatalogProduct(productId);
     if (!product) return;
-    const current = new Map(selectedWholesaleProductsFromForm().map((item) => [item.id, item]));
+    const previous = selectedWholesaleProductsFromForm();
+    const manualSegments = manualProductSegmentsFromText(form.elements.product?.value || "", previous);
+    const current = new Map(previous.map((item) => [item.id, item]));
     if (current.has(product.id)) current.delete(product.id);
     else current.set(product.id, product);
-    applyWholesaleProductsToForm([...current.values()]);
+    applyWholesaleProductsToForm([...current.values()], { manualSegments });
     renderProductPickerOptions();
   }
 
@@ -3162,6 +3248,11 @@
     const link = $("#product-stock-link");
     const updateProductText = options.updateProductText !== false;
     const selected = products.filter(Boolean);
+    const manualSegments = updateProductText
+      ? Array.isArray(options.manualSegments)
+        ? options.manualSegments
+        : manualProductSegmentsFromText(form.elements.product?.value || "", selected)
+      : [];
     const ids = selected.map((product) => product.id);
     const codes = selected.map((product) => product.code).filter(Boolean);
     const categories = Array.from(new Set(selected.map((product) => product.category).filter(Boolean)));
@@ -3174,7 +3265,7 @@
     form.elements.productStatus.value = statusesForProducts.join(" / ");
     form.elements.productStatusDisplay.value = selected.length ? selected.map((product) => `${product.code || product.name}：${product.status || "需确认"}`).join("；") : "";
     form.elements.productUrl.value = selected.length === 1 ? productUrl(selected[0]) : "";
-    if (selected.length && updateProductText) form.elements.product.value = selected.map((product) => product.name).join("、");
+    if (updateProductText) form.elements.product.value = productTextFromSelection(selected, manualSegments);
     updatePlacementProductCostDisplay();
     renderDuplicateCooperationWarning();
     if (link) {
@@ -3317,7 +3408,7 @@
     data.productCostSnapshot = missingCost ? 0 : productsCostTotal(selectedProducts, data.sampleQuantity);
     data.productCostConnected = selectedProducts.length > 0 && !missingCost;
     data.productCostSource = data.productCostConnected ? "订货后台真实成本" : "";
-    if (selectedProducts.length) data.product = selectedProducts.map((product) => product.name).join("、");
+    data.product = productTextFromSelection(selectedProducts, manualProductSegmentsFromText(data.product, selectedProducts));
     data.creatorTier = form.elements.creatorTier.value || data.creatorTier || "";
     data.platform = placementPlatform(data);
     data.status = normalizePlacementStatus(data.status, data);
@@ -3626,6 +3717,11 @@
     $("#product-picker-toggle").addEventListener("click", () => {
       const menu = $("#product-picker-menu");
       setProductPickerOpen(menu.hidden);
+    });
+    $("#sync-wholesale-products").addEventListener("click", async () => {
+      await loadWholesaleProducts({ manual: true });
+      renderProductPickerOptions();
+      setProductPickerOpen(true);
     });
     $("#product-picker-menu").addEventListener("click", (event) => {
       const option = event.target.closest("[data-product-option]");
