@@ -547,26 +547,37 @@ function productCostInfo(product, costSettings = {}, costSeeds = {}) {
 }
 
 async function loadWholesalePrivateData(baseUrl) {
-  if (!wholesaleAdminUsername || !wholesaleAdminPassword) return { costSettings: {}, costSeeds: {}, orders: [], connected: false, reason: "missing-credentials" };
+  if (!wholesaleAdminUsername || !wholesaleAdminPassword) return { costSettings: {}, costSeeds: {}, customProducts: [], orders: [], connected: false, reason: "missing-credentials" };
   const loginResponse = await fetch(new URL("/api/login", baseUrl), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username: wholesaleAdminUsername, password: wholesaleAdminPassword }),
   });
-  if (!loginResponse.ok) return { costSettings: {}, costSeeds: {}, orders: [], connected: false, reason: "login-failed" };
+  if (!loginResponse.ok) return { costSettings: {}, costSeeds: {}, customProducts: [], orders: [], connected: false, reason: "login-failed" };
   const cookie = loginResponse.headers.getSetCookie?.().join("; ") || loginResponse.headers.get("set-cookie") || "";
   const bootstrapResponse = await fetch(new URL("/api/bootstrap", baseUrl), {
     headers: cookie ? { Cookie: cookie } : {},
   });
-  if (!bootstrapResponse.ok) return { costSettings: {}, costSeeds: {}, orders: [], connected: false, reason: "bootstrap-failed" };
+  if (!bootstrapResponse.ok) return { costSettings: {}, costSeeds: {}, customProducts: [], orders: [], connected: false, reason: "bootstrap-failed" };
   const payload = await bootstrapResponse.json();
   return {
     costSettings: payload.state?.mtm_wholesale_cost_settings_v1 || {},
     costSeeds: payload.costSeeds || {},
+    customProducts: Array.isArray(payload.state?.mtm_wholesale_custom_products_v1) ? payload.state.mtm_wholesale_custom_products_v1 : [],
     orders: Array.isArray(payload.orders) ? payload.orders : [],
     connected: true,
     reason: "",
   };
+}
+
+function mergeWholesaleProducts(baseProducts = [], customProducts = []) {
+  const rows = [...baseProducts, ...customProducts];
+  return Array.from(rows.reduce((map, product) => {
+    const key = String(product?.id || product?.code || product?.name || "").trim();
+    if (!key) return map;
+    map.set(key, product);
+    return map;
+  }, new Map()).values());
 }
 
 function mapContentCategory(category = "", name = "") {
@@ -875,13 +886,15 @@ const server = createServer(async (request, response) => {
       const privateData = await loadWholesalePrivateData(baseUrl);
       const costSettings = privateData.costSettings || {};
       const costSeeds = privateData.costSeeds || {};
-      const products = parseProductsScript(script).map((product) => normalizeWholesaleProduct(product, baseUrl, productCostInfo(product, costSettings, costSeeds)));
+      const rawProducts = mergeWholesaleProducts(parseProductsScript(script), privateData.customProducts);
+      const products = rawProducts.map((product) => normalizeWholesaleProduct(product, baseUrl, productCostInfo(product, costSettings, costSeeds)));
       send(response, 200, {
         products,
         sourceUrl,
         syncedAt: new Date().toISOString(),
         costConnected: privateData.connected,
         costConnectionReason: privateData.reason,
+        customProductCount: privateData.customProducts.length,
         costSettingsCount: Object.keys(costSettings).length,
         costSeedCount: Object.keys(costSeeds).length,
         orderCount: privateData.orders.length,
