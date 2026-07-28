@@ -245,7 +245,7 @@
   let customCreatorTypes = loadCustomCreatorTypes();
   let monthlyBudgets = loadMonthlyBudgets();
   let productCatalog = [];
-  let wholesaleCostStatus = { connected: false, orderCount: 0, costSettingsCount: 0, costSeedCount: 0, reason: "" };
+  let wholesaleCostStatus = { connected: false, orderCount: 0, costSettingsCount: 0, costSeedCount: 0, customProductCount: 0, reason: "" };
   let selectedProduct = "all";
   let classificationCreatorId = "";
   let activeBriefPlacementId = "";
@@ -897,6 +897,7 @@
         orderCount: number(payload.orderCount),
         costSettingsCount: number(payload.costSettingsCount),
         costSeedCount: number(payload.costSeedCount),
+        customProductCount: number(payload.customProductCount),
         reason: String(payload.costConnectionReason || ""),
       };
       const customProducts = loadLocalJson(WHOLESALE_KEYS.customProducts, []);
@@ -914,14 +915,14 @@
       productCatalog = Array.from(new Map(merged.map(normalizeProduct).filter((item) => item.id && item.name).map((item) => [item.id, item])).values());
       hydrateControls();
       renderAll();
-      if (options.manual) toast(`订货产品已同步：${productCatalog.length} 个`);
+      if (options.manual) toast(`订货产品已同步：${productCatalog.length} 个${wholesaleCostStatus.customProductCount ? `，含后台新增 ${wholesaleCostStatus.customProductCount} 个` : ""}`);
       return true;
     } catch {
       try {
         const response = await fetch(WHOLESALE_PRODUCTS_FALLBACK_URL, { cache: "no-store" });
         if (!response.ok) throw new Error("fallback products unavailable");
         const baseProducts = await response.json();
-        wholesaleCostStatus = { connected: false, orderCount: 0, costSettingsCount: 0, costSeedCount: 0, reason: "fallback" };
+        wholesaleCostStatus = { connected: false, orderCount: 0, costSettingsCount: 0, costSeedCount: 0, customProductCount: 0, reason: "fallback" };
         productCatalog = Array.from(new Map((Array.isArray(baseProducts) ? baseProducts : []).map(normalizeProduct).filter((item) => item.id && item.name).map((item) => [item.id, item])).values());
         hydrateControls();
         renderAll();
@@ -1955,6 +1956,18 @@
     });
   }
 
+  function cooperationRecordDate(item) {
+    return [item.createdAt, item.sampleDeliveredAt, item.agreedPublishAt, item.publishedAt, item.updatedAt]
+      .map((value) => String(value || "").slice(0, 10))
+      .find((value) => /^\d{4}-\d{2}-\d{2}$/.test(value)) || "";
+  }
+
+  function placementsForCooperationPeriod(period) {
+    const rows = placements.filter((item) => productNamesForPlacement(item).length);
+    if (period === "unpublished") return rows.filter((item) => !String(item.publishedAt || "").trim());
+    return rows.filter((item) => dateMatchesPeriod(cooperationRecordDate(item), period));
+  }
+
   function dateMatchesPeriod(date, period) {
     const value = String(date || "").slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -2033,14 +2046,14 @@
   }
 
   function cooperationStartedAt(item) {
-    return [item.sampleDeliveredAt, item.plannedAt, item.agreedPublishAt, item.publishedAt, item.createdAt, item.updatedAt]
+    return [item.createdAt, item.sampleDeliveredAt, item.plannedAt, item.agreedPublishAt, item.publishedAt, item.updatedAt]
       .map((value) => String(value || "").slice(0, 10))
       .find((value) => /^\d{4}-\d{2}-\d{2}$/.test(value)) || "";
   }
 
   function monthlyStartedPlacements(period) {
-    const month = /^\d{4}-\d{2}$/.test(period) ? period : today().slice(0, 7);
-    return placements.filter((item) => cooperationStarted(item) && cooperationStartedAt(item).startsWith(month));
+    if (!/^\d{4}(-\d{2})?$/.test(period)) return [];
+    return placements.filter((item) => cooperationStarted(item) && dateMatchesPeriod(cooperationStartedAt(item), period));
   }
 
   function productsForBoardRow(item) {
@@ -2076,6 +2089,7 @@
     return Array.from(new Set([
       today().slice(0, 4),
       ...placements.map((item) => String(item.publishedAt || "").slice(0, 4)).filter((year) => /^\d{4}$/.test(year)),
+      ...placements.map((item) => cooperationRecordDate(item).slice(0, 4)).filter((year) => /^\d{4}$/.test(year)),
     ])).sort((a, b) => b.localeCompare(a));
   }
 
@@ -2104,26 +2118,25 @@
   }
 
   function renderProductBoard() {
-    const periodRows = placementsForPeriod(overviewPeriod);
-    const label = periodLabel(overviewPeriod);
-    const startedRows = monthlyStartedPlacements(overviewPeriod);
-    const products = productBoardGroups(startedRows);
+    const periodRows = placementsForCooperationPeriod(overviewPeriod);
+    const startedRows = filterSelectedProduct(monthlyStartedPlacements(overviewPeriod));
+    const products = productBoardGroups(periodRows);
     if (selectedProduct !== "all" && !products.some((item) => item.product === selectedProduct)) selectedProduct = "all";
     const totalSpend = periodRows.reduce((sum, item) => sum + calc(item).spend + placementProductCost(item), 0);
     const totalGmv = periodRows.reduce((sum, item) => sum + number(item.gmv), 0);
-    const startedPeriod = /^\d{4}-\d{2}$/.test(overviewPeriod) ? overviewPeriod : today().slice(0, 7);
+    const startedPeriodLabel = periodLabel(overviewPeriod);
     const productCount = products.reduce((sum, item) => sum + item.count, 0);
-    $("#product-board-title").textContent = `${periodLabel(startedPeriod)} 全部合作产品`;
+    $("#product-board-title").textContent = `${startedPeriodLabel} 全部合作产品`;
     $("#monthly-started-card").innerHTML = `
-      <span>${escapeHtml(startedPeriod.replace("-", "年"))}月已发起合作</span>
+      <span>${escapeHtml(startedPeriodLabel)}已发起合作</span>
       <strong>${startedRows.length}</strong>
       <small>${productCount} 个产品合作项；一条合作含多个产品会分别计数</small>
     `;
     $("#product-board").innerHTML = `
       <div class="product-chip ${selectedProduct === "all" ? "active" : ""}" data-product="all" role="button" tabindex="0">
-        <strong>${escapeHtml(periodLabel(startedPeriod))} 全部合作产品</strong>
+        <strong>${escapeHtml(startedPeriodLabel)} 全部合作产品</strong>
         <b class="product-count">${productCount}</b>
-        <span>${startedRows.length} 条合作 · 已发布ROAS ${totalSpend ? ratio(totalGmv / totalSpend) : "无"}</span>
+        <span>${periodRows.length} 条新增合作 · 已发布ROAS ${totalSpend ? ratio(totalGmv / totalSpend) : "无"}</span>
       </div>
       ${products.map((item) => `
         <div class="product-chip ${selectedProduct === item.product ? "active" : ""}" data-product="${escapeHtml(item.product)}" role="button" tabindex="0">
@@ -2149,7 +2162,7 @@
       : "全年视图按合作发起/录入月份汇总已设置的月度预算";
     const inputValue = isMonthly ? number(monthlyBudgets[overviewPeriod]) || "" : "";
     const connectionNote = wholesaleCostStatus.connected
-      ? `订货后台已连接：${wholesaleCostStatus.costSeedCount + wholesaleCostStatus.costSettingsCount} 组成本，${wholesaleCostStatus.orderCount} 笔订单`
+      ? `订货后台已连接：${wholesaleCostStatus.customProductCount} 个后台新增产品，${wholesaleCostStatus.costSeedCount + wholesaleCostStatus.costSettingsCount} 组成本，${wholesaleCostStatus.orderCount} 笔订单`
       : "订货后台成本未连接，请先配置后台账号环境变量";
     const costNote = summary.missingCost
       ? `${summary.missingCost} 条投放未完整关联真实成本`
@@ -2204,7 +2217,8 @@
 
   function renderMonthlyStats() {
     const label = periodLabel(overviewPeriod);
-    const rows = placementsForPeriod(overviewPeriod);
+    const rows = placementsForCooperationPeriod(overviewPeriod);
+    const publishedRows = placementsForPeriod(overviewPeriod);
     const groups = Array.from(rows.reduce((map, item) => {
       const productNamesForRow = productNamesForPlacement(item);
       (productNamesForRow.length ? productNamesForRow : ["未填产品"]).forEach((name) => {
@@ -2228,7 +2242,7 @@
       roas: group.spend + group.productCost ? group.gmv / (group.spend + group.productCost) : 0,
       interactionRate: group.clicks ? group.interactions / group.clicks : 0,
     }));
-    const creatorsByLikes = Array.from(rows.reduce((map, item) => {
+    const creatorsByLikes = Array.from(publishedRows.reduce((map, item) => {
       const name = item.creator || "未填达人";
       const group = map.get(name) || { name, rows: [], likes: 0 };
       group.rows.push(item);
@@ -2260,9 +2274,9 @@
         `).join("")}</ol>` : `<p class="muted">当前周期还没有点赞数据。</p>`}
       </article>
     `;
-    $("#period-review-title").textContent = `${label} 产品复盘`;
+    $("#period-review-title").textContent = `${label} 合作产品复盘`;
     $("#monthly-product-stats").innerHTML = `
-      ${productBlock(`${label} 投放最多 Top 3`, most, "当前周期还没有投放记录。")}
+      ${productBlock(`${label} 合作最多 Top 3`, most, "当前周期还没有新增合作记录。")}
       ${productBlock(`${label} 数据最好 Top 3`, best, "当前周期还没有可复盘的已发布数据。")}
       ${creatorBlock}
     `;
