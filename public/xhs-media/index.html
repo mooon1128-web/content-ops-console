@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>小红书媒介投放跟踪台</title>
-  <link rel="stylesheet" href="styles.css?v=20260723-creator-tags" />
+  <link rel="stylesheet" href="styles.css?v=20260728-wholesale-sync" />
 </head>
 <body>
   <header class="topbar">
@@ -47,7 +47,7 @@
     <section class="product-board" aria-label="月度合作产品">
       <div>
         <span class="eyebrow">PERIOD PRODUCTS</span>
-        <h2 id="product-board-title">合作产品 Top 3</h2>
+        <h2 id="product-board-title">本月合作产品</h2>
         <div id="monthly-started-card" class="monthly-started-card"></div>
       </div>
       <div id="product-board" class="product-list"></div>
@@ -301,6 +301,7 @@
           <div class="product-picker">
             <input name="product" required maxlength="300" placeholder="点击选择产品，或手动用、隔开多个产品" autocomplete="off" />
             <button type="button" id="product-picker-toggle" class="picker-toggle" aria-label="展开产品列表">⌄</button>
+            <button type="button" id="sync-wholesale-products" class="sync-products-button">同步订货产品</button>
             <div id="product-picker-menu" class="product-picker-menu" hidden>
               <input id="product-picker-search" class="product-picker-search" placeholder="在这里搜索产品名称/货号" autocomplete="off" />
               <div id="product-picker-options" class="product-picker-options"></div>
@@ -486,6 +487,6 @@
   <datalist id="creator-type-list"></datalist>
   <datalist id="creator-name-list"></datalist>
   <div id="toast" class="toast" role="status"></div>
-  <script src="app.js?v=20260723-due-date-fix"></script>
+  <script src="app.js?v=20260728-product-manual-mix"></script>
 </body>
 </html>
