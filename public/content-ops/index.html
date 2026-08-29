@@ -10,7 +10,7 @@
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/app-icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/app-icon.svg" />
-  <link rel="stylesheet" href="/assets/styles?v=statsfix" />
+  <link rel="stylesheet" href="/assets/styles?v=syncfix" />
 </head>
 <body>
   <header class="topbar">
@@ -18,7 +18,7 @@
       <span class="brand-mark">CO</span>
       <div>
         <strong>内容运营管理台</strong>
-        <small id="storage-status">正在连接数据源</small>
+        <small id="storage-status">同步共享数据中</small>
       </div>
     </div>
     <nav class="tabs" aria-label="主要视图">
@@ -28,6 +28,7 @@
       <button class="tab mobile-secondary" data-view="products">产品库存</button>
       <button class="tab mobile-primary" data-view="posts">发布记录</button>
       <button class="tab mobile-primary" data-view="stats">数据统计</button>
+      <button class="tab mobile-secondary" data-view="work">工作记录</button>
       <button class="tab mobile-secondary" data-view="insights">建议</button>
       <button class="tab mobile-more-tab" id="mobile-more-toggle" type="button">更多</button>
     </nav>
@@ -58,6 +59,7 @@
         <button type="button" data-view-jump="titles"><strong>标题库</strong><span>收集爆款标题</span></button>
         <button type="button" data-view-jump="accounts"><strong>账号</strong><span>频率和定位</span></button>
         <button type="button" data-view-jump="products"><strong>产品</strong><span>库存与主推</span></button>
+        <button type="button" data-view-jump="work"><strong>工作</strong><span>员工完成记录</span></button>
         <button type="button" data-view-jump="insights"><strong>建议</strong><span>下周选题提醒</span></button>
       </div>
     </section>
@@ -275,6 +277,31 @@
       <div class="toolbar stats-toolbar">
         <select id="stats-month-filter"></select>
         <select id="stats-account-filter"></select>
+        <select id="stats-sort-field" aria-label="数据排序指标">
+          <option value="time">按发布时间</option>
+          <optgroup label="小红书">
+            <option value="xhs-likes">小红书点赞</option>
+            <option value="xhs-saves">小红书收藏</option>
+            <option value="xhs-comments">小红书评论</option>
+            <option value="xhs-conversions">小红书转化</option>
+          </optgroup>
+          <optgroup label="抖音">
+            <option value="douyin-likes">抖音点赞</option>
+            <option value="douyin-saves">抖音收藏</option>
+            <option value="douyin-comments">抖音评论</option>
+            <option value="douyin-conversions">抖音转化</option>
+          </optgroup>
+          <optgroup label="合计">
+            <option value="total-likes">合计点赞</option>
+            <option value="total-saves">合计收藏</option>
+            <option value="total-comments">合计评论</option>
+            <option value="total-conversions">合计转化</option>
+          </optgroup>
+        </select>
+        <select id="stats-sort-direction" aria-label="数据排序方向">
+          <option value="desc">近到远 / 高到低</option>
+          <option value="asc">远到近 / 低到高</option>
+        </select>
         <div class="search-field">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.3-4.3M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z"/></svg>
           <input id="stats-search" placeholder="搜索标题、账号、赛道" />
@@ -310,6 +337,89 @@
           </thead>
           <tbody id="stats-table-body"></tbody>
         </table>
+      </div>
+    </section>
+
+    <section class="view" id="work-view">
+      <div class="view-heading">
+        <div>
+          <span class="eyebrow">WORK RECORD</span>
+          <h1>员工工作完成记录</h1>
+        </div>
+        <button class="secondary-button work-admin-only" id="export-work-records" type="button">导出本周记录</button>
+      </div>
+      <section class="panel work-auth-panel">
+        <div class="panel-head">
+          <div>
+            <h2>工作记录权限</h2>
+            <span class="row-meta">管理员可查看全部；员工本人只能查看自己的完成记录。</span>
+          </div>
+          <button class="secondary-button small hidden" id="work-logout" type="button">退出工作记录</button>
+        </div>
+        <form id="work-login-form" class="work-login-form">
+          <label>身份
+            <select name="role">
+              <option value="admin">管理员</option>
+              <option value="employee">员工本人</option>
+            </select>
+          </label>
+          <label>负责人姓名<input name="owner" placeholder="员工登录时填写，例如：小林" /></label>
+          <label>访问口令<input name="password" type="password" autocomplete="current-password" required placeholder="请输入工作记录口令" /></label>
+          <button class="primary-button" type="submit">查看工作记录</button>
+        </form>
+        <div id="work-auth-status" class="work-auth-status hidden"></div>
+      </section>
+      <section class="panel work-locked-state" id="work-locked-state">
+        <span class="eyebrow">PRIVATE</span>
+        <h2>无权限查看工作记录</h2>
+        <p class="row-meta">该板块只对管理员和员工本人开放。其他人可以继续使用标题库、发布记录、数据统计等公共运营功能。</p>
+      </section>
+      <div id="work-secure-content" class="work-secure-content hidden">
+        <div class="toolbar work-toolbar">
+          <div class="search-field">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.3-4.3M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z"/></svg>
+            <input id="work-search" placeholder="搜索标题、负责人、账号" />
+          </div>
+          <select id="work-week-filter"></select>
+          <select id="work-owner-filter"></select>
+          <select id="work-account-filter"></select>
+        </div>
+        <div id="work-metric-grid" class="metric-grid"></div>
+        <section id="work-account-strip" class="work-account-strip"></section>
+        <div class="work-layout">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>负责人完成情况</h2>
+                <span class="row-meta">根据发布记录里的负责人字段归属</span>
+              </div>
+            </div>
+            <div id="work-owner-list" class="work-owner-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>新媒体工作记录</h2>
+                <span class="row-meta">有发布时间 + 制作进度100% 才计入完成篇数</span>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="data-table work-table">
+                <thead>
+                  <tr>
+                    <th>内容</th>
+                    <th>账号</th>
+                    <th>负责人</th>
+                    <th>发布时间</th>
+                    <th>制作进度</th>
+                    <th>计入</th>
+                  </tr>
+                </thead>
+                <tbody id="work-record-table"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
       </div>
     </section>
 
@@ -516,6 +626,6 @@
     </button>
   </nav>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/assets/app?v=statsfix"></script>
+  <script src="/assets/app?v=syncfix"></script>
 </body>
 </html>

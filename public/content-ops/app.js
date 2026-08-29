@@ -6,10 +6,13 @@
   }
 
   const API_URL = "/api/content-ops/state";
+  const WORK_AUTH_API = "/api/content-ops/work-auth";
   const WHOLESALE_PRODUCTS_API = "/api/content-ops/wholesale-products";
   const DEFAULT_WHOLESALE_ADMIN_URL = "https://pupuhome-wholesale.onrender.com/admin.html";
   const TEST_SERVER_URL = "http://127.0.0.1:4322/api/content-ops/state";
   const STORAGE_KEY = "content_ops_state_v1";
+  const WORK_AUTH_STORAGE_KEY = "content_ops_work_auth_v1";
+  const STATE_REFRESH_INTERVAL_MS = 30000;
   const platforms = ["小红书", "抖音", "视频号", "B站", "公众号", "微博", "Instagram", "TikTok", "LinkedIn", "X"];
   const accountColorPalette = ["#1f7a72", "#d6634f", "#3f6fb5", "#c98b22", "#7562a9", "#2f855a", "#b45309", "#be4b7a", "#2563eb", "#64748b"];
   const contentTypes = ["教程干货", "避坑清单", "测评种草", "观点反常识", "故事案例", "热点借势", "账号人设", "成交转化"];
@@ -248,10 +251,34 @@
   let state = structuredClone(seedState);
   let apiOnline = false;
   let saveTimer = null;
+  let saveInFlight = false;
+  let refreshTimer = null;
+  let lastSyncedStateAt = "";
+  let hasLoadedRemoteState = false;
+  let syncFailureCount = 0;
   let batchTitleDrafts = [];
   let calendarCursor = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
   let statsMonth = todayDate().slice(0, 7);
+  let statsSortField = "time";
+  let statsSortDirection = "desc";
+  let workAuth = loadWorkAuth();
+  let workWeek = dateKey(weekStart());
   const isFileMode = location.protocol === "file:";
+
+  function loadWorkAuth() {
+    try {
+      const parsed = JSON.parse(sessionStorage.getItem(WORK_AUTH_STORAGE_KEY) || "null");
+      return parsed && ["admin", "employee"].includes(parsed.role) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function saveWorkAuth(auth) {
+    workAuth = auth;
+    if (auth) sessionStorage.setItem(WORK_AUTH_STORAGE_KEY, JSON.stringify(auth));
+    else sessionStorage.removeItem(WORK_AUTH_STORAGE_KEY);
+  }
 
   function loadLocal() {
     try {
@@ -322,10 +349,15 @@
       if (!response.ok) throw new Error("api unavailable");
       state = normalizeState(await response.json());
       apiOnline = true;
+      hasLoadedRemoteState = true;
+      syncFailureCount = 0;
+      lastSyncedStateAt = state.updatedAt || "";
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch {
       state = loadLocal();
       apiOnline = false;
+      syncFailureCount += 1;
+      lastSyncedStateAt = state.updatedAt || "";
     }
     updateStorageStatus();
     hydrateControls();
@@ -333,7 +365,17 @@
   }
 
   function updateStorageStatus() {
-    $("#storage-status").textContent = apiOnline ? "内网共享数据已连接" : "本机临时数据，启动内网服务后可共享";
+    const status = $("#storage-status");
+    if (!status) return;
+    if (isFileMode) {
+      status.textContent = "本机文件模式";
+    } else if (apiOnline) {
+      status.textContent = "共享数据已连接";
+    } else if (hasLoadedRemoteState || lastSyncedStateAt) {
+      status.textContent = "共享数据同步中，显示最近一次数据";
+    } else {
+      status.textContent = "连接共享数据中";
+    }
     document.body.classList.toggle("is-file-mode", isFileMode);
   }
 
@@ -346,6 +388,7 @@
 
   async function saveState() {
     if (!apiOnline) return;
+    saveInFlight = true;
     try {
       const response = await fetch(API_URL, {
         method: "PUT",
@@ -353,11 +396,67 @@
         body: JSON.stringify(state),
       });
       if (!response.ok) throw new Error("save failed");
+      const result = await response.json().catch(() => ({}));
+      if (result.updatedAt) {
+        state.updatedAt = result.updatedAt;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      }
+      lastSyncedStateAt = result.updatedAt || state.updatedAt || lastSyncedStateAt;
+      apiOnline = true;
+      hasLoadedRemoteState = true;
+      syncFailureCount = 0;
+      updateStorageStatus();
     } catch {
       apiOnline = false;
+      syncFailureCount += 1;
       updateStorageStatus();
       toast("共享服务暂时不可用，已保存到本机");
+    } finally {
+      saveInFlight = false;
     }
+  }
+
+  async function refreshRemoteState(options = {}) {
+    if (isFileMode || saveTimer || saveInFlight || $("dialog[open]")) return;
+    try {
+      const response = await fetch(API_URL, { cache: "no-store" });
+      if (!response.ok) throw new Error("api unavailable");
+      const remoteState = normalizeState(await response.json());
+      const remoteUpdatedAt = remoteState.updatedAt || "";
+      if (remoteUpdatedAt && remoteUpdatedAt !== lastSyncedStateAt) {
+        state = remoteState;
+        apiOnline = true;
+        hasLoadedRemoteState = true;
+        syncFailureCount = 0;
+        lastSyncedStateAt = remoteUpdatedAt;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        updateStorageStatus();
+        hydrateControls();
+        renderAll();
+        if (!options.silent) toast("已同步最新共享数据");
+      } else if (!apiOnline) {
+        apiOnline = true;
+        hasLoadedRemoteState = true;
+        syncFailureCount = 0;
+        updateStorageStatus();
+      }
+    } catch {
+      syncFailureCount += 1;
+      if (apiOnline && syncFailureCount >= 2) {
+        apiOnline = false;
+        updateStorageStatus();
+      }
+    }
+  }
+
+  function startRemoteRefresh() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(() => refreshRemoteState({ silent: true }), STATE_REFRESH_INTERVAL_MS);
+    window.addEventListener("focus", () => refreshRemoteState({ silent: true }));
+    window.addEventListener("online", () => refreshRemoteState({ silent: true }));
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) refreshRemoteState({ silent: true });
+    });
   }
 
   async function migrateFileData() {
@@ -421,6 +520,12 @@
       const currentStatsAccount = statsAccount.value || "all";
       statsAccount.innerHTML = `<option value="all">全部账号</option>${options}`;
       statsAccount.value = currentStatsAccount === "all" || state.accounts.some((account) => account.id === currentStatsAccount) ? currentStatsAccount : "all";
+    }
+    const workAccount = $("#work-account-filter");
+    if (workAccount) {
+      const currentWorkAccount = workAccount.value || "all";
+      workAccount.innerHTML = `<option value="all">全部账号</option>${options}`;
+      workAccount.value = currentWorkAccount === "all" || state.accounts.some((account) => account.id === currentWorkAccount) ? currentWorkAccount : "all";
     }
   }
 
@@ -709,6 +814,7 @@
     renderProducts();
     renderPosts();
     renderStats();
+    renderWorkRecords();
     renderInsights();
   }
 
@@ -1324,7 +1430,29 @@
       return postMonth(post) === statsMonth
         && (!query || haystack.includes(query))
         && (accountId === "all" || post.accountId === accountId);
-    }).sort((a, b) => totalPostMetric(b, "likes") - totalPostMetric(a, "likes") || String(b.publishedAt || b.scheduledAt).localeCompare(String(a.publishedAt || a.scheduledAt)));
+    }).sort(compareStatsPosts);
+  }
+
+  function statsSortValue(post) {
+    if (statsSortField === "time") {
+      const timestamp = new Date(postReviewDateTime(post)).getTime();
+      return Number.isNaN(timestamp) ? 0 : timestamp;
+    }
+    const [scope, field] = statsSortField.split("-");
+    if (!statsMetricFields.includes(field)) return 0;
+    if (scope === "total") return totalPostMetric(post, field);
+    if (statsPlatforms.some((platform) => platform.key === scope)) return platformMetric(post, scope, field);
+    return 0;
+  }
+
+  function compareStatsPosts(a, b) {
+    const first = statsSortValue(a);
+    const second = statsSortValue(b);
+    if (first !== second) return statsSortDirection === "asc" ? first - second : second - first;
+    const aTime = new Date(postReviewDateTime(a)).getTime() || 0;
+    const bTime = new Date(postReviewDateTime(b)).getTime() || 0;
+    if (aTime !== bTime) return bTime - aTime;
+    return String(a.headline || "").localeCompare(String(b.headline || ""), "zh-Hans-CN");
   }
 
   function renderStats() {
@@ -1406,6 +1534,182 @@
           <span>合计转化 <strong>${totalConversions}</strong></span>
         </div>
       </td>
+    </tr>`;
+  }
+
+  function hasWorkAccess() {
+    return Boolean(workAuth && ["admin", "employee"].includes(workAuth.role));
+  }
+
+  function isWorkAdmin() {
+    return workAuth?.role === "admin";
+  }
+
+  function workOwner(post) {
+    const account = accountById(post.accountId);
+    return String(post.owner || account?.owner || "未分配").trim() || "未分配";
+  }
+
+  function workPostDateTime(post) {
+    return post.publishedAt || post.scheduledAt || "";
+  }
+
+  function startOfWeekKey(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    const monday = new Date(date);
+    const day = monday.getDay() || 7;
+    monday.setHours(0, 0, 0, 0);
+    monday.setDate(monday.getDate() - day + 1);
+    return dateKey(monday);
+  }
+
+  function weekEndKey(weekKey) {
+    if (!weekKey) return "";
+    return dateKey(addDays(localDate(weekKey), 6));
+  }
+
+  function weekLabel(weekKey) {
+    if (!weekKey) return "未选择周";
+    return `${weekKey} 至 ${weekEndKey(weekKey).slice(5)}`;
+  }
+
+  function isWorkCounted(post) {
+    return Boolean(workPostDateTime(post)) && progressInfo(post).ratio === 100;
+  }
+
+  function workWeekOptions() {
+    const weeks = [...new Set(state.posts.map((post) => startOfWeekKey(workPostDateTime(post))).filter(Boolean))].sort().reverse();
+    const current = dateKey(weekStart());
+    if (!weeks.includes(current)) weeks.unshift(current);
+    if (!weeks.includes(workWeek)) weeks.unshift(workWeek);
+    return weeks;
+  }
+
+  function hydrateWorkFilters() {
+    const weekSelect = $("#work-week-filter");
+    const ownerSelect = $("#work-owner-filter");
+    if (!weekSelect || !ownerSelect) return;
+    const weeks = workWeekOptions();
+    weekSelect.innerHTML = weeks.map((week) => `<option value="${escapeHtml(week)}">${escapeHtml(weekLabel(week))}</option>`).join("");
+    weekSelect.value = weeks.includes(workWeek) ? workWeek : weeks[0];
+    workWeek = weekSelect.value;
+
+    const owners = [...new Set(state.posts.map(workOwner).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+    const currentOwner = ownerSelect.value || "all";
+    const ownerOptions = isWorkAdmin()
+      ? `<option value="all">全部负责人</option>${owners.map((owner) => `<option value="${escapeHtml(owner)}">${escapeHtml(owner)}</option>`).join("")}`
+      : `<option value="${escapeHtml(workAuth?.owner || "")}">${escapeHtml(workAuth?.owner || "本人")}</option>`;
+    ownerSelect.innerHTML = ownerOptions;
+    ownerSelect.value = isWorkAdmin() && (currentOwner === "all" || owners.includes(currentOwner)) ? currentOwner : (isWorkAdmin() ? "all" : workAuth?.owner || "");
+  }
+
+  function authorizedWorkPosts() {
+    if (!hasWorkAccess()) return [];
+    return state.posts.filter((post) => isWorkAdmin() || workOwner(post) === workAuth.owner);
+  }
+
+  function weekWorkPosts() {
+    return authorizedWorkPosts().filter((post) => startOfWeekKey(workPostDateTime(post)) === workWeek);
+  }
+
+  function filteredWorkPosts() {
+    const query = $("#work-search")?.value.trim().toLowerCase() || "";
+    const owner = $("#work-owner-filter")?.value || "all";
+    const accountId = $("#work-account-filter")?.value || "all";
+    return weekWorkPosts().filter((post) => {
+      const account = accountById(post.accountId);
+      const ownerName = workOwner(post);
+      const haystack = [post.headline, post.niche, post.contentType, account?.name, account?.platform, ownerName].join(" ").toLowerCase();
+      return (!query || haystack.includes(query))
+        && (owner === "all" || ownerName === owner)
+        && (accountId === "all" || post.accountId === accountId);
+    }).sort((a, b) => {
+      const aTime = new Date(workPostDateTime(a)).getTime() || 0;
+      const bTime = new Date(workPostDateTime(b)).getTime() || 0;
+      return bTime - aTime || String(a.headline || "").localeCompare(String(b.headline || ""), "zh-Hans-CN");
+    });
+  }
+
+  function renderWorkRecords() {
+    const content = $("#work-secure-content");
+    const locked = $("#work-locked-state");
+    const form = $("#work-login-form");
+    const status = $("#work-auth-status");
+    if (!content || !locked || !form) return;
+    const allowed = hasWorkAccess();
+    content.classList.toggle("hidden", !allowed);
+    locked.classList.toggle("hidden", allowed);
+    form.classList.toggle("hidden", allowed);
+    $("#work-logout")?.classList.toggle("hidden", !allowed);
+    $$(".work-admin-only").forEach((node) => node.classList.toggle("hidden", !isWorkAdmin()));
+    if (status) {
+      status.classList.toggle("hidden", !allowed);
+      status.textContent = allowed ? `${isWorkAdmin() ? "管理员" : workAuth.owner} 已进入工作记录` : "";
+    }
+    if (!allowed) return;
+
+    hydrateWorkFilters();
+    const posts = filteredWorkPosts();
+    const weekPosts = weekWorkPosts();
+    const counted = weekPosts.filter(isWorkCounted);
+    const scheduledUnfinished = weekPosts.filter((post) => Boolean(workPostDateTime(post)) && !isWorkCounted(post));
+    const unassigned = authorizedWorkPosts().filter((post) => !workPostDateTime(post));
+    const target = isWorkAdmin() ? 12 : Math.max(counted.length, 0);
+    $("#work-metric-grid").innerHTML = [
+      metric(isWorkAdmin() ? "本周计入产出" : "我的本周产出", `${counted.length}${isWorkAdmin() ? " / 12" : ""}`, isWorkAdmin() ? (counted.length >= 12 ? "已达到每周最少 12 篇要求" : `距离每周 12 篇还差 ${Math.max(12 - counted.length, 0)} 篇`) : "仅显示本人负责内容", "teal"),
+      metric("已排期且100%", counted.length, "按照发布时间所在周统计", "blue"),
+      metric("已排期未完成", scheduledUnfinished.length, "有时间，但制作进度未到 100%", "amber"),
+      metric("未分配发布时间", unassigned.length, "暂不计入本周产出", "coral"),
+    ];
+    renderWorkAccountStrip(counted);
+    renderWorkOwners(weekPosts);
+    $("#work-record-table").innerHTML = posts.length ? posts.map(workRecordRow).join("") : `<tr><td colspan="6">${empty("当前权限范围内没有符合条件的工作记录。")}</td></tr>`;
+  }
+
+  function renderWorkAccountStrip(countedPosts) {
+    const rows = state.accounts.slice(0, 5).map((account) => {
+      const count = countedPosts.filter((post) => post.accountId === account.id).length;
+      return `<article class="work-account-card" style="${accountStyle(account)}">
+        <span>${escapeHtml(account.name)}</span>
+        <strong>${count}篇</strong>
+      </article>`;
+    });
+    $("#work-account-strip").innerHTML = rows.join("") || empty("还没有账号。");
+  }
+
+  function renderWorkOwners(posts) {
+    const counted = posts.filter(isWorkCounted);
+    const byOwner = new Map();
+    counted.forEach((post) => {
+      const owner = workOwner(post);
+      const entry = byOwner.get(owner) || { owner, count: 0, accounts: new Map() };
+      entry.count += 1;
+      const accountName = accountById(post.accountId)?.name || "未关联账号";
+      entry.accounts.set(accountName, (entry.accounts.get(accountName) || 0) + 1);
+      byOwner.set(owner, entry);
+    });
+    const rows = [...byOwner.values()].sort((a, b) => b.count - a.count || a.owner.localeCompare(b.owner, "zh-Hans-CN"));
+    const max = Math.max(...rows.map((row) => row.count), 1);
+    $("#work-owner-list").innerHTML = rows.length ? rows.map((row) => `<article class="work-owner-row">
+      <div><strong>${escapeHtml(row.owner)}</strong><span class="row-meta">${[...row.accounts.entries()].map(([name, count]) => `${escapeHtml(name)} ${count}篇`).join("｜")}</span></div>
+      <div class="bar"><span style="width:${Math.round(row.count / max * 100)}%"></span></div>
+      <strong>${row.count}</strong>
+    </article>`).join("") : empty("当前周还没有计入完成的内容。");
+  }
+
+  function workRecordRow(post) {
+    const account = accountById(post.accountId);
+    const info = progressInfo(post);
+    const counted = isWorkCounted(post);
+    return `<tr>
+      <td><strong>${escapeHtml(post.headline || "未命名内容")}</strong><div class="row-meta">${escapeHtml(post.contentType || "未分类")}｜${escapeHtml(post.niche || "未填写赛道")}</div></td>
+      <td>${escapeHtml(account?.name || "未关联账号")}</td>
+      <td>${escapeHtml(workOwner(post))}</td>
+      <td>${dateText(workPostDateTime(post))}</td>
+      <td><span class="pill ${counted ? "" : "amber"}">${info.ratio}%</span></td>
+      <td>${counted ? "1篇" : "0篇"}</td>
     </tr>`;
   }
 
@@ -1638,6 +1942,18 @@
     ["title-search", "title-platform-filter", "title-type-filter", "title-formula-filter"].forEach((id) => $(`#${id}`).addEventListener("input", renderTitles));
     ["post-search", "post-status-filter", "post-account-filter"].forEach((id) => $(`#${id}`).addEventListener("input", renderPosts));
     ["stats-search", "stats-account-filter"].forEach((id) => $(`#${id}`).addEventListener("input", renderStats));
+    ["work-search", "work-week-filter", "work-owner-filter", "work-account-filter"].forEach((id) => $(`#${id}`)?.addEventListener("input", (event) => {
+      if (id === "work-week-filter") workWeek = event.currentTarget.value;
+      renderWorkRecords();
+    }));
+    $("#stats-sort-field").addEventListener("change", (event) => {
+      statsSortField = event.currentTarget.value;
+      renderStats();
+    });
+    $("#stats-sort-direction").addEventListener("change", (event) => {
+      statsSortDirection = event.currentTarget.value;
+      renderStats();
+    });
     $("#stats-month-filter").addEventListener("change", (event) => {
       statsMonth = event.currentTarget.value;
       renderStats();
@@ -1901,6 +2217,9 @@
     $("#import-data").addEventListener("change", importData);
     $("#migrate-file-data").addEventListener("click", migrateFileData);
     $("#copy-brief").addEventListener("click", copyBrief);
+    $("#work-login-form")?.addEventListener("submit", loginWorkRecords);
+    $("#work-logout")?.addEventListener("click", logoutWorkRecords);
+    $("#export-work-records")?.addEventListener("click", exportWorkRecords);
     progressSteps.forEach((step) => {
       $("#post-form").elements[step.key].addEventListener("change", (event) => syncProgressFieldset(event.currentTarget));
     });
@@ -1926,8 +2245,63 @@
     $("#batch-title-dialog").showModal();
   }
 
+  async function loginWorkRecords(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const payload = readForm(form);
+    const button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    button.textContent = "验证中";
+    try {
+      const response = await fetch(WORK_AUTH_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.ok) throw new Error(result.error || "口令不正确");
+      saveWorkAuth({ role: result.role, owner: result.owner || "" });
+      form.reset();
+      renderWorkRecords();
+      toast(result.role === "admin" ? "已进入管理员工作记录" : `已进入 ${result.owner} 的工作记录`);
+    } catch (error) {
+      toast(error.message || "工作记录验证失败");
+    } finally {
+      button.disabled = false;
+      button.textContent = "查看工作记录";
+    }
+  }
+
+  function logoutWorkRecords() {
+    saveWorkAuth(null);
+    renderWorkRecords();
+    toast("已退出工作记录");
+  }
+
+  function exportWorkRecords() {
+    if (!isWorkAdmin()) return;
+    const rows = weekWorkPosts().filter(isWorkCounted).map((post) => {
+      const account = accountById(post.accountId);
+      return {
+        title: post.headline || "",
+        account: account?.name || "",
+        owner: workOwner(post),
+        publishedAt: workPostDateTime(post),
+        progress: progressInfo(post).ratio,
+        count: 1,
+      };
+    });
+    const blob = new Blob([JSON.stringify({ week: workWeek, target: 12, total: rows.length, rows }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `content-ops-work-${workWeek}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   function switchView(view) {
-    const secondaryViews = ["titles", "accounts", "products", "insights"];
+    const secondaryViews = ["titles", "accounts", "products", "work", "insights"];
     $$(".tab[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
     $("#mobile-more-toggle")?.classList.toggle("active", secondaryViews.includes(view));
     $$("[data-mobile-view]").forEach((button) => button.classList.toggle("active", button.dataset.mobileView === view));
@@ -1998,5 +2372,5 @@
   }
 
   bindEvents();
-  loadState();
+  loadState().then(startRemoteRefresh);
 })();
