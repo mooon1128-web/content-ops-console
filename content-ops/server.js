@@ -15,6 +15,8 @@ const xhsDataFile = process.env.XHS_MEDIA_DATA || bundledXhsDataFile;
 const xhsMediaPassword = process.env.XHS_MEDIA_PASSWORD || "xhs2026";
 const xhsMediaAuthSecret = process.env.XHS_MEDIA_AUTH_SECRET || xhsMediaPassword;
 const xhsMediaAuthCookie = "xhs_media_auth";
+const workAdminPassword = process.env.CONTENT_OPS_WORK_ADMIN_PASSWORD || "admin2026";
+const workUsersConfig = process.env.CONTENT_OPS_WORK_USERS || "小林:staff2026";
 const wholesaleAdminUsername = process.env.WHOLESALE_ADMIN_USERNAME || "";
 const wholesaleAdminPassword = process.env.WHOLESALE_ADMIN_PASSWORD || "";
 const backupDir = join(dirname(dataFile), "backups");
@@ -72,6 +74,36 @@ function parseCookies(cookieHeader = "") {
 function hasXhsAuth(request) {
   const cookies = parseCookies(request.headers.cookie || "");
   return safeEqual(cookies[xhsMediaAuthCookie], xhsAuthToken());
+}
+
+function parseWorkUsers() {
+  return String(workUsersConfig || "")
+    .split(/[;\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => {
+      const separator = item.includes("=") ? "=" : ":";
+      const index = item.indexOf(separator);
+      if (index === -1) return null;
+      const owner = item.slice(0, index).trim();
+      const password = item.slice(index + 1).trim();
+      return owner && password ? { owner, password } : null;
+    })
+    .filter(Boolean);
+}
+
+function verifyWorkAccess(payload = {}) {
+  const role = String(payload.role || "").trim();
+  const owner = String(payload.owner || "").trim();
+  const password = String(payload.password || "");
+  if (role === "admin" && safeEqual(password, workAdminPassword)) {
+    return { ok: true, role: "admin", owner: "" };
+  }
+  if (role === "employee") {
+    const user = parseWorkUsers().find((item) => item.owner === owner && safeEqual(password, item.password));
+    if (user) return { ok: true, role: "employee", owner: user.owner };
+  }
+  return { ok: false, error: "工作记录口令不正确" };
 }
 
 async function readBody(request) {
@@ -162,13 +194,10 @@ async function writeContentOpsState(state, options = {}) {
     updatedAt: options.preserveUpdatedAt ? state.updatedAt || new Date().toISOString() : new Date().toISOString(),
   };
   if (!validContentOpsState(incomingState)) throw new Error("Invalid state shape");
-  const currentState = hasSupabaseStateStore()
-    ? await readSupabaseStateRow(contentOpsStateId)
-    : await readFileState().catch(() => null);
   const nextState = {
-    ...mergeContentOpsStates(currentState, incomingState),
+    ...incomingState,
     updatedAt: incomingState.updatedAt,
-    clientUpdatedAt: incomingState.clientUpdatedAt || currentState?.clientUpdatedAt || incomingState.updatedAt,
+    clientUpdatedAt: incomingState.clientUpdatedAt || incomingState.updatedAt,
   };
   if (!validContentOpsState(nextState)) throw new Error("Invalid state shape");
   if (hasSupabaseStateStore()) {
@@ -867,6 +896,26 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (requireXhsAuth(request, response)) return;
+    if (request.url?.startsWith("/api/content-ops/work-auth")) {
+      if (request.method === "OPTIONS") {
+        response.writeHead(204, corsHeaders);
+        response.end();
+        return;
+      }
+      if (request.method !== "POST") {
+        send(response, 405, { error: "Method not allowed" }, { Allow: "POST, OPTIONS" });
+        return;
+      }
+      const body = await readBody(request);
+      const parsed = body ? JSON.parse(body) : {};
+      const result = verifyWorkAccess(parsed);
+      if (!result.ok) {
+        send(response, 401, result);
+        return;
+      }
+      send(response, 200, result);
+      return;
+    }
     if (request.url?.startsWith("/api/content-ops/wholesale-products")) {
       if (request.method === "OPTIONS") {
         response.writeHead(204, corsHeaders);
