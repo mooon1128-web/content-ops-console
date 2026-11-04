@@ -10,9 +10,9 @@
   const WHOLESALE_PRODUCTS_API = "/api/content-ops/wholesale-products";
   const DEFAULT_WHOLESALE_ADMIN_URL = "https://pupuhome-wholesale.onrender.com/admin.html";
   const TEST_SERVER_URL = "http://127.0.0.1:4322/api/content-ops/state";
-  const STORAGE_KEY = "content_ops_state_v1";
+  let STORAGE_KEY = "content_ops_state_v2_unbound";
   const WORK_AUTH_STORAGE_KEY = "content_ops_work_auth_v1";
-  const STATE_REFRESH_INTERVAL_MS = 30000;
+  const STATE_REFRESH_INTERVAL_MS = 5000;
   const platforms = ["小红书", "抖音", "视频号", "B站", "公众号", "微博", "Instagram", "TikTok", "LinkedIn", "X"];
   const accountColorPalette = ["#1f7a72", "#d6634f", "#3f6fb5", "#c98b22", "#7562a9", "#2f855a", "#b45309", "#be4b7a", "#2563eb", "#64748b"];
   const contentTypes = ["教程干货", "避坑清单", "测评种草", "观点反常识", "故事案例", "热点借势", "账号人设", "成交转化"];
@@ -252,6 +252,37 @@
   let apiOnline = false;
   let saveTimer = null;
   let saveInFlight = false;
+  let syncedState = null;
+  let hasPendingChanges = false;
+  let syncConflict = false;
+  let editVersion = 0;
+  let sessionUser = null;
+  let sessionEpoch = 0;
+  let refreshListenersBound = false;
+  const deviceId = localStorage.getItem("content_ops_device_v2") || crypto.randomUUID();
+  localStorage.setItem("content_ops_device_v2", deviceId);
+  let PENDING_KEY = `${STORAGE_KEY}_pending_v2`;
+
+  function keepPendingChanges() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    if (hasPendingChanges) localStorage.setItem(PENDING_KEY, JSON.stringify({ state, base: syncedState }));
+    else localStorage.removeItem(PENDING_KEY);
+  }
+
+  function acceptRemote(remote) {
+    if (hasPendingChanges) {
+      if (!syncedState) { syncConflict = true; return false; }
+      const merged = ContentOpsSync.mergeStates(syncedState, state, remote);
+      if (merged.conflicts.length) { syncConflict = true; return false; }
+      state = normalizeState(merged.state);
+    } else {
+      state = normalizeState(remote);
+    }
+    syncedState = structuredClone(remote);
+    lastSyncedStateAt = remote.updatedAt || "";
+    keepPendingChanges();
+    return true;
+  }
   let refreshTimer = null;
   let lastSyncedStateAt = "";
   let hasLoadedRemoteState = false;
@@ -282,7 +313,7 @@
 
   function loadLocal() {
     try {
-      return normalizeState(JSON.parse(localStorage.getItem(STORAGE_KEY)) || structuredClone(seedState));
+      return normalizeState(JSON.parse(localStorage.getItem(STORAGE_KEY)) || { accounts: [], posts: [], titles: [], products: [] });
     } catch {
       return normalizeState(structuredClone(seedState));
     }
@@ -344,24 +375,35 @@
   }
 
   async function loadState() {
+    const epoch = sessionEpoch;
+    try {
+      const pending = JSON.parse(localStorage.getItem(PENDING_KEY) || "null");
+      if (pending?.state) {
+        state = normalizeState(pending.state);
+        syncedState = pending.base;
+        hasPendingChanges = true;
+      }
+    } catch {}
     try {
       const response = await fetch(API_URL, { cache: "no-store" });
+      if (response.status === 401) { ContentOpsAccess.expired(); return; }
       if (!response.ok) throw new Error("api unavailable");
-      state = normalizeState(await response.json());
+      const remote = normalizeState(await response.json());
+      if (epoch !== sessionEpoch) return;
+      acceptRemote(remote);
       apiOnline = true;
       hasLoadedRemoteState = true;
       syncFailureCount = 0;
-      lastSyncedStateAt = state.updatedAt || "";
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch {
-      state = loadLocal();
+      if (epoch !== sessionEpoch) return;
+      if (!hasPendingChanges) state = loadLocal();
       apiOnline = false;
       syncFailureCount += 1;
-      lastSyncedStateAt = state.updatedAt || "";
     }
     updateStorageStatus();
     hydrateControls();
     renderAll();
+    if (hasPendingChanges && !syncConflict && apiOnline) queueSave(0);
   }
 
   function updateStorageStatus() {
@@ -369,89 +411,155 @@
     if (!status) return;
     if (isFileMode) {
       status.textContent = "本机文件模式";
+    } else if (syncConflict) {
+      status.textContent = "保存冲突：本机修改已保留";
+    } else if (hasPendingChanges || saveInFlight) {
+      status.textContent = apiOnline ? "正在保存共享数据" : "有未同步修改，已保存在本机";
     } else if (apiOnline) {
-      status.textContent = "共享数据已连接";
+      status.textContent = `已同步 · ${lastSyncedStateAt ? new Date(lastSyncedStateAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) : "共享数据已保存"}`;
     } else if (hasLoadedRemoteState || lastSyncedStateAt) {
       status.textContent = "共享数据同步中，显示最近一次数据";
     } else {
       status.textContent = "连接共享数据中";
     }
     document.body.classList.toggle("is-file-mode", isFileMode);
+    const resolveButton = $("#resolve-sync-conflict");
+    if (resolveButton) resolveButton.hidden = !syncConflict;
+  }
+
+  function queueSave(delay = 280) {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { saveTimer = null; saveState(); }, delay);
   }
 
   function scheduleSave() {
     state.updatedAt = new Date().toISOString();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(saveState, 280);
+    editVersion += 1;
+    hasPendingChanges = true;
+    keepPendingChanges();
+    updateStorageStatus();
+    if (!isFileMode && !syncConflict) queueSave();
   }
 
   async function saveState() {
-    if (!apiOnline) return;
+    if (!sessionUser || saveInFlight || isFileMode || syncConflict || !hasPendingChanges) return;
+    if (!syncedState) { await refreshRemoteState({ silent: true }); return; }
     saveInFlight = true;
+    const epoch = sessionEpoch;
+    const snapshot = structuredClone(state);
+    const savingVersion = editVersion;
+    let retry = false;
     try {
       const response = await fetch(API_URL, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(state),
+        headers: { "Content-Type": "application/json", "If-Match": `"${lastSyncedStateAt}"`, "X-Client-Id": deviceId },
+        body: JSON.stringify(snapshot),
       });
-      if (!response.ok) throw new Error("save failed");
-      const result = await response.json().catch(() => ({}));
-      if (result.updatedAt) {
-        state.updatedAt = result.updatedAt;
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      if (epoch !== sessionEpoch) return;
+      if (response.status === 401) { ContentOpsAccess.expired(); return; }
+      if ([403, 422].includes(response.status)) {
+        syncConflict = true;
+        const failure = await response.json();
+        toast(failure.error || "保存被拦截，本机修改已保留");
+        return;
       }
-      lastSyncedStateAt = result.updatedAt || state.updatedAt || lastSyncedStateAt;
+      if (response.status === 409) {
+        const latest = await fetch(API_URL, { cache: "no-store" });
+        if (!latest.ok) throw new Error("refresh failed");
+        const remote = normalizeState(await latest.json());
+        if (epoch !== sessionEpoch) return;
+        acceptRemote(remote);
+        apiOnline = true;
+        retry = !syncConflict;
+        if (syncConflict) toast("同一条数据被同时修改，本机修改已保留，请处理同步冲突");
+        else { hydrateControls(); renderAll(); }
+        return;
+      }
+      if (response.status === 428) {
+        syncConflict = true;
+        toast("页面需要更新，本机修改已保留，请导出后同步");
+        return;
+      }
+      if (!response.ok) throw new Error("save failed");
+      const result = await response.json();
+      if (epoch !== sessionEpoch) return;
+      snapshot.updatedAt = result.updatedAt;
+      syncedState = snapshot;
+      lastSyncedStateAt = result.updatedAt;
+      if (savingVersion === editVersion) { state = snapshot; hasPendingChanges = false; }
+      keepPendingChanges();
+      retry = hasPendingChanges;
       apiOnline = true;
       hasLoadedRemoteState = true;
       syncFailureCount = 0;
-      updateStorageStatus();
     } catch {
+      if (epoch !== sessionEpoch) return;
       apiOnline = false;
       syncFailureCount += 1;
-      updateStorageStatus();
-      toast("共享服务暂时不可用，已保存到本机");
+      retry = true;
+      toast("共享服务暂时不可用，本机修改已保留，将自动重试");
     } finally {
+      if (epoch !== sessionEpoch) return;
       saveInFlight = false;
+      updateStorageStatus();
+      if (retry && !syncConflict) queueSave(apiOnline ? 280 : 5000);
     }
   }
 
   async function refreshRemoteState(options = {}) {
-    if (isFileMode || saveTimer || saveInFlight || $("dialog[open]")) return;
+    if (!sessionUser || isFileMode || saveTimer || saveInFlight || syncConflict || $("dialog[open]")) return;
+    const epoch = sessionEpoch;
     try {
+      const versionResponse = await fetch("/api/content-ops/version", { cache: "no-store" });
+      if (epoch !== sessionEpoch) return;
+      if (versionResponse.status === 401) { ContentOpsAccess.expired(); return; }
+      if (!versionResponse.ok) throw new Error("version unavailable");
+      const version = await versionResponse.json();
+      if (epoch !== sessionEpoch) return;
+      if (syncedState && !hasPendingChanges && version.updatedAt === lastSyncedStateAt) {
+        apiOnline = true; syncFailureCount = 0; updateStorageStatus(); return;
+      }
       const response = await fetch(API_URL, { cache: "no-store" });
+      if (response.status === 401) { ContentOpsAccess.expired(); return; }
       if (!response.ok) throw new Error("api unavailable");
-      const remoteState = normalizeState(await response.json());
-      const remoteUpdatedAt = remoteState.updatedAt || "";
-      if (remoteUpdatedAt && remoteUpdatedAt !== lastSyncedStateAt) {
-        state = remoteState;
-        apiOnline = true;
-        hasLoadedRemoteState = true;
-        syncFailureCount = 0;
-        lastSyncedStateAt = remoteUpdatedAt;
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-        updateStorageStatus();
-        hydrateControls();
-        renderAll();
-        if (!options.silent) toast("已同步最新共享数据");
-      } else if (!apiOnline) {
-        apiOnline = true;
-        hasLoadedRemoteState = true;
-        syncFailureCount = 0;
-        updateStorageStatus();
+      const remote = normalizeState(await response.json());
+      if (epoch !== sessionEpoch) return;
+      const changed = remote.updatedAt !== lastSyncedStateAt;
+      if (changed || hasPendingChanges || !syncedState) {
+        if (acceptRemote(remote)) {
+          hydrateControls(); renderAll();
+          if (changed && !options.silent) toast("已同步最新共享数据");
+          if (hasPendingChanges) queueSave(0);
+        }
       }
+      apiOnline = true;
+      hasLoadedRemoteState = true;
+      syncFailureCount = 0;
     } catch {
+      if (epoch !== sessionEpoch) return;
       syncFailureCount += 1;
-      if (apiOnline && syncFailureCount >= 2) {
-        apiOnline = false;
-        updateStorageStatus();
-      }
+      if (syncFailureCount >= 2) apiOnline = false;
     }
+    updateStorageStatus();
+  }
+
+  async function resolveSyncConflict() {
+    if (!confirm("将导出本机修改作为备份，再加载最新共享数据。你可以根据备份补回修改，是否继续？")) return;
+    // Keep another local copy even if the browser blocks the download.
+    localStorage.setItem(`${STORAGE_KEY}_conflict_backup`, JSON.stringify({ state, base: syncedState }));
+    exportData();
+    hasPendingChanges = false;
+    syncConflict = false;
+    syncedState = null;
+    localStorage.removeItem(PENDING_KEY);
+    await loadState();
   }
 
   function startRemoteRefresh() {
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(() => refreshRemoteState({ silent: true }), STATE_REFRESH_INTERVAL_MS);
+    if (refreshListenersBound) return;
+    refreshListenersBound = true;
     window.addEventListener("focus", () => refreshRemoteState({ silent: true }));
     window.addEventListener("online", () => refreshRemoteState({ silent: true }));
     document.addEventListener("visibilitychange", () => {
@@ -465,10 +573,13 @@
     button.disabled = true;
     button.textContent = "迁移中";
     try {
+      const existing = await fetch(TEST_SERVER_URL, { cache: "no-store" });
+      if (!existing.ok) throw new Error("migrate target unavailable");
+      const target = await existing.json();
       state.updatedAt = new Date().toISOString();
       const response = await fetch(TEST_SERVER_URL, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "If-Match": `"${target.updatedAt}"` },
         body: JSON.stringify(state),
       });
       if (!response.ok) throw new Error("migrate failed");
@@ -1607,7 +1718,7 @@
 
   function authorizedWorkPosts() {
     if (!hasWorkAccess()) return [];
-    return state.posts.filter((post) => isWorkAdmin() || workOwner(post) === workAuth.owner);
+    return state.posts;
   }
 
   function weekWorkPosts() {
@@ -1616,7 +1727,7 @@
 
   function filteredWorkPosts() {
     const query = $("#work-search")?.value.trim().toLowerCase() || "";
-    const owner = $("#work-owner-filter")?.value || "all";
+    const owner = isWorkAdmin() ? ($("#work-owner-filter")?.value || "all") : "all";
     const accountId = $("#work-account-filter")?.value || "all";
     return weekWorkPosts().filter((post) => {
       const account = accountById(post.accountId);
@@ -2214,6 +2325,7 @@
     $("[data-delete-post]").addEventListener("click", () => deleteCurrent("post-dialog", "posts", "记录已删除"));
 
     $("#export-data").addEventListener("click", exportData);
+    $("#resolve-sync-conflict").addEventListener("click", resolveSyncConflict);
     $("#import-data").addEventListener("change", importData);
     $("#migrate-file-data").addEventListener("click", migrateFileData);
     $("#copy-brief").addEventListener("click", copyBrief);
@@ -2372,5 +2484,33 @@
   }
 
   bindEvents();
-  loadState().then(startRemoteRefresh);
+  ContentOpsAccess.connect({
+    async activate(user) {
+      clearTimeout(saveTimer); clearInterval(refreshTimer);
+      sessionEpoch += 1;
+      saveInFlight = false;
+      sessionUser = user;
+      STORAGE_KEY = `content_ops_state_v2_${user.id}_${user.scopeVersion}`;
+      PENDING_KEY = `${STORAGE_KEY}_pending_v2`;
+      state = normalizeState({ accounts: [], posts: [], titles: [], products: [] });
+      syncedState = null; hasPendingChanges = false; syncConflict = false;
+      saveTimer = null; lastSyncedStateAt = ""; apiOnline = false; hasLoadedRemoteState = false;
+      editVersion += 1;
+      saveWorkAuth({ role: user.role, owner: user.role === "admin" ? "" : user.name });
+      for (const form of document.querySelectorAll("dialog form")) form.reset();
+      await loadState();
+      startRemoteRefresh();
+    },
+    pause() {
+      clearTimeout(saveTimer); clearInterval(refreshTimer);
+      sessionEpoch += 1;
+      saveInFlight = false;
+      saveTimer = null; sessionUser = null;
+      if (hasPendingChanges) keepPendingChanges();
+    },
+    pending: () => hasPendingChanges,
+    accounts: () => state.accounts,
+    notify: toast,
+    refresh: () => refreshRemoteState({ silent: true }),
+  });
 })();

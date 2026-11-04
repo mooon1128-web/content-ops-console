@@ -1,6 +1,7 @@
+import { createAccessControl, publicState, scopedWrite, validateRows, makeAudit } from "./access.js";
 import { createServer } from "node:http";
-import { createHmac, timingSafeEqual } from "node:crypto";
-import { readFile, writeFile, mkdir, stat, readdir } from "node:fs/promises";
+import { createHmac, timingSafeEqual, randomUUID } from "node:crypto";
+import { readFile, writeFile, mkdir, stat, readdir, rename } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,8 +16,6 @@ const xhsDataFile = process.env.XHS_MEDIA_DATA || bundledXhsDataFile;
 const xhsMediaPassword = process.env.XHS_MEDIA_PASSWORD || "xhs2026";
 const xhsMediaAuthSecret = process.env.XHS_MEDIA_AUTH_SECRET || xhsMediaPassword;
 const xhsMediaAuthCookie = "xhs_media_auth";
-const workAdminPassword = process.env.CONTENT_OPS_WORK_ADMIN_PASSWORD || "admin2026";
-const workUsersConfig = process.env.CONTENT_OPS_WORK_USERS || "小林:staff2026";
 const wholesaleAdminUsername = process.env.WHOLESALE_ADMIN_USERNAME || "";
 const wholesaleAdminPassword = process.env.WHOLESALE_ADMIN_PASSWORD || "";
 const backupDir = join(dirname(dataFile), "backups");
@@ -44,7 +43,7 @@ const mime = {
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, PUT, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, If-Match, X-Client-Id",
 };
 
 function xhsAuthToken() {
@@ -76,46 +75,22 @@ function hasXhsAuth(request) {
   return safeEqual(cookies[xhsMediaAuthCookie], xhsAuthToken());
 }
 
-function parseWorkUsers() {
-  return String(workUsersConfig || "")
-    .split(/[;\n]/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .map((item) => {
-      const separator = item.includes("=") ? "=" : ":";
-      const index = item.indexOf(separator);
-      if (index === -1) return null;
-      const owner = item.slice(0, index).trim();
-      const password = item.slice(index + 1).trim();
-      return owner && password ? { owner, password } : null;
-    })
-    .filter(Boolean);
-}
-
-function verifyWorkAccess(payload = {}) {
-  const role = String(payload.role || "").trim();
-  const owner = String(payload.owner || "").trim();
-  const password = String(payload.password || "");
-  if (role === "admin" && safeEqual(password, workAdminPassword)) {
-    return { ok: true, role: "admin", owner: "" };
-  }
-  if (role === "employee") {
-    const user = parseWorkUsers().find((item) => item.owner === owner && safeEqual(password, item.password));
-    if (user) return { ok: true, role: "employee", owner: user.owner };
-  }
-  return { ok: false, error: "工作记录口令不正确" };
-}
-
 async function readBody(request) {
   const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 5 * 1024 * 1024) throw Object.assign(new Error("提交内容过大"), { status: 413 });
+    chunks.push(chunk);
+  }
   return Buffer.concat(chunks).toString("utf8");
 }
 
 async function ensureDataFile() {
   try {
     await stat(dataFile);
-  } catch {
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
     await mkdir(dirname(dataFile), { recursive: true });
     await writeFile(dataFile, JSON.stringify({ titles: [], accounts: [], posts: [], updatedAt: new Date().toISOString() }, null, 2));
   }
@@ -130,7 +105,7 @@ async function backupFile(filePath, targetDir, prefix) {
     const current = await readFile(filePath, "utf8");
     await mkdir(targetDir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    await writeFile(join(targetDir, `${prefix}-${stamp}.json`), current);
+    await writeFile(join(targetDir, `${prefix}-${stamp}-${randomUUID()}.json`), current);
   } catch (error) {
     if (error?.code !== "ENOENT") {
       console.warn(`Could not create data backup: ${error.message}`);
@@ -157,7 +132,9 @@ async function readFileState() {
 async function writeFileState(state) {
   await mkdir(dirname(dataFile), { recursive: true });
   await backupDataFile();
-  await writeFile(dataFile, JSON.stringify(state, null, 2));
+  const temporary = `${dataFile}.${randomUUID()}.tmp`;
+  await writeFile(temporary, JSON.stringify(state, null, 2));
+  await rename(temporary, dataFile);
 }
 
 async function supabaseRequest(path, options = {}) {
@@ -172,7 +149,8 @@ async function supabaseRequest(path, options = {}) {
   });
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`Supabase ${response.status}: ${text || response.statusText}`);
+    console.warn(`Shared database returned HTTP ${response.status}`);
+    throw new Error("共享数据库暂时不可用，请稍后重试");
   }
   return text ? JSON.parse(text) : null;
 }
@@ -184,34 +162,80 @@ async function readContentOpsState() {
 
   const seed = await readFileState();
   if (!validContentOpsState(seed)) throw new Error("Seed data shape is invalid");
-  await writeContentOpsState(seed, { preserveUpdatedAt: true });
-  return seed;
+  return writeContentOpsState(seed, { preserveUpdatedAt: true });
 }
 
-async function writeContentOpsState(state, options = {}) {
-  const incomingState = {
-    ...state,
-    updatedAt: options.preserveUpdatedAt ? state.updatedAt || new Date().toISOString() : new Date().toISOString(),
-  };
-  if (!validContentOpsState(incomingState)) throw new Error("Invalid state shape");
-  const nextState = {
-    ...incomingState,
-    updatedAt: incomingState.updatedAt,
-    clientUpdatedAt: incomingState.clientUpdatedAt || incomingState.updatedAt,
-  };
-  if (!validContentOpsState(nextState)) throw new Error("Invalid state shape");
+let contentOpsWriteQueue = Promise.resolve();
+
+function stateConflict(message = "共享数据已被其他人更新，请先同步后再保存") {
+  return Object.assign(new Error(message), { status: 409 });
+}
+
+function writeContentOpsState(state, options = {}) {
+  const pending = contentOpsWriteQueue.then(() => commitContentOpsState(state, options));
+  contentOpsWriteQueue = pending.catch(() => {});
+  return pending;
+}
+
+async function commitContentOpsState(state, options) {
+  if (!validContentOpsState(state)) throw new Error("Invalid state shape");
+  let current;
+  let databaseVersion;
   if (hasSupabaseStateStore()) {
-    await supabaseRequest("/content_ops_state?on_conflict=id", {
-      method: "POST",
-      headers: { Prefer: "resolution=merge-duplicates,return=representation" },
-      body: JSON.stringify({
-        id: contentOpsStateId,
-        state: nextState,
-        updated_at: nextState.updatedAt,
-      }),
-    });
+    const rows = await supabaseRequest(`/content_ops_state?id=eq.${encodeURIComponent(contentOpsStateId)}&select=state,updated_at`);
+    current = rows?.[0]?.state;
+    databaseVersion = rows?.[0]?.updated_at;
+  } else {
+    current = await readFileState();
   }
-  await writeFileState(nextState);
+  // Bootstrapping must never replace a row created by another instance.
+  if (options.preserveUpdatedAt && current) return current;
+  if (!options.preserveUpdatedAt && (!current || current.updatedAt !== options.expectedUpdatedAt)) throw stateConflict();
+  if (options.actor) {
+    const activeUser = current?._access?.users.find(user => user.id === options.actor.id && !user.disabled && user.sessionVersion === options.actor.sessionVersion);
+    if (!activeUser) throw Object.assign(new Error("登录权限已变更，请重新登录"), { status: 401 });
+  }
+  const proposed = options.actor && !options.system ? scopedWrite(current, state, options.actor) : state;
+  validateRows(proposed);
+  if (!options.system && current && current.posts.length - proposed.posts.length > Math.max(5, Math.ceil(current.posts.length * 0.2))) {
+    throw Object.assign(new Error("本次删除记录过多，已拦截以保护数据。请分批删除或联系管理员核对。"), { status: 422 });
+  }
+  const previousTime = Date.parse(current?.updatedAt || "") || 0;
+  const nextState = {
+    ...proposed,
+    _access: options.system ? proposed._access : current?._access,
+    _audit: current?._audit || [],
+    updatedAt: options.preserveUpdatedAt ? state.updatedAt || new Date().toISOString()
+      : new Date(Math.max(Date.now(), previousTime + 1)).toISOString(),
+    clientUpdatedAt: state.clientUpdatedAt || state.updatedAt,
+  };
+  const audit = makeAudit(current, nextState, options);
+  if (audit) nextState._audit = [...nextState._audit, audit];
+  else if (current && !options.preserveUpdatedAt) return current;
+  if (hasSupabaseStateStore()) {
+    if (current) {
+      // Keep history in the persistent database, independently of Render's filesystem.
+      await supabaseRequest("/content_ops_state?on_conflict=id", {
+        method: "POST", headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+        body: JSON.stringify({ id: `${contentOpsStateId}-history-${current.updatedAt}`, state: current, updated_at: current.updatedAt }),
+      });
+      const saved = await supabaseRequest(`/content_ops_state?id=eq.${encodeURIComponent(contentOpsStateId)}&updated_at=eq.${encodeURIComponent(databaseVersion)}`, {
+        method: "PATCH", headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ state: nextState, updated_at: nextState.updatedAt }),
+      });
+      if (!Array.isArray(saved) || !saved.length) throw stateConflict();
+    } else {
+      const created = await supabaseRequest("/content_ops_state?on_conflict=id", {
+        method: "POST", headers: { Prefer: "resolution=ignore-duplicates,return=representation" },
+        body: JSON.stringify({ id: contentOpsStateId, state: nextState, updated_at: nextState.updatedAt }),
+      });
+      if (!created?.length) return (await readSupabaseStateRow(contentOpsStateId));
+    }
+    // A failed local mirror must not report a successfully committed database write as failed.
+    await writeFileState(nextState).catch(error => console.warn(`Local mirror failed: ${error.message}`));
+  } else {
+    await writeFileState(nextState);
+  }
   return nextState;
 }
 
@@ -856,9 +880,24 @@ async function serveStatic(request, response) {
   }
 }
 
+async function readAccessOnly() {
+  if (!hasSupabaseStateStore()) return readFileState();
+  const rows = await supabaseRequest(`/content_ops_state?id=eq.${encodeURIComponent(contentOpsStateId)}&select=access:state->_access`);
+  return { _access: rows?.[0]?.access };
+}
+
+async function readContentOpsVersion() {
+  if (!hasSupabaseStateStore()) return (await readFileState()).updatedAt;
+  const rows = await supabaseRequest(`/content_ops_state?id=eq.${encodeURIComponent(contentOpsStateId)}&select=updated_at`);
+  return rows?.[0]?.updated_at ? new Date(rows[0].updated_at).toISOString() : null;
+}
+
+const access = createAccessControl({ read: readContentOpsState, readAccess: readAccessOnly, write: writeContentOpsState });
+
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url || "/", `http://${request.headers.host}`);
+    if (url.pathname.startsWith("/api/content-ops/")) response.setHeader("Cache-Control", "no-store");
     if (request.url?.startsWith("/api/health")) {
       send(response, 200, { ok: true, service: "content-ops", storage: hasSupabaseStateStore() ? "supabase" : "file", updatedAt: new Date().toISOString() });
       return;
@@ -896,6 +935,7 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (requireXhsAuth(request, response)) return;
+    if (await access.handle(request, response, url, send, readBody)) return;
     if (request.url?.startsWith("/api/content-ops/work-auth")) {
       if (request.method === "OPTIONS") {
         response.writeHead(204, corsHeaders);
@@ -908,11 +948,8 @@ const server = createServer(async (request, response) => {
       }
       const body = await readBody(request);
       const parsed = body ? JSON.parse(body) : {};
-      const result = verifyWorkAccess(parsed);
-      if (!result.ok) {
-        send(response, 401, result);
-        return;
-      }
+      const user = request.contentOpsUser;
+      const result = { ok: true, role: user.role, owner: user.role === "admin" ? "" : user.name };
       send(response, 200, result);
       return;
     }
@@ -950,14 +987,18 @@ const server = createServer(async (request, response) => {
       });
       return;
     }
-    if (request.url?.startsWith("/api/content-ops/state")) {
+    if (url.pathname === "/api/content-ops/version" && request.method === "GET") {
+      send(response, 200, { updatedAt: await readContentOpsVersion() }, { "Cache-Control": "no-store" });
+      return;
+    }
+    if (url.pathname === "/api/content-ops/state") {
       if (request.method === "OPTIONS") {
         response.writeHead(204, corsHeaders);
         response.end();
         return;
       }
       if (request.method === "GET") {
-        send(response, 200, await readContentOpsState(), { "Cache-Control": "no-store" });
+        send(response, 200, publicState(await readContentOpsState(), request.contentOpsUser), { "Cache-Control": "no-store" });
         return;
       }
       if (request.method === "PUT") {
@@ -967,7 +1008,12 @@ const server = createServer(async (request, response) => {
           send(response, 400, { error: "Invalid state shape" });
           return;
         }
-        const saved = await writeContentOpsState(parsed);
+        const expectedUpdatedAt = request.headers["if-match"]?.replace(/^"|"$/g, "");
+        if (!expectedUpdatedAt) {
+          send(response, 428, { error: "页面版本过旧，请先导出本机备份，再刷新页面后保存" });
+          return;
+        }
+        const saved = await writeContentOpsState(parsed, { expectedUpdatedAt, actor: request.contentOpsUser, userAgent: request.headers["user-agent"], clientId: request.headers["x-client-id"] });
         send(response, 200, { ok: true, updatedAt: saved.updatedAt, storage: hasSupabaseStateStore() ? "supabase" : "file" });
         return;
       }
@@ -1011,7 +1057,7 @@ const server = createServer(async (request, response) => {
     }
     await serveStatic(request, response);
   } catch (error) {
-    send(response, 500, { error: error.message || "Server error" });
+    send(response, error.status || (error instanceof SyntaxError ? 400 : 500), { error: error.message || "Server error" });
   }
 });
 

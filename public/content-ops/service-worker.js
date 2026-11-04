@@ -1,8 +1,10 @@
-const CACHE_NAME = "content-ops-app-v7-sync-fix";
+const CACHE_NAME = "content-ops-app-v9-user-audit-sync";
 const APP_SHELL = [
   "/",
   "/assets/styles",
   "/assets/app",
+  "/sync-core.js?v=20261104-access",
+  "/access-ui.js?v=20261104-access",
   "/manifest.webmanifest",
   "/app-icon.svg",
 ];

@@ -10,15 +10,25 @@
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/app-icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/app-icon.svg" />
-  <link rel="stylesheet" href="/assets/styles?v=syncfix" />
+  <link rel="stylesheet" href="/assets/styles?v=20261104-access" />
 </head>
-<body>
+<body class="signed-out">
+  <section id="login-layer" class="login-layer" aria-label="登录内容运营台">
+    <form id="login-form" class="login-card">
+      <span class="brand-mark">CO</span><h1>内容运营管理台</h1><p>登录后查看你负责的内容，所有设备同步同一份已保存数据。</p>
+      <label>登录账号<input name="username" autocomplete="username" required /></label>
+      <label>密码<input name="password" type="password" autocomplete="current-password" required /></label>
+      <p id="login-message" role="status" aria-live="polite"></p><button class="primary-button" type="submit">登录</button>
+    </form>
+  </section>
+  <dialog id="access-dialog" class="access-dialog"><div class="panel-head"><h2>账号与修改历史</h2><button id="access-close" class="secondary-button" type="button">关闭</button></div><div class="access-tabs"><button id="history-tab" class="secondary-button" type="button">修改历史</button><button id="users-tab" class="secondary-button" type="button" hidden>登录账号管理</button></div><p id="access-message" role="status"></p><div id="access-content"></div></dialog>
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark">CO</span>
       <div>
         <strong>内容运营管理台</strong>
         <small id="storage-status">同步共享数据中</small>
+        <button id="resolve-sync-conflict" class="secondary-button small" type="button" hidden>导出本机并同步</button>
       </div>
     </div>
     <nav class="tabs" aria-label="主要视图">
@@ -33,6 +43,7 @@
       <button class="tab mobile-more-tab" id="mobile-more-toggle" type="button">更多</button>
     </nav>
     <div class="top-actions">
+      <span id="signed-in-name" class="row-meta"></span><button id="open-access" class="secondary-button small" type="button">修改历史 / 登录账号</button><button id="sign-out" class="secondary-button small" type="button">退出</button>
       <button class="secondary-button small migration-button" id="migrate-file-data" type="button">迁移到测试服务</button>
       <button class="icon-action" id="export-data" title="导出备份" aria-label="导出备份">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10m0 0 4-4m-4 4-4-4M5 15v4h14v-4"/></svg>
@@ -626,6 +637,8 @@
     </button>
   </nav>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/assets/app?v=syncfix"></script>
+  <script src="/access-ui.js?v=20261104-access"></script>
+  <script src="/sync-core.js?v=20261104-access"></script>
+  <script src="/assets/app?v=20261104-access"></script>
 </body>
 </html>
