@@ -1,8 +1,8 @@
-const CACHE_NAME = "content-ops-app-v10-cache-failure-safe";
+const CACHE_NAME = "content-ops-app-v11-cache-failure-safe";
 const APP_SHELL = [
   "/",
   "/assets/styles",
-  "/assets/app",
+  "/assets/app?v=20261105-cache",
   "/sync-core.js?v=20261104-access",
   "/access-ui.js?v=20261104-access",
   "/manifest.webmanifest",
