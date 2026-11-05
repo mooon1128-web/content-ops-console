@@ -1,4 +1,4 @@
-const CACHE_NAME = "content-ops-app-v9-user-audit-sync";
+const CACHE_NAME = "content-ops-app-v10-cache-failure-safe";
 const APP_SHELL = [
   "/",
   "/assets/styles",

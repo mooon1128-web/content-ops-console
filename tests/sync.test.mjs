@@ -33,20 +33,21 @@ test('same-field and delete/edit conflicts preserve local work for explicit reso
 });
 
 const app = await readFile(new URL('../public/content-ops/app.js',import.meta.url),'utf8');
-function client(initial, baseline, network) {
+function client(initial, baseline, network, storageFails = false) {
  const store=new Map(),timers=new Map();let nextTimer=0;
- const c=vm.createContext({structuredClone,ContentOpsSync:context.ContentOpsSync,
-  localStorage:{setItem:(k,v)=>store.set(k,v),removeItem:k=>store.delete(k)},
+ const c=vm.createContext({structuredClone,DOMException,ContentOpsSync:context.ContentOpsSync,
+  localStorage:{setItem:(k,v)=>{if(storageFails)throw new DOMException("Storage full","QuotaExceededError");store.set(k,v)},getItem:k=>store.get(k),removeItem:k=>store.delete(k)},
   setTimeout:(fn,delay)=>{timers.set(++nextTimer,{fn,delay});return nextTimer},clearTimeout:id=>timers.delete(id),
   fetch:network,normalizeState:s=>s,hydrateControls(){},renderAll(){},toast(){},$:()=>null,
  });
  vm.runInContext(`const STORAGE_KEY='state';const PENDING_KEY='pending';const API_URL='/state';const isFileMode=false;const deviceId='test-device';let sessionUser={id:'tester'};let sessionEpoch=0;
  let state=${JSON.stringify(initial)}, syncedState=${JSON.stringify(baseline)}, lastSyncedStateAt=${JSON.stringify(baseline.updatedAt)};
+ let localCacheUnavailable=false,pendingBackupUnavailable=false;
  let saveTimer=null,saveInFlight=false,hasPendingChanges=false,syncConflict=false,editVersion=0,apiOnline=true,hasLoadedRemoteState=true,syncFailureCount=0;
  function updateStorageStatus(){}
  ${app.slice(app.indexOf('  function keepPendingChanges()'),app.indexOf('  let refreshTimer'))}
  ${app.slice(app.indexOf('  function queueSave('),app.indexOf('  async function resolveSyncConflict()'))}
- globalThis.inspect=()=>({state,syncedState,hasPendingChanges,syncConflict,saveTimer,saveInFlight});
+ globalThis.inspect=()=>({state,syncedState,hasPendingChanges,syncConflict,saveTimer,saveInFlight,localCacheUnavailable,pendingBackupUnavailable});
  globalThis.edit=fn=>{fn(state);scheduleSave()};globalThis.flush=saveState;globalThis.refresh=refreshRemoteState;`,c);
  return {c,store,timers,runTimer:async()=>{const [id,t]=timers.entries().next().value;timers.delete(id);await t.fn()}};
 }
@@ -85,6 +86,22 @@ test('409 merges independent edits and blocks conflicting edits without discardi
  c.edit(s=>s.posts[0].likes=5);await c.flush();assert.equal(c.inspect().syncConflict,false);assert.equal(c.inspect().state.posts[0].headline,'theirs');
  c.edit(s=>s.posts[0].headline='mine');remote.posts[0].headline='new theirs';await c.flush();
  assert.equal(c.inspect().syncConflict,true);assert.equal(c.inspect().state.posts[0].headline,'mine');assert.ok(store.has('pending'));
+});
+
+test('full browser storage cannot discard a server read or prevent saving and refreshing',async()=>{
+ let shared=structuredClone(seed),writes=0;
+ const {c,runTimer}=client(seed,seed,async(url,o={})=>{
+  if(o.method==='PUT'){writes++;shared={...JSON.parse(o.body),updatedAt:'2026-11-03T00:00:00.000Z'};return response(200,{updatedAt:shared.updatedAt})}
+  return response(200,shared);
+ },true);
+ // Exercise the exact initial-load path where a cache exception used to erase state.
+ vm.runInContext(`${app.slice(app.indexOf('  async function loadState()'),app.indexOf('  function updateStorageStatus()'))}
+ globalThis.load=loadState;`,c);
+ await c.load();assert.equal(c.inspect().state.posts.length,1);assert.equal(c.inspect().localCacheUnavailable,true);
+ c.edit(s=>s.posts[0].likes=7);assert.equal(c.inspect().pendingBackupUnavailable,true);
+ await runTimer();await new Promise(resolve=>setImmediate(resolve));assert.equal(writes,1);assert.equal(shared.posts[0].likes,7);assert.equal(c.inspect().hasPendingChanges,false);
+ shared.posts.push({id:'new-other-device'});shared.updatedAt='2026-11-04T00:00:00.000Z';await c.refresh();
+ assert.equal(c.inspect().state.posts.length,2);assert.equal(c.inspect().syncConflict,false);
 });
 
 async function freePort(){const s=createServer();await new Promise(r=>s.listen(0,'127.0.0.1',r));const p=s.address().port;await new Promise(r=>s.close(r));return p;}

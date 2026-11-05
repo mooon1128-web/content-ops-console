@@ -259,14 +259,29 @@
   let sessionUser = null;
   let sessionEpoch = 0;
   let refreshListenersBound = false;
-  const deviceId = localStorage.getItem("content_ops_device_v2") || crypto.randomUUID();
-  localStorage.setItem("content_ops_device_v2", deviceId);
+  const deviceId = (() => {
+    try {
+      const id = localStorage.getItem("content_ops_device_v2") || crypto.randomUUID();
+      localStorage.setItem("content_ops_device_v2", id);
+      return id;
+    } catch { return crypto.randomUUID(); }
+  })();
+  let localCacheUnavailable = false;
+  let pendingBackupUnavailable = false;
   let PENDING_KEY = `${STORAGE_KEY}_pending_v2`;
 
+  // Cache failures must never turn a successful server read/write into a failure.
+  // Persist unsent edits first: a cache snapshot is less important than pending work.
   function keepPendingChanges() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    if (hasPendingChanges) localStorage.setItem(PENDING_KEY, JSON.stringify({ state, base: syncedState }));
-    else localStorage.removeItem(PENDING_KEY);
+    try {
+      if (hasPendingChanges) localStorage.setItem(PENDING_KEY, JSON.stringify({ state, base: syncedState }));
+      else localStorage.removeItem(PENDING_KEY);
+      pendingBackupUnavailable = false;
+    } catch { pendingBackupUnavailable = hasPendingChanges; }
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localCacheUnavailable = false;
+    } catch { localCacheUnavailable = true; }
   }
 
   function acceptRemote(remote) {
@@ -307,15 +322,17 @@
 
   function saveWorkAuth(auth) {
     workAuth = auth;
-    if (auth) sessionStorage.setItem(WORK_AUTH_STORAGE_KEY, JSON.stringify(auth));
-    else sessionStorage.removeItem(WORK_AUTH_STORAGE_KEY);
+    try {
+      if (auth) sessionStorage.setItem(WORK_AUTH_STORAGE_KEY, JSON.stringify(auth));
+      else sessionStorage.removeItem(WORK_AUTH_STORAGE_KEY);
+    } catch {}
   }
 
   function loadLocal() {
     try {
       return normalizeState(JSON.parse(localStorage.getItem(STORAGE_KEY)) || { accounts: [], posts: [], titles: [], products: [] });
     } catch {
-      return normalizeState(structuredClone(seedState));
+      return normalizeState({ accounts: [], posts: [], titles: [], products: [] });
     }
   }
 
@@ -422,6 +439,11 @@
     } else {
       status.textContent = "连接共享数据中";
     }
+    if (pendingBackupUnavailable && hasPendingChanges) {
+      status.textContent += " · 本机备份不可用，请勿关闭页面，可先导出备份";
+    } else if (localCacheUnavailable) {
+      status.textContent += " · 本机缓存不可用";
+    }
     document.body.classList.toggle("is-file-mode", isFileMode);
     const resolveButton = $("#resolve-sync-conflict");
     if (resolveButton) resolveButton.hidden = !syncConflict;
@@ -497,7 +519,7 @@
       apiOnline = false;
       syncFailureCount += 1;
       retry = true;
-      toast("共享服务暂时不可用，本机修改已保留，将自动重试");
+      toast(pendingBackupUnavailable ? "共享服务暂时不可用，修改保留在当前页面；请勿关闭，可先导出备份" : "共享服务暂时不可用，本机修改已保留，将自动重试");
     } finally {
       if (epoch !== sessionEpoch) return;
       saveInFlight = false;
@@ -546,12 +568,12 @@
   async function resolveSyncConflict() {
     if (!confirm("将导出本机修改作为备份，再加载最新共享数据。你可以根据备份补回修改，是否继续？")) return;
     // Keep another local copy even if the browser blocks the download.
-    localStorage.setItem(`${STORAGE_KEY}_conflict_backup`, JSON.stringify({ state, base: syncedState }));
+    try { localStorage.setItem(`${STORAGE_KEY}_conflict_backup`, JSON.stringify({ state, base: syncedState })); } catch {}
     exportData();
     hasPendingChanges = false;
     syncConflict = false;
     syncedState = null;
-    localStorage.removeItem(PENDING_KEY);
+    try { localStorage.removeItem(PENDING_KEY); } catch {}
     await loadState();
   }
 
@@ -2483,6 +2505,9 @@
     node._timer = setTimeout(() => node.classList.remove("show"), 2200);
   }
 
+  window.addEventListener("beforeunload", (event) => {
+    if (hasPendingChanges) { event.preventDefault(); event.returnValue = ""; }
+  });
   bindEvents();
   ContentOpsAccess.connect({
     async activate(user) {
