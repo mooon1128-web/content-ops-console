@@ -2,6 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { applySpecial, specialSummary } from './special-aftersales.js';
 import { importCatalog } from './catalog-import.js';
 import { applyProcurement } from './procurement.js';
+import {addSalesRecipe,calculateComponentSales,digest,recipesDigest,SALES_COMPONENT_BASIS} from './sales-components.js';
 
 export const fail = (status, message) => Object.assign(new Error(message), {status});
 export const roles = ['none','viewer','warehouse','operations','marketing','customer_service','pr','content','pr_service'];
@@ -16,6 +17,7 @@ const permissions = {
   reverse: ['admin'], import: ['admin'], costArchive: ['admin'],
   collection: ['admin','operations'], collectionStatus: ['admin','operations'], collectionResult: ['admin','operations'], collectionAccept: ['admin','operations'],
   catalogImport: ['admin'],
+  salesRecipe: ['admin','operations'],
   purchase:['admin','operations'],purchaseConfirm:['admin','operations'],purchaseReceive:['admin','warehouse'],purchaseInspect:['admin','warehouse'],purchaseDecision:['admin','warehouse'],purchaseReturn:['admin','warehouse'],forecast:['admin','operations'],
 };
 export function authorize(user, action) {
@@ -72,6 +74,7 @@ function apply(s,action,p,user,now,context={}) {
   authorize(user,action);
   if(['purchase','purchaseConfirm','purchaseReceive','purchaseInspect','purchaseDecision','purchaseReturn','forecast'].includes(action))return applyProcurement(s,action,p,user,now,{fail,required,number,date,instant,stamp,skuExists,appendEvent});
   if(action==='catalogImport')return importCatalog(s,p,user,now,{fail});
+  if(action==='salesRecipe')return addSalesRecipe(s,p,user,now);
   if(action==='sku') {
     const row={...s.skus.find(k=>k.id===p.id),...stamp(p,user,now),code:required(p.code,'统一SKU编码'),name:required(p.name,'款式名称'),spec:text(p.spec),category:text(p.category),status:['停用','待核'].includes(p.status)?p.status:'在售',warehouse:required(p.warehouse||'主仓','默认仓库'),barcode:text(p.barcode),taobaoItemId:text(p.taobaoItemId),taobaoSkuId:text(p.taobaoSkuId),xhsProductId:text(p.xhsProductId),xhsSkuId:text(p.xhsSkuId),influencerProductId:text(p.influencerProductId),leadDays:number(p.leadDays,'工期',{optional:true}),moq:number(p.moq,'起订量',{optional:true}),note:text(p.note,2000)};
     row.costSkuId=text(p.costSkuId);row.costLinkStatus=text(p.costLinkStatus);
@@ -158,20 +161,29 @@ function apply(s,action,p,user,now,context={}) {
       job.status=p.status;job.note=required(p.note,'进度或缺失原因',2000);job.history.push({...stamp({},user,now),status:job.status,note:job.note});return job;
     }
     if(action==='collectionResult'){
-      if(!Array.isArray(p.rows)||!Array.isArray(p.evidence)||!p.evidence.length)throw fail(400,'采集结果须包含逐SKU月销售和来源证据');
+      if(!Array.isArray(p.evidence)||!p.evidence.length)throw fail(400,'采集结果须包含来源证据');
+      const calculation=calculateComponentSales(s,job,p);
+      job.calculation={...calculation};delete job.calculation.rows;
+      p={...p,rows:calculation.rows};
       const expected=new Set(monthsBetween(job.start,job.end).flatMap(m=>job.skuIds.flatMap(id=>job.channels.map(c=>`${id}|${m}|${c}`))));
       const staged=[];const scratch=structuredClone(s);
       for(const r of p.rows){const key=`${r.skuId}|${r.month}|${r.channel}`;if(!expected.delete(key))throw fail(400,'结果存在重复记录或超出任务范围');
         const monthEnd=new Date(Date.UTC(Number(r.month.slice(0,4)),Number(r.month.slice(5,7)),0)).toISOString().slice(0,10);const through=monthEnd<job.end?monthEnd:job.end;
         if(r.through!==through||r.refundAsOf!==job.refundAsOf||r.paid===null||r.paid===undefined||r.paid===''||r.refund===null||r.refund===undefined||r.refund==='')throw fail(400,'结果截止日期必须符合任务，支付和成功退款件数必须核清，未知不能按0');
         const existing=s.monthly.find(x=>x.skuId===r.skuId&&x.month===r.month&&x.channel===r.channel);
-        staged.push(apply(scratch,'monthly',{...r,id:existing?.id||randomUUID()},user,now,context));
+        staged.push({...apply(scratch,'monthly',{...r,id:existing?.id||randomUUID()},user,now,context),calculationBasis:SALES_COMPONENT_BASIS});
       }
       if(expected.size)throw fail(400,`还缺${expected.size}条SKU/平台/月记录，请标为待补资料，不能伪造0销量`);
-      job.results=staged;job.evidence=p.evidence.map(e=>({name:required(e.name,'证据文件名'),source:required(e.source,'证据来源',2000),sha256:text(e.sha256),capturedAt:text(e.capturedAt),note:text(e.note,2000)}));job.status='待核对';job.history.push({...stamp({},user,now),status:'待核对',note:'结果已暂存，尚未写入月报'});return {jobId:job.id,status:job.status,rows:staged.length};
+      job.monthlyBaseline=staged.map(r=>({skuId:r.skuId,month:r.month,channel:r.channel,hash:digest(s.monthly.find(x=>x.skuId===r.skuId&&x.month===r.month&&x.channel===r.channel)||null)}));
+      job.results=staged;job.evidence=p.evidence.map(e=>({name:required(e.name,'证据文件名'),source:required(e.source,'证据来源',2000),sha256:text(e.sha256),capturedAt:text(e.capturedAt),note:text(e.note,2000)}));job.status=calculation.complete?'待核对':'待补资料';job.history.push({...stamp({},user,now),status:job.status,note:calculation.complete?'已完成组成拆分校验，尚未写入月报':`有${calculation.issueCount}项待核，结果仅为可确认部分，不得入月报`});return {jobId:job.id,status:job.status,rows:staged.length,issueCount:calculation.issueCount};
     }
     if(job.status!=='待核对'||!job.results.length)throw fail(400,'请先上传完整且通过校验的采集结果');
-    for(const row of job.results){const existing=s.monthly.find(x=>x.skuId===row.skuId&&x.month===row.month&&x.channel===row.channel);apply(s,'monthly',{...row,id:existing?.id||row.id,note:`${row.note||''}\n采集任务 ${job.id}`},user,now,context);}
+    if(!job.calculation?.complete||job.calculation.calculationBasis!==SALES_COMPONENT_BASIS)throw fail(400,'旧汇总未核实跨链接与套餐，请重新上传订单拆分结果');
+    if(job.calculation.rulesHash!==recipesDigest(s))throw fail(409,'商品组成规则已变化，请重新上传计算');
+    for(const b of job.monthlyBaseline||[]){const current=s.monthly.find(x=>x.skuId===b.skuId&&x.month===b.month&&x.channel===b.channel);if(digest(current||null)!==b.hash)throw fail(409,'月销售已有新记录，请重新核对计算，不能用旧暂存结果覆盖');}
+    if(job.results.some(r=>s.monthly.some(x=>x.skuId===r.skuId&&x.month===r.month&&x.channel===r.channel))&&p.replaceExisting!==true)throw fail(409,'本次涉及已有月销售，请确认差异后勾选更新；旧值保留在历史记录');
+    job.previousMonthly=job.results.map(r=>s.monthly.find(x=>x.skuId===r.skuId&&x.month===r.month&&x.channel===r.channel)).filter(Boolean).map(r=>structuredClone(r));
+    for(const row of job.results){const existing=s.monthly.find(x=>x.skuId===row.skuId&&x.month===row.month&&x.channel===row.channel);const saved=apply(s,'monthly',{...row,id:existing?.id||row.id,note:`${row.note||''}\n采集任务 ${job.id}`},user,now,context);saved.calculationBasis=SALES_COMPONENT_BASIS;saved.collectionId=job.id;}
     job.status='已入账';job.acceptedAt=now;job.history.push({...stamp({},user,now),status:'已入账',note:required(p.note,'核对说明',2000)});return {jobId:job.id,status:job.status,rows:job.results.length};
   }
   if(action==='import') {
