@@ -6,9 +6,11 @@ const fail = (status, message) => Object.assign(new Error(message), { status });
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value==='object' ? Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])])) : value;
 const same = (a,b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 const safe = value => String(value || '').trim().slice(0,100);
+const stockRoles = new Set(['none','viewer','warehouse','operations','marketing','customer_service','pr','content','pr_service']);
+const stockRole = value => stockRoles.has(value) ? value : 'none';
 export function publicUser(user) {
   const { id, username, name, role, accountIds, disabled } = user;
-  return { id, username, name, role, accountIds, scopeVersion:user.sessionVersion, disabled: Boolean(disabled) };
+  return { id, username, name, role, accountIds, stockRole:stockRole(user.stockRole), scopeVersion:user.sessionVersion, disabled: Boolean(disabled) };
 }
 export async function passwordHash(password) {
   if (typeof password !== 'string' || password.length < 6 || password.length > 256) throw fail(400,'密码需要6至256个字符');
@@ -27,7 +29,7 @@ export async function initialAccess(users) {
   for (const item of users) {
     const username=safe(item.username).toLowerCase();
     if (!/^[a-z0-9_-]{3,40}$/.test(username) || result.some(u=>u.username===username)) throw fail(400,'登录名格式不正确或重复');
-    result.push({id:randomUUID(),username,name:safe(item.name)||username,role:item.role==='admin'?'admin':'employee',accountIds:[...new Set(item.accountIds||[])],passwordHash:await passwordHash(item.password),sessionVersion:1,disabled:false});
+    result.push({id:randomUUID(),username,name:safe(item.name)||username,role:item.role==='admin'?'admin':'employee',stockRole:stockRole(item.stockRole),accountIds:[...new Set(item.accountIds||[])],passwordHash:await passwordHash(item.password),sessionVersion:1,disabled:false});
   }
   return { sessionSecret:randomBytes(32).toString('hex'), users:result };
 }
@@ -149,7 +151,7 @@ export function createAccessControl({read,write,readAccess}) {
       if (!Array.isArray(payload.accountIds)) throw fail(400,'负责的内容账号格式不正确');
       const role=payload.role==='admin'?'admin':'employee',accountIds=[...new Set(payload.accountIds)];
       if (accountIds.some(id=>!current.accounts.some(a=>a.id===id)))throw fail(400,'负责的内容账号不存在');
-      const updated={...target,id:target?.id||randomUUID(),username,name:safe(payload.name)||username,role,accountIds,disabled:Boolean(payload.disabled),sessionVersion:(target?.sessionVersion||0)+1};
+      const updated={...target,id:target?.id||randomUUID(),username,name:safe(payload.name)||username,role,stockRole:payload.stockRole===undefined?stockRole(target?.stockRole):stockRole(payload.stockRole),accountIds,disabled:Boolean(payload.disabled),sessionVersion:(target?.sessionVersion||0)+1};
       updated.passwordHash=payload.password?await passwordHash(payload.password):target?.passwordHash;
       if (!updated.passwordHash)throw fail(400,'新增账号需要设置密码');
       if (target)users[users.indexOf(target)]=updated;else users.push(updated);
