@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
+import RecordOps from '../public/content-ops/ops-core.cjs';
 import { initialAccess } from '../content-ops/access.js';
 const rawFetch = globalThis.fetch, sessions = new Map();
 const fetch = (url,options={}) => { const cookie=sessions.get(new URL(url).origin); return rawFetch(url,{...options,headers:{...(cookie?{Cookie:cookie}:{}),...options.headers}}); }; 
@@ -35,7 +36,7 @@ test('same-field and delete/edit conflicts preserve local work for explicit reso
 const app = await readFile(new URL('../public/content-ops/app.js',import.meta.url),'utf8');
 function client(initial, baseline, network, storageFails = false) {
  const store=new Map(),timers=new Map();let nextTimer=0;
- const c=vm.createContext({structuredClone,DOMException,ContentOpsSync:context.ContentOpsSync,
+ const c=vm.createContext({structuredClone,DOMException,AbortSignal,RecordOps,ContentOpsSync:context.ContentOpsSync,
   localStorage:{setItem:(k,v)=>{if(storageFails)throw new DOMException("Storage full","QuotaExceededError");store.set(k,v)},getItem:k=>store.get(k),removeItem:k=>store.delete(k)},
   setTimeout:(fn,delay)=>{timers.set(++nextTimer,{fn,delay});return nextTimer},clearTimeout:id=>timers.delete(id),
   fetch:network,normalizeState:s=>s,hydrateControls(){},renderAll(){},toast(){},$:()=>null,
@@ -56,7 +57,7 @@ const response=(status,data)=>({ok:status>=200&&status<300,status,json:async()=>
 test('first save clears the timer and subsequent remote refresh works',async()=>{
  let shared=structuredClone(seed),gets=0;
  const {c,runTimer}=client(seed,seed,async(url,opts={})=>{
-  if(opts.method==='PUT'){shared={...JSON.parse(opts.body),updatedAt:'2026-11-02T00:00:00.000Z'};return response(200,{updatedAt:shared.updatedAt})}
+  if(opts.method==='PATCH'){shared={...RecordOps.apply(shared,JSON.parse(opts.body).operations,{posts:'rows',accounts:'rows',titles:'rows',products:'rows',inventorySettings:'map'}),updatedAt:'2026-11-02T00:00:00.000Z'};return response(200,{updatedAt:shared.updatedAt})}
   if(url==='/api/content-ops/version')return response(200,{updatedAt:shared.updatedAt});
   gets++;return response(200,shared);
  });
@@ -82,7 +83,7 @@ test('network failures retain pending changes and retry after reconnection',asyn
 });
 test('409 merges independent edits and blocks conflicting edits without discarding pending work',async()=>{
  let remote=structuredClone(seed);remote.posts[0].headline='theirs';remote.updatedAt='2026-11-02T00:00:00.000Z';
- const {c,store}=client(seed,seed,async(url,o={})=>response(o.method==='PUT'?409:200,remote));
+ const {c,store}=client(seed,seed,async(url,o={})=>response(o.method==='PATCH'?409:200,remote));
  c.edit(s=>s.posts[0].likes=5);await c.flush();assert.equal(c.inspect().syncConflict,false);assert.equal(c.inspect().state.posts[0].headline,'theirs');
  c.edit(s=>s.posts[0].headline='mine');remote.posts[0].headline='new theirs';await c.flush();
  assert.equal(c.inspect().syncConflict,true);assert.equal(c.inspect().state.posts[0].headline,'mine');assert.ok(store.has('pending'));
@@ -91,7 +92,7 @@ test('409 merges independent edits and blocks conflicting edits without discardi
 test('full browser storage cannot discard a server read or prevent saving and refreshing',async()=>{
  let shared=structuredClone(seed),writes=0;
  const {c,runTimer}=client(seed,seed,async(url,o={})=>{
-  if(o.method==='PUT'){writes++;shared={...JSON.parse(o.body),updatedAt:'2026-11-03T00:00:00.000Z'};return response(200,{updatedAt:shared.updatedAt})}
+  if(o.method==='PATCH'){writes++;shared={...RecordOps.apply(shared,JSON.parse(o.body).operations,{posts:'rows',accounts:'rows',titles:'rows',products:'rows',inventorySettings:'map'}),updatedAt:'2026-11-03T00:00:00.000Z'};return response(200,{updatedAt:shared.updatedAt})}
   return response(200,shared);
  },true);
  // Exercise the exact initial-load path where a cache exception used to erase state.
@@ -107,7 +108,7 @@ test('full browser storage cannot discard a server read or prevent saving and re
 async function freePort(){const s=createServer();await new Promise(r=>s.listen(0,'127.0.0.1',r));const p=s.address().port;await new Promise(r=>s.close(r));return p;}
 async function serverFixture(env={}){
  const dir=await mkdtemp(join(tmpdir(),'content-ops-test-'));const port=await freePort();
- const child=spawn(process.execPath,['content-ops/server.js','--host','127.0.0.1','--port',String(port)],{cwd:new URL('..',import.meta.url),env:{...process.env,SUPABASE_URL:'',SUPABASE_SERVICE_ROLE_KEY:'',CONTENT_OPS_DATA:join(dir,'state.json'),CONTENT_OPS_INITIAL_USERS:JSON.stringify([{username:'test-admin',name:'Admin',role:'admin',password:'Testing123'}]),...env},stdio:['ignore','pipe','pipe']});
+ const child=spawn(process.execPath,['content-ops/server.js','--host','127.0.0.1','--port',String(port)],{cwd:new URL('..',import.meta.url),env:{...process.env,SUPABASE_URL:'',SUPABASE_SERVICE_ROLE_KEY:'',CONTENT_OPS_DATA:join(dir,'state.json'),XHS_MEDIA_DATA:join(dir,'xhs.json'),CONTENT_OPS_INITIAL_USERS:JSON.stringify([{username:'test-admin',name:'Admin',role:'admin',password:'Testing123'}]),...env},stdio:['ignore','pipe','pipe']});
  let errors='';child.stderr.on('data',x=>errors+=x);
  const url=`http://127.0.0.1:${port}`;
  for(let i=0;i<100;i++){try{if((await fetch(url+'/api/health')).ok){ const login=await rawFetch(url+'/api/content-ops/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'test-admin',password:'Testing123'})});if(!login.ok)throw Error(await login.text());sessions.set(url,login.headers.get('set-cookie').split(';')[0]);return {url,close:async()=>{child.kill();await new Promise(r=>child.once('exit',r));await rm(dir,{recursive:true,force:true})}}} }catch{}await new Promise(r=>setTimeout(r,20));}
@@ -166,7 +167,12 @@ test('employee scope is enforced by the API and every saved edit has actor, devi
  const protectedAccount=structuredClone(staff);protectedAccount.accounts[0].name='Not allowed';assert.equal((await staffPut(protectedAccount)).status,403);
  staff.posts[0].scheduledAt='2026-12-01T20:30';staff._access={users:[{username:'intruder',role:'admin'}]};assert.equal((await staffPut(staff)).status,200);
  const admin=await (await api(f.url,'state')).json();assert.equal(admin.posts.find(p=>p.id==='hidden').headline,'Admin only');assert.equal(admin.posts.find(p=>p.id==='p1').scheduledAt,'2026-12-01T20:30');
- const history=await (await api(f.url,'history')).json(),event=history.items.find(e=>e.actor.username==='test-staff');
+ const patchBase=await (await api(f.url,'state','GET',null,cookie)).json();
+ const patchNext=structuredClone(patchBase);patchNext.posts[0].likes=42;
+ const patchResponse=await api(f.url,'state','PATCH',{operations:RecordOps.diff(patchBase,patchNext,{posts:'rows'})},cookie);assert.equal(patchResponse.status,200,await patchResponse.clone().text());
+ assert.equal((await patchResponse.json()).state.posts.length,1);
+ assert.equal((await api(f.url,'state','PATCH',{operations:[{group:'posts',id:'hidden',kind:'field',key:'headline',before:{exists:true,value:'Admin only'},after:{exists:true,value:'intrusion'}}]},cookie)).status,409);
+ const history=await (await api(f.url,'history')).json(),event=history.items.find(e=>e.actor.username==='test-staff'&&e.clientId==='tablet-1');
  assert.ok(event);assert.equal(event.device,'iPad/平板');assert.equal(event.clientId,'tablet-1');assert.deepEqual(event.entries[0].fields.scheduledAt,{before:null,after:'2026-12-01T20:30'});
  const scopedHistory=await (await api(f.url,'history','GET',null,cookie)).json();assert.ok(scopedHistory.items.every(e=>e.entries.every(r=>r.accountId==='account-2')));
  const raw=JSON.stringify(history);assert.ok(!raw.includes('passwordHash'));assert.ok(!raw.includes('sessionSecret'));
@@ -214,4 +220,23 @@ test('one-time production bootstrap preserves every business record and refuses 
   const result=await run();assert.equal(result.code,0,result.err);assert.deepEqual(row.state.posts,seed.posts);assert.deepEqual(row.state.accounts,seed.accounts);assert.equal(archived.length,1);assert.deepEqual(archived[0].state,seed);assert.equal(row.state._access.users.length,1);assert.ok(!JSON.stringify(row.state).includes('Testing123'));
   const again=await run();assert.notEqual(again.code,0);assert.equal(archived.length,1);
  }finally{await new Promise(r=>db.close(r))}
+});
+
+
+test('PR requires individual roles, denies legacy writes, and returns private no-cache versioned state',async()=>{
+ const f=await serverFixture();try{
+  const url=f.url+'/api/xhs-media/state';assert.equal((await rawFetch(url)).status,401);
+  assert.equal((await rawFetch(f.url+'/api/xhs-media/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:'xhs2026'})})).status,428);
+  const base=await(await fetch(url)).json();
+  const ops=[{group:'creators',id:'c1',kind:'add',before:null,after:{id:'c1',name:'test'}}];
+  const saved=await fetch(url,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({requestId:'test-pr-add',operations:ops})});assert.equal(saved.status,200);const body=await saved.json();assert.equal(body.state.creators.length,1);assert.equal(body.state._audit,undefined);
+  assert.equal((await fetch(url,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(base)})).status,428);
+  for(const [username,stockRole,expected] of [['service-pr','pr_service',200],['warehouse','warehouse',403],['content','content',403]]){
+   assert.equal((await api(f.url,'users','POST',{username,name:username,password:'Test1234',role:'employee',stockRole,accountIds:[]})).status,200);
+   const login=await rawFetch(f.url+'/api/content-ops/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password:'Test1234'})});const cookie=login.headers.get('set-cookie').split(';')[0];
+   assert.equal((await rawFetch(url,{headers:{Cookie:cookie}})).status,expected);
+  }
+  const version=await fetch(f.url+'/api/xhs-media/version');assert.match(version.headers.get('cache-control'),/no-store/);assert.equal((await version.json()).updatedAt,body.updatedAt);
+  const script=await fetch(f.url+'/xhs-media/app.js');assert.match(script.headers.get('cache-control'),/no-store/);
+ }finally{await f.close()}
 });
