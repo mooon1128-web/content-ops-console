@@ -5,7 +5,7 @@ import {createXhsStore,publicXhs} from './xhs-store.js';
 import RecordOps from '../public/content-ops/ops-core.cjs';
 import {createGzip} from 'node:zlib';
 import {Readable} from 'node:stream';
-const BUILD_ID='20261122-erp-catalog-v5';
+const BUILD_ID='20261122-sales-simple-v6';
 const contentShape={titles:'rows',accounts:'rows',posts:'rows',products:'rows',inventorySettings:'map'};
 import { createServer } from "node:http";
 import { createHmac, timingSafeEqual, randomUUID, createHash } from "node:crypto";
@@ -824,7 +824,7 @@ const server = createServer(async (request, response) => {
       if(url.pathname==='/api/stock-ops/state'&&request.method==='GET'){send(response,200,stockView(await stockStore.read(),user));return;}
       if(url.pathname==='/api/stock-ops/samples'&&request.method==='GET'){
         const state=await xhsStore.read();
-        const placements=(state?.placements||[]).map(p=>({id:String(p.id),creator:String(p.creator||''),product:String(p.product||''),productIds:p.productIds||[p.productId].filter(Boolean),sampleQuantity:p.sampleQuantity===undefined||p.sampleQuantity===''?null:p.sampleQuantity,status:p.status||'',sampleStatus:p.sampleStatus||'',owner:p.owner||'',sampleDeliveredAt:p.sampleDeliveredAt||''}));
+        const placements=(state?.placements||[]).map(p=>({id:String(p.id),creator:String(p.creator||''),product:String(p.product||''),productIds:p.productIds||[p.productId].filter(Boolean),sampleQuantity:p.sampleQuantity===undefined||p.sampleQuantity===''?null:p.sampleQuantity,status:p.status||'',sampleStatus:p.sampleStatus||'',owner:p.owner||'',sampleDeliveredAt:p.sampleDeliveredAt||'',createdAt:p.createdAt||''}));
         send(response,200,{placements,updatedAt:state?.updatedAt||null});return;
       }
       if(url.pathname==='/api/stock-ops/command'&&request.method==='POST'){
