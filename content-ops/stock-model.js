@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { applySpecial, specialSummary } from './special-aftersales.js';
 import { importCatalog } from './catalog-import.js';
+import { applyProcurement } from './procurement.js';
 
 export const fail = (status, message) => Object.assign(new Error(message), {status});
 export const roles = ['none','viewer','warehouse','operations','marketing','customer_service','pr','content','pr_service'];
@@ -15,6 +16,7 @@ const permissions = {
   reverse: ['admin'], import: ['admin'], costArchive: ['admin'],
   collection: ['admin','operations'], collectionStatus: ['admin','operations'], collectionResult: ['admin','operations'], collectionAccept: ['admin','operations'],
   catalogImport: ['admin'],
+  purchase:['admin','operations'],purchaseConfirm:['admin','operations'],purchaseReceive:['admin','warehouse'],purchaseInspect:['admin','warehouse'],purchaseDecision:['admin','warehouse'],purchaseReturn:['admin','warehouse'],forecast:['admin','operations'],
 };
 export function authorize(user, action) {
   if (!hasStockRole(user,...(permissions[action] || []))) throw fail(403,'当前账号没有此操作权限');
@@ -32,13 +34,13 @@ export function saturday(now=new Date()) {const d=new Date(chinaDate(now)+'T00:0
 export function emptyStock() {return {schema:1,revision:0,updatedAt:null,skus:[],monthly:[],snapshots:[],observations:[],events:[],cases:[],issues:[],audit:[],requests:[]};}
 function monthsBetween(start,end) {const list=[];for(let y=Number(start.slice(0,4)),m=Number(start.slice(5,7));`${y}-${String(m).padStart(2,'0')}`<=end.slice(0,7);){list.push(`${y}-${String(m).padStart(2,'0')}`);if(++m===13){y++;m=1}if(list.length>24)throw fail(400,'一次最多采集24个月');}return list;}
 export const eventTypes = {
-  receipt: '合格采购入库', sale: '销售出库', offline: '线下出库', sample: '博主寄样出库', replacement: '换货／补发出库',
+  purchase_hold:'采购瑕疵／待检入库', receipt: '合格采购入库', sale: '销售出库', offline: '线下出库', sample: '博主寄样出库', replacement: '换货／补发出库',
   reserve: '预留库存', release: '释放预留', return_hold: '退回待检入库', return_good: '退回验收合格',
   inspect_good: '待检转合格', damage: '合格转坏品', factory_return: '坏品退厂', adjust: '盘点调整',
 };
 export function eventDelta(type,q,released=0) {
   if(['sale','offline','sample','replacement'].includes(type))return {good:-q,reserved:-released,hold:0};
-  return ({receipt:{good:q,reserved:0,hold:0},reserve:{good:0,reserved:q,hold:0},release:{good:0,reserved:-q,hold:0},return_hold:{good:0,reserved:0,hold:q},return_good:{good:q,reserved:0,hold:0},inspect_good:{good:q,reserved:0,hold:-q},damage:{good:-q,reserved:0,hold:q},factory_return:{good:0,reserved:0,hold:-q},adjust:{good:q,reserved:0,hold:0}})[type];
+  return ({purchase_hold:{good:0,reserved:0,hold:q},receipt:{good:q,reserved:0,hold:0},reserve:{good:0,reserved:q,hold:0},release:{good:0,reserved:-q,hold:0},return_hold:{good:0,reserved:0,hold:q},return_good:{good:q,reserved:0,hold:0},inspect_good:{good:q,reserved:0,hold:-q},damage:{good:-q,reserved:0,hold:q},factory_return:{good:0,reserved:0,hold:-q},adjust:{good:q,reserved:0,hold:0}})[type];
 }
 export function balance(state,skuId,warehouse,at='9999-12-31T23:59:59.999Z',excludeSnapshot=null) {
   const base=state.snapshots.filter(s=>s.skuId===skuId&&s.warehouse===warehouse&&s.at<=at&&s.id!==excludeSnapshot).sort((a,b)=>b.at.localeCompare(a.at))[0];
@@ -52,7 +54,7 @@ function stamp(p,user,now) {return {id:p.id||randomUUID(),updatedAt:now,actor:{i
 function uniqueUpsert(rows,row,key) {const index=rows.findIndex(r=>r.id===row.id);if(rows.some(r=>r.id!==row.id&&key(r)===key(row)))throw fail(409,'同一口径已有记录，请编辑原记录');if(index<0)rows.push(row);else rows[index]=row;}
 
 function appendEvent(s,p,user,now,internal=false) {
-  const type=required(p.type,'流水类型');if(!eventTypes[type]||(!internal&&['sample','replacement','return_good','return_hold'].includes(type)))throw fail(400,'请从寄样或售后记录确认此类出入库');
+  const type=required(p.type,'流水类型');if(!eventTypes[type]||(!internal&&['sample','replacement','return_good','return_hold','purchase_hold'].includes(type)))throw fail(400,'请从寄样或售后记录确认此类出入库');
   if(type==='adjust'&&user.role!=='admin')throw fail(403,'盘点调整需要管理员核对差额后登记');
   const quantity=number(p.quantity,'数量',{signed:type==='adjust'});if(quantity===0)throw fail(400,'流水数量不能为0');
   const released=number(p.released??0,'本次释放预留');if(released>Math.max(0,quantity))throw fail(400,'释放预留不能大于出库数量');
@@ -68,6 +70,7 @@ function appendEvent(s,p,user,now,internal=false) {
 }
 function apply(s,action,p,user,now,context={}) {
   authorize(user,action);
+  if(['purchase','purchaseConfirm','purchaseReceive','purchaseInspect','purchaseDecision','purchaseReturn','forecast'].includes(action))return applyProcurement(s,action,p,user,now,{fail,required,number,date,instant,stamp,skuExists,appendEvent});
   if(action==='catalogImport')return importCatalog(s,p,user,now,{fail});
   if(action==='sku') {
     const row={...s.skus.find(k=>k.id===p.id),...stamp(p,user,now),code:required(p.code,'统一SKU编码'),name:required(p.name,'款式名称'),spec:text(p.spec),category:text(p.category),status:['停用','待核'].includes(p.status)?p.status:'在售',warehouse:required(p.warehouse||'主仓','默认仓库'),barcode:text(p.barcode),taobaoItemId:text(p.taobaoItemId),taobaoSkuId:text(p.taobaoSkuId),xhsProductId:text(p.xhsProductId),xhsSkuId:text(p.xhsSkuId),influencerProductId:text(p.influencerProductId),leadDays:number(p.leadDays,'工期',{optional:true}),moq:number(p.moq,'起订量',{optional:true}),note:text(p.note,2000)};
