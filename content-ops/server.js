@@ -5,7 +5,7 @@ import {createXhsStore,publicXhs} from './xhs-store.js';
 import RecordOps from '../public/content-ops/ops-core.cjs';
 import {createGzip} from 'node:zlib';
 import {Readable} from 'node:stream';
-const BUILD_ID='20261122-shared-sync-v3';
+const BUILD_ID='20261122-shared-sync-v4';
 const contentShape={titles:'rows',accounts:'rows',posts:'rows',products:'rows',inventorySettings:'map'};
 import { createServer } from "node:http";
 import { createHmac, timingSafeEqual, randomUUID, createHash } from "node:crypto";
