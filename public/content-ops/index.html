@@ -10,7 +10,7 @@
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/app-icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/app-icon.svg" />
-  <link rel="stylesheet" href="/assets/styles?v=20261104-access" />
+  <link rel="stylesheet" href="/assets/styles?v=20261122-shared-v3" />
 </head>
 <body class="signed-out">
   <section id="login-layer" class="login-layer" aria-label="登录内容运营台">
@@ -43,6 +43,7 @@
       <button class="tab mobile-more-tab" id="mobile-more-toggle" type="button">更多</button>
     </nav>
     <div class="top-actions">
+      <a href="/stock-ops/" class="secondary-button small" style="white-space:nowrap;text-decoration:none">经营协作台 ↗</a>
       <span id="signed-in-name" class="row-meta"></span><button id="open-access" class="secondary-button small" type="button">修改历史 / 登录账号</button><button id="sign-out" class="secondary-button small" type="button">退出</button>
       <button class="secondary-button small migration-button" id="migrate-file-data" type="button">迁移到测试服务</button>
       <button class="icon-action" id="export-data" title="导出备份" aria-label="导出备份">
@@ -637,8 +638,9 @@
     </button>
   </nav>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/access-ui.js?v=20261104-access"></script>
-  <script src="/sync-core.js?v=20261104-access"></script>
-  <script src="/assets/app?v=20261105-cache"></script>
+  <script src="/access-ui.js?v=20261122-shared-v3"></script>
+  <script src="/ops-core.cjs?v=20261122"></script>
+  <script src="/sync-core.js?v=20261122-shared-v3"></script>
+  <script src="/assets/app?v=20261122-shared-v3"></script>
 </body>
 </html>

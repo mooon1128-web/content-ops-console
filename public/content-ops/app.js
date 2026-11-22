@@ -1,7 +1,7 @@
 (() => {
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("/service-worker.js").catch(() => {});
+      navigator.serviceWorker.register("/service-worker.js",{updateViaCache:'none'}).then(r=>r.update()).catch(() => {});
     });
   }
 
@@ -402,7 +402,7 @@
       }
     } catch {}
     try {
-      const response = await fetch(API_URL, { cache: "no-store" });
+      const response = await fetch(API_URL, { cache: "no-store", signal:AbortSignal.timeout(20000) });
       if (response.status === 401) { ContentOpsAccess.expired(); return; }
       if (!response.ok) throw new Error("api unavailable");
       const remote = normalizeState(await response.json());
@@ -473,9 +473,9 @@
     let retry = false;
     try {
       const response = await fetch(API_URL, {
-        method: "PUT",
+        method: "PATCH",signal:AbortSignal.timeout(20000),
         headers: { "Content-Type": "application/json", "If-Match": `"${lastSyncedStateAt}"`, "X-Client-Id": deviceId },
-        body: JSON.stringify(snapshot),
+        body: JSON.stringify({operations:RecordOps.diff(syncedState,snapshot,{titles:'rows',accounts:'rows',posts:'rows',products:'rows',inventorySettings:'map'})}),
       });
       if (epoch !== sessionEpoch) return;
       if (response.status === 401) { ContentOpsAccess.expired(); return; }
@@ -486,7 +486,7 @@
         return;
       }
       if (response.status === 409) {
-        const latest = await fetch(API_URL, { cache: "no-store" });
+        const latest = await fetch(API_URL, { cache: "no-store", signal:AbortSignal.timeout(20000) });
         if (!latest.ok) throw new Error("refresh failed");
         const remote = normalizeState(await latest.json());
         if (epoch !== sessionEpoch) return;
@@ -505,10 +505,13 @@
       if (!response.ok) throw new Error("save failed");
       const result = await response.json();
       if (epoch !== sessionEpoch) return;
-      snapshot.updatedAt = result.updatedAt;
-      syncedState = snapshot;
+      const confirmed=normalizeState(result.state||{...snapshot,updatedAt:result.updatedAt});
+      const merged=ContentOpsSync.mergeStates(snapshot,state,confirmed);
+      if(merged.conflicts.length){syncConflict=true;toast('保存期间同一字段出现冲突，本机修改已保留');return;}
+      syncedState = structuredClone(confirmed);
       lastSyncedStateAt = result.updatedAt;
-      if (savingVersion === editVersion) { state = snapshot; hasPendingChanges = false; }
+      state=normalizeState(merged.state);
+      if (savingVersion === editVersion) {state=confirmed;hasPendingChanges = false;}
       keepPendingChanges();
       retry = hasPendingChanges;
       apiOnline = true;
@@ -532,7 +535,7 @@
     if (!sessionUser || isFileMode || saveTimer || saveInFlight || syncConflict || $("dialog[open]")) return;
     const epoch = sessionEpoch;
     try {
-      const versionResponse = await fetch("/api/content-ops/version", { cache: "no-store" });
+      const versionResponse = await fetch("/api/content-ops/version", { cache: "no-store", signal:AbortSignal.timeout(20000) });
       if (epoch !== sessionEpoch) return;
       if (versionResponse.status === 401) { ContentOpsAccess.expired(); return; }
       if (!versionResponse.ok) throw new Error("version unavailable");
@@ -541,7 +544,7 @@
       if (syncedState && !hasPendingChanges && version.updatedAt === lastSyncedStateAt) {
         apiOnline = true; syncFailureCount = 0; updateStorageStatus(); return;
       }
-      const response = await fetch(API_URL, { cache: "no-store" });
+      const response = await fetch(API_URL, { cache: "no-store", signal:AbortSignal.timeout(20000) });
       if (response.status === 401) { ContentOpsAccess.expired(); return; }
       if (!response.ok) throw new Error("api unavailable");
       const remote = normalizeState(await response.json());
@@ -595,7 +598,7 @@
     button.disabled = true;
     button.textContent = "迁移中";
     try {
-      const existing = await fetch(TEST_SERVER_URL, { cache: "no-store" });
+      const existing = await fetch(TEST_SERVER_URL, { cache: "no-store", signal:AbortSignal.timeout(20000) });
       if (!existing.ok) throw new Error("migrate target unavailable");
       const target = await existing.json();
       state.updatedAt = new Date().toISOString();
@@ -883,7 +886,7 @@
     button.disabled = true;
     button.textContent = "同步中";
     try {
-      const response = await fetch(`${WHOLESALE_PRODUCTS_API}?url=${encodeURIComponent(backendUrl)}`, { cache: "no-store" });
+      const response = await fetch(`${WHOLESALE_PRODUCTS_API}?url=${encodeURIComponent(backendUrl)}`, { cache: "no-store", signal:AbortSignal.timeout(20000) });
       if (!response.ok) throw new Error("sync failed");
       const payload = await response.json();
       mergeWholesaleProducts(payload.products || []);
