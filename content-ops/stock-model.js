@@ -163,7 +163,8 @@ function apply(s,action,p,user,now,context={}) {
     if(action==='collectionResult'){
       if(!Array.isArray(p.evidence)||!p.evidence.length)throw fail(400,'采集结果须包含来源证据');
       const calculation=calculateComponentSales(s,job,p);
-      job.calculation={...calculation};delete job.calculation.rows;
+      if(job.calculation)(job.resultVersions??=[]).push({calculation:job.calculation,results:job.results,evidence:job.evidence,monthlyBaseline:job.monthlyBaseline,archivedAt:now});
+      job.calculation={...calculation,computedAt:now};delete job.calculation.rows;
       p={...p,rows:calculation.rows};
       const expected=new Set(monthsBetween(job.start,job.end).flatMap(m=>job.skuIds.flatMap(id=>job.channels.map(c=>`${id}|${m}|${c}`))));
       const staged=[];const scratch=structuredClone(s);

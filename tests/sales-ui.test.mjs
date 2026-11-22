@@ -28,3 +28,25 @@ test('verified five products receive different wholesale images; no fuzzy assign
   const images=keys.map(code=>productImage({code}));assert.equal(new Set(images).size,5);assert.ok(images.every(x=>x.startsWith('https://pupuhome-wholesale.onrender.com/assets/products/')));
   assert.equal(productImage({name:'不存在的测试商品'}),'');
 });
+
+import {monthlyReadModel,monthlyGroups} from '../public/stock-ops/sales-ui.js';
+const viewFixture=()=>({skus:[{id:'A'},{id:'B'},{id:'C'}],monthly:[{id:'old',skuId:'A',month:'2026-11',channel:'淘宝',paid:9,refund:1,net:8,through:'2026-11-20',updatedAt:'2026-11-22T01:00:00Z'}],collections:[{id:'j',calculation:{computedAt:'2026-11-22T02:00:00Z',complete:false,coverage:[{channel:'淘宝',start:'2026-11-01',end:'2026-11-21'}],contributions:[{skuId:'A',month:'2026-11',channel:'淘宝'},{skuId:'B',month:'2026-11',channel:'淘宝'}],rowIssues:[{skuId:'B',month:'2026-11',channel:'淘宝',detail:'扣件数待核'}],exclusions:[{name:'测试排除商品'}]},results:['A','B','C'].map(skuId=>({skuId,month:'2026-11',channel:'淘宝',paid:skuId==='C'?0:10,refund:1,net:skuId==='C'?0:9,through:'2026-11-22'}))}]});
+test('observed collected products show in monthly without fabricating zeros or adding original counts twice',()=>{
+ const s=viewFixture(),snapshot=JSON.stringify(s),r=monthlyReadModel(s);
+ assert.equal(r.length,2);assert.equal(r[0].paid,10);assert.equal(r[0].through,'2026-11-21');assert.equal(r[0].originalRows[0].net,8);
+ assert.equal(r.find(x=>x.skuId==='B').refund,null);assert.equal(r.find(x=>x.skuId==='B').net,null);assert.equal(r.find(x=>x.skuId==='B').knownRefund,1);
+ assert.equal(salesValue(groupSales(r)[0].channels['小红书'],'paid'),null);
+ assert.equal(JSON.stringify(s),snapshot);assert.equal(monthlyGroups(s,r,'2026-11',true).length,3);
+ assert.deepEqual(monthlyGroups(s,r,'2026-11',true).find(g=>g.skuId==='C').channels,{});
+});
+test('later manual edits, later periods and duplicate original records survive the read model',()=>{
+ for(const change of [{updatedAt:'2026-11-22T03:00:00Z'},{through:'2026-11-23'}]){
+  const s=viewFixture();Object.assign(s.monthly[0],change);assert.equal(monthlyReadModel(s).find(x=>x.skuId==='A').paid,9);
+ }
+ const s=viewFixture();s.monthly.push({...s.monthly[0],id:'duplicate'});assert.equal(monthlyReadModel(s).filter(x=>x.skuId==='A').length,2);
+});
+test('newest calculation wins once, old incomplete snapshots without coverage remain hidden',()=>{
+ const s=viewFixture(),newer=structuredClone(s.collections[0]);newer.id='newer';newer.calculation.computedAt='2026-11-22T04:00:00Z';newer.results[0].paid=14;s.collections.push(newer);
+ assert.equal(monthlyReadModel(s).find(x=>x.skuId==='A').paid,14);assert.equal(monthlyReadModel(s).length,2);
+ delete s.collections[1].calculation.computedAt;delete s.collections[0].calculation.computedAt;assert.deepEqual(monthlyReadModel(s),s.monthly);
+});
