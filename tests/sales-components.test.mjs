@@ -82,3 +82,32 @@ test('warehouse cannot change product recipes; instructions include all links an
  const s=setup();assert.throws(()=>transact(s,{action:'salesRecipe',data:rule('x',[{skuId:'A',units:1}]),revision:0,requestId:'p'},{id:'w',role:'employee',stockRole:'warehouse'},{now}),/权限/);
  const instructions=collectionInstructions(s,{...job,title:'检查'});for(const word of ['A=2','B=1','component-orders-v1','refundLineId','linksComplete','旧平台对应只是候选'])assert.ok(instructions.includes(word));
 });
+
+test('observed successful refunds preserve missing completion dates and cannot be backdated',()=>{
+ const s=setup(),o=order('single','1'),r=refund(o,'obs',{completedAt:null,observedAsOf:'2026-11-22'});
+ const result=calc(s,data([o],[r]));assert.equal(result.complete,true);assert.equal(result.rows[0].net,0);
+ for(const observedAsOf of [null,'2026-11-21','2026-11-23'])assert.equal(calc(s,data([o],[{...r,observedAsOf}])).complete,false);
+ assert.equal(calc(s,data([o],[{...r,completedAt:'2026-11-23',observedAsOf:'2026-11-22'}])).rows[0].net,1);
+});
+
+test('explicit exact-link exclusions preserve audit and control totals without guessing bundle contents',()=>{
+ const s=setup(),a=order('single','1'),b=order('bundle','2'),gift=order('lucky','3',2),d=data([a,b,gift],[refund(gift,'r1',{kind:'unknown'})]);
+ d.exclusions=[{...base,itemId:'lucky',name:'测试随机袋',reason:'用户要求本次不统计'}];
+ const snapshot=JSON.stringify(d),r=calc(s,d);
+ assert.equal(r.complete,true);assert.deepEqual(values(r),[['A',2,0,2],['B',1,0,1]]);
+ assert.equal(r.summary.orderLines,3);assert.equal(r.summary.excludedOrderLines,1);assert.equal(r.summary.excludedPlatformUnits,2);assert.equal(r.summary.excludedRefundLines,1);
+ assert.equal(r.excludedOrders[0].orderId,gift.orderId);assert.equal(r.exclusions[0].reason,'用户要求本次不统计');assert.equal(JSON.stringify(d),snapshot);
+ const different=structuredClone(d);different.exclusions[0].platformSkuId='different';assert.equal(calc(s,different).complete,false);
+ const noExclusion=structuredClone(d);delete noExclusion.exclusions;assert.notEqual(r.inputHash,calc(s,noExclusion).inputHash);
+});
+test('uncertain component refunds mark affected product rows and retain actual collected period',()=>{
+ const s=setup(),b=order('bundle','1'),d=data([b],[refund(b,'u',{kind:'unknown'})]);d.coverage[0].end='2026-10-30';d.coverage[0].ordersComplete=false;
+ const r=calc(s,d);assert.equal(r.complete,false);assert.deepEqual(r.rowIssues.map(x=>x.skuId),['A','B']);assert.equal(r.coverage[0].end,'2026-10-30');
+});
+test('recalculating a collection archives previous result and does not mutate original monthly or inventory',()=>{
+ let s=setup();s=run(s,'collection',{...job,title:'测试'});const id=s.collections[0].id;
+ s=run(s,'collectionResult',{...data([order('single','1')]),jobId:id});const previous=structuredClone(s.collections[0]);
+ s=run(s,'collectionResult',{...data([order('single','1',2)]),jobId:id});
+ assert.deepEqual(s.collections[0].resultVersions[0].results,previous.results);assert.deepEqual(s.collections[0].resultVersions[0].calculation,previous.calculation);
+ assert.equal(s.collections[0].results[0].paid,2);assert.equal(s.monthly.length,0);assert.equal(s.events.length,0);assert.equal(s.collections[0].calculation.computedAt,now);
+});
