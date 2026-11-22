@@ -140,9 +140,11 @@ export function createAccessControl({read,write,readAccess}) {
     if (url.pathname==='/api/content-ops/session' && request.method==='GET') {send(response,200,{user:publicUser(user)},headers);return true;}
     if (url.pathname==='/api/content-ops/users') {
       if (user.role!=='admin') throw fail(403,'仅管理员可以管理登录账号');
-      const current=await stateWithAccess();
-      if (request.method==='GET'){send(response,200,{users:current._access.users.map(publicUser)},headers);return true;}
+      if (request.method==='GET'){const current=await stateWithAccess();send(response,200,{users:current._access.users.map(publicUser)},headers);return true;}
       if (request.method!=='POST')throw fail(405,'Method not allowed');
+      // Authentication may read only the private access projection. A membership
+      // write must retain the complete business state and its current version.
+      const current=await read();
       const payload=JSON.parse(await body(request));const users=structuredClone(current._access.users);
       const target=payload.id?users.find(u=>u.id===payload.id):null;
       if (payload.id&&!target)throw fail(404,'登录账号不存在');
