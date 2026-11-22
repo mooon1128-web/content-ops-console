@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>小红书媒介投放跟踪台</title>
-  <link rel="stylesheet" href="styles.css?v=20260728-wholesale-sync" />
+  <link rel="stylesheet" href="styles.css?v=20261122-shared-v3" />
 </head>
 <body>
   <header class="topbar">
@@ -13,7 +13,7 @@
       <span class="brand-mark">XH</span>
       <div>
         <strong>小红书媒介投放跟踪台</strong>
-        <small id="save-status">本机数据已启用</small>
+        <small id="save-status">正在读取共享数据</small>
       </div>
     </div>
     <nav class="tabs" aria-label="视图切换">
@@ -24,6 +24,7 @@
       <button class="tab" data-view="feedback">反馈</button>
     </nav>
     <div class="top-actions">
+      <a href="/stock-ops/" class="secondary-button" style="white-space:nowrap;text-decoration:none">经营协作 / 寄样库存 ↗</a>
       <button class="icon-action" id="sync-cloud" title="同步云端数据" aria-label="同步云端数据">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 8a6 6 0 0 0-11.1-3M4 16a6 6 0 0 0 11.1 3M8 4v5H3m13 11v-5h5"/></svg>
       </button>
@@ -488,6 +489,6 @@
   <datalist id="creator-type-list"></datalist>
   <datalist id="creator-name-list"></datalist>
   <div id="toast" class="toast" role="status"></div>
-  <script src="app.js?v=20260728-wholesale-custom-products"></script>
+  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="app.js?v=20261122-shared-v3"></script>
 </body>
 </html>

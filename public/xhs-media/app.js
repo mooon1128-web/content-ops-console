@@ -238,12 +238,13 @@
     },
   ];
 
-  recoverLocalData();
+  // Legacy device snapshots stay untouched and are never auto-uploaded.
+  let cloud=null;
 
-  let placements = loadPlacements();
-  let creators = loadCreators();
-  let customCreatorTypes = loadCustomCreatorTypes();
-  let monthlyBudgets = loadMonthlyBudgets();
+  let placements = [];
+  let creators = [];
+  let customCreatorTypes = [];
+  let monthlyBudgets = {};
   let productCatalog = [];
   let wholesaleCostStatus = { connected: false, orderCount: 0, costSettingsCount: 0, costSeedCount: 0, customProductCount: 0, reason: "" };
   let selectedProduct = "all";
@@ -400,7 +401,7 @@
       return;
     }
     try {
-      const response = await fetch(CURRENT_DATA_URL, { cache: "no-store" });
+      const response = await fetch(CURRENT_DATA_URL, { cache: "no-store", signal:AbortSignal.timeout(20000) });
       if (!response.ok) return;
       const data = await response.json();
       const recoveredCreators = (Array.isArray(data.creators) ? data.creators : []).map(normalizeCreator).filter((item) => !isLegacyTestCreator(item));
@@ -430,7 +431,7 @@
   async function loadMorningRecovery() {
     if (localStorage.getItem(MORNING_RECOVERY_DONE_KEY)) return;
     try {
-      const response = await fetch(MORNING_RECOVERY_URL, { cache: "no-store" });
+      const response = await fetch(MORNING_RECOVERY_URL, { cache: "no-store", signal:AbortSignal.timeout(20000) });
       if (!response.ok) return;
       const data = await response.json();
       const rows = Array.isArray(data.creators) ? data.creators.map(normalizeCreator).filter((item) => item.name) : [];
@@ -537,9 +538,6 @@
     });
   }
 
-  function hasPendingLocalSync() {
-    return Boolean(loadLocalMeta().needsSync);
-  }
 
   function localStateIsNewerThanRemote(remoteState, localState) {
     const meta = loadLocalMeta();
@@ -553,14 +551,7 @@
     return remoteIsOlder && local.creators >= remote.creators && local.placements >= remote.placements;
   }
 
-  function saveCreators(options = {}) {
-    localStorage.setItem(CREATORS_STORAGE_KEY, JSON.stringify(creators));
-    MIRROR_CREATORS_STORAGE_KEYS.forEach((key) => localStorage.setItem(key, JSON.stringify(creators)));
-    if (options.markDirty !== false) markLocalChanged();
-    const status = $("#save-status");
-    if (status) status.textContent = `达人库已保存 ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
-    if (options.remote !== false) scheduleServerSave();
-  }
+  function saveCreators(options = {}) { if(options.remote!==false) scheduleServerSave(); }
 
   function loadCustomCreatorTypes() {
     try {
@@ -571,11 +562,7 @@
     }
   }
 
-  function saveCustomCreatorTypes(options = {}) {
-    localStorage.setItem(CREATOR_TYPES_STORAGE_KEY, JSON.stringify(customCreatorTypes));
-    if (options.markDirty !== false) markLocalChanged();
-    if (options.remote !== false) scheduleServerSave();
-  }
+  function saveCustomCreatorTypes(options = {}) { if(options.remote!==false) scheduleServerSave(); }
 
   function loadMonthlyBudgets() {
     try {
@@ -586,26 +573,11 @@
     }
   }
 
-  function saveMonthlyBudgets(options = {}) {
-    localStorage.setItem(MONTHLY_BUDGETS_STORAGE_KEY, JSON.stringify(monthlyBudgets));
-    if (options.markDirty !== false) markLocalChanged();
-    if (options.remote !== false) scheduleServerSave();
-  }
+  function saveMonthlyBudgets(options = {}) { if(options.remote!==false) scheduleServerSave(); }
 
-  function savePlacements(options = {}) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(placements));
-    if (options.markDirty !== false) markLocalChanged();
-    $("#save-status").textContent = `已保存 ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
-    if (options.remote !== false) scheduleServerSave();
-  }
+  function savePlacements(options = {}) { if(options.remote!==false) scheduleServerSave(); }
 
-  function writeLocalState() {
-    localStorage.setItem(CREATORS_STORAGE_KEY, JSON.stringify(creators));
-    MIRROR_CREATORS_STORAGE_KEYS.forEach((key) => localStorage.setItem(key, JSON.stringify(creators)));
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(placements));
-    localStorage.setItem(CREATOR_TYPES_STORAGE_KEY, JSON.stringify(customCreatorTypes));
-    localStorage.setItem(MONTHLY_BUDGETS_STORAGE_KEY, JSON.stringify(monthlyBudgets));
-  }
+  function writeLocalState(options = {}) { /* Shared state does not require a browser mirror. */ }
 
   function xhsStateCounts(state) {
     return {
@@ -689,157 +661,13 @@
     };
   }
 
-  function scheduleServerSave() {
-    if (applyingServerState) return;
-    clearTimeout(remoteSaveTimer);
-    remoteSaveTimer = setTimeout(() => saveServerState({ force: true }), 420);
-  }
-
-  function flushServerSave() {
-    clearTimeout(remoteSaveTimer);
-    return saveServerState({ force: true });
-  }
-
-  function syncServerInBackground() {
-    flushServerSave().then((ok) => {
-      if (ok) toast("云端已同步");
-    }).catch(() => {});
-  }
-
-  function scheduleServerRefresh(delay = 12000) {
-    clearTimeout(remoteRefreshTimer);
-    remoteRefreshTimer = setTimeout(async () => {
-      await loadServerState({ silent: true });
-      scheduleServerRefresh(document.hidden ? 45000 : 12000);
-    }, delay);
-  }
-
-  function refreshServerSoon(delay = 1200) {
-    clearTimeout(remoteRefreshTimer);
-    scheduleServerRefresh(delay);
-  }
-
-  async function saveServerState(options = {}) {
-    if (applyingServerState) return false;
-    if (!apiOnline && !options.force) return false;
-    if (remoteSaveInFlight) {
-      remoteSaveQueued = true;
-      return remoteSaveInFlight;
-    }
-    const payload = xhsStatePayload();
-    if (!hasUsefulXhsState(payload)) {
-      $("#save-status").textContent = "空数据未同步，避免覆盖云端";
-      return false;
-    }
-    $("#save-status").textContent = "正在同步云端...";
-    remoteSaveInFlight = (async () => {
-      try {
-        const response = await fetch(API_URL, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (response.status === 409) {
-          apiOnline = true;
-          $("#save-status").textContent = "云端已阻止异常覆盖，请刷新同步";
-          return false;
-        }
-        if (!response.ok) throw new Error("server save failed");
-        const result = await response.json();
-        apiOnline = true;
-        markServerSynced(result.updatedAt, payload.clientUpdatedAt);
-        $("#save-status").textContent = `云端已保存 ${new Date(result.updatedAt || Date.now()).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
-        refreshServerSoon(1500);
-        return true;
-      } catch {
-        apiOnline = false;
-        $("#save-status").textContent = "云端暂不可用，本机改动待同步";
-        return false;
-      }
-    })();
-    try {
-      return await remoteSaveInFlight;
-    } finally {
-      remoteSaveInFlight = null;
-      if (remoteSaveQueued) {
-        remoteSaveQueued = false;
-        await saveServerState({ force: true });
-      }
-    }
-  }
-
-  async function loadServerState(options = {}) {
-    if (remoteLoadInFlight) return remoteLoadInFlight;
-    if (!options.force && hasOpenEditorDialog()) {
-      refreshServerSoon(3500);
-      return false;
-    }
-    remoteLoadInFlight = (async () => {
-      try {
-        let response = await fetch(API_URL, { cache: "no-store" });
-        if (!response.ok) throw new Error("server unavailable");
-        let data = await response.json();
-        if (!Array.isArray(data.creators) || !Array.isArray(data.placements)) throw new Error("invalid server state");
-        let localState = { creators, placements, customCreatorTypes, monthlyBudgets };
-        if (hasPendingLocalSync() && hasUsefulXhsState(localState)) {
-          apiOnline = true;
-          const localShouldSave = hasCurrentSessionChanges || (localStateIsNewerThanRemote(data, localState) && !remoteStateShouldWin(data, localState));
-          if (localShouldSave) {
-            if (!options.silent) $("#save-status").textContent = "检测到本机有未同步改动，正在合并云端";
-            await saveServerState({ force: true });
-            response = await fetch(API_URL, { cache: "no-store" });
-            if (!response.ok) throw new Error("server unavailable");
-            data = await response.json();
-            if (!Array.isArray(data.creators) || !Array.isArray(data.placements)) throw new Error("invalid server state");
-            localState = { creators, placements, customCreatorTypes, monthlyBudgets };
-          } else {
-            backupLocalState("stale_pending_before_cloud_apply");
-            hasCurrentSessionChanges = false;
-            if (!options.silent) $("#save-status").textContent = "云端版本较新，已跳过本机旧缓存";
-          }
-        }
-        if (shouldSkipRemoteApply(data, localState, options)) {
-          apiOnline = true;
-          return true;
-        }
-        if (isRemoteDataRegression(data, localState)) {
-          apiOnline = true;
-          if (!options.silent) $("#save-status").textContent = "云端数据疑似为空，已保留本机并回写云端";
-          await saveServerState({ force: true });
-          return true;
-        }
-        const beforeCounts = xhsStateCounts(localState);
-        applyingServerState = true;
-        if (!options.silent && hasUsefulXhsState(localState)) backupLocalState("before_server_apply");
-        creators = data.creators.map(normalizeCreator).filter((item) => !isLegacyTestCreator(item));
-        placements = data.placements.filter((item) => !isLegacyTestPlacement(item)).map((item) => ({ ...item, status: normalizePlacementStatus(item.status, item) }));
-        customCreatorTypes = Array.isArray(data.customCreatorTypes) ? data.customCreatorTypes : customCreatorTypes;
-        monthlyBudgets = data.monthlyBudgets && typeof data.monthlyBudgets === "object" && !Array.isArray(data.monthlyBudgets) ? data.monthlyBudgets : monthlyBudgets;
-        writeLocalState();
-        markServerSynced(data.updatedAt, data.clientUpdatedAt);
-        apiOnline = true;
-        hydrateControls();
-        renderAll();
-        const afterCounts = xhsStateCounts({ creators, placements });
-        const countChanged = beforeCounts.creators !== afterCounts.creators || beforeCounts.placements !== afterCounts.placements;
-        if (!options.silent || countChanged) {
-          $("#save-status").textContent = `云端已同步 ${new Date(data.updatedAt || Date.now()).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
-        }
-        return true;
-      } catch {
-        apiOnline = false;
-        if (!options.silent) $("#save-status").textContent = "本机数据已启用，服务器保存未连接";
-        return false;
-      } finally {
-        applyingServerState = false;
-      }
-    })();
-    try {
-      return await remoteLoadInFlight;
-    } finally {
-      remoteLoadInFlight = null;
-    }
-  }
+  function scheduleServerSave(){cloud?.changed();}
+  async function flushServerSave(){return cloud?await cloud.flush():false;}
+  function syncServerInBackground(){flushServerSave().then(ok=>{if(ok)toast('服务器已确认保存');else toast('尚未完成同步，请查看顶部状态')});}
+  function scheduleServerRefresh(){/* SharedSync owns one refresh timer. */}
+  function refreshServerSoon(){cloud?.refresh();}
+  async function saveServerState(){return flushServerSave();}
+  async function loadServerState(){return cloud?.refresh();}
 
   function loadLocalJson(key, fallback) {
     try {
@@ -888,7 +716,7 @@
     }
     try {
       let baseProducts = [];
-      const response = await fetch(`${WHOLESALE_PRODUCTS_API}?url=${encodeURIComponent(DEFAULT_WHOLESALE_ADMIN_URL)}`, { cache: "no-store" });
+      const response = await fetch(`${WHOLESALE_PRODUCTS_API}?url=${encodeURIComponent(DEFAULT_WHOLESALE_ADMIN_URL)}`, { cache: "no-store", signal:AbortSignal.timeout(20000) });
       if (!response.ok) throw new Error("products unavailable");
       const payload = await response.json();
       baseProducts = Array.isArray(payload.products) ? payload.products : [];
@@ -900,32 +728,18 @@
         customProductCount: number(payload.customProductCount),
         reason: String(payload.costConnectionReason || ""),
       };
-      const customProducts = loadLocalJson(WHOLESALE_KEYS.customProducts, []);
-      const settings = loadLocalJson(WHOLESALE_KEYS.productSettings, {});
-      const inventory = loadLocalJson(WHOLESALE_KEYS.inventory, {});
-      const merged = [...(Array.isArray(baseProducts) ? baseProducts : []), ...(Array.isArray(customProducts) ? customProducts : [])].map((product) => {
-        const setting = settings[product.id] || {};
-        return {
-          ...product,
-          ...setting,
-          status: inventory[product.id] || setting.status || product.status,
-          image: setting.image || product.image,
-        };
-      });
-      productCatalog = Array.from(new Map(merged.map(normalizeProduct).filter((item) => item.id && item.name).map((item) => [item.id, item])).values());
-      hydrateControls();
-      renderAll();
+      productCatalog=Array.from(new Map(baseProducts.map(normalizeProduct).filter(p=>p.id&&p.name).map(p=>[p.id,p])).values());
+      if(!hasOpenEditorDialog()&&!document.activeElement?.matches("input,textarea,select")){hydrateControls();renderAll();}
       if (options.manual) toast(`订货产品已同步：${productCatalog.length} 个${wholesaleCostStatus.customProductCount ? `，含后台新增 ${wholesaleCostStatus.customProductCount} 个` : ""}`);
       return true;
     } catch {
       try {
-        const response = await fetch(WHOLESALE_PRODUCTS_FALLBACK_URL, { cache: "no-store" });
+        const response = await fetch(WHOLESALE_PRODUCTS_FALLBACK_URL, { cache: "no-store", signal:AbortSignal.timeout(20000) });
         if (!response.ok) throw new Error("fallback products unavailable");
         const baseProducts = await response.json();
         wholesaleCostStatus = { connected: false, orderCount: 0, costSettingsCount: 0, costSeedCount: 0, customProductCount: 0, reason: "fallback" };
         productCatalog = Array.from(new Map((Array.isArray(baseProducts) ? baseProducts : []).map(normalizeProduct).filter((item) => item.id && item.name).map((item) => [item.id, item])).values());
-        hydrateControls();
-        renderAll();
+        if(!hasOpenEditorDialog()&&!document.activeElement?.matches("input,textarea,select")){hydrateControls();renderAll();}
         if (options.manual) toast(`订货后台暂未连接，已载入本地产品：${productCatalog.length} 个`);
         return false;
       } catch {
@@ -1625,7 +1439,7 @@
     try {
       const existingSeedRows = creators.filter((item) => item.source === CREATORS_SEED_SOURCE).length;
       if (!force && existingSeedRows >= MIN_SEED_CREATOR_ROWS) return;
-      const response = await fetch(CREATORS_SEED_URL, { cache: "no-store" });
+      const response = await fetch(CREATORS_SEED_URL, { cache: "no-store", signal:AbortSignal.timeout(20000) });
       if (!response.ok) return;
       const seed = await response.json();
       if (!Array.isArray(seed)) return;
@@ -2816,12 +2630,6 @@
     const pendingBeforeSave = pendingClassificationCreators();
     const currentIndex = pendingBeforeSave.findIndex((item) => item.id === data.id);
     const nextCreator = pendingBeforeSave[currentIndex + 1] || pendingBeforeSave[0] || null;
-    try {
-      localStorage.setItem(CREATORS_BACKUP_STORAGE_KEY, JSON.stringify(creators));
-    } catch {
-      toast("本机存储空间不足，尚未修改达人资料");
-      return;
-    }
     creators[index] = {
       ...creators[index],
       profileLink,
@@ -2832,18 +2640,8 @@
       updatedAt: new Date().toISOString(),
     };
     saveCreators();
-    await flushServerSave();
-    const persistedCreators = loadCreators();
-    const persisted = persistedCreators.find((item) => creatorKey(item.name) === nameKey);
-    const savedCorrectly = persisted &&
-      persisted.profileLink === creators[index].profileLink &&
-      persisted.fanCount === creators[index].fanCount &&
-      persisted.creatorType === creators[index].creatorType;
-    if (!savedCorrectly) {
-      toast("保存未成功，请先导出数据备份后重试");
-      return;
-    }
-    creators = persistedCreators;
+    const confirmed=await flushServerSave();
+    if(!confirmed){toast('修改尚未获服务器确认，请保留页面并查看同步状态');return;}
     const persistedNext = nextCreator && creatorKey(nextCreator.name) !== nameKey
       ? creators.find((item) => creatorKey(item.name) === creatorKey(nextCreator.name))
       : null;
@@ -3052,7 +2850,7 @@
     item.updatedAt = item.performanceReviewedAt;
     savePlacements();
     syncCreatorsFromPlacements();
-    await flushServerSave();
+    if(!await flushServerSave()){toast("修改尚未获服务器确认，请查看顶部同步状态");return;}
     renderAll();
     toast("互动数据已保存，跟进任务已归档");
   }
@@ -3638,7 +3436,7 @@
       placements = placements.filter((item) => item.id !== id);
       savePlacements();
       syncCreatorsFromPlacements();
-      await flushServerSave();
+      if(!await flushServerSave()){toast("修改尚未获服务器确认，请查看顶部同步状态");return;}
       $("#placement-dialog").close();
       renderAll();
       toast("投放记录已删除");
@@ -3659,7 +3457,7 @@
         placements = placements.filter((item) => item.id !== removeId);
         savePlacements();
         syncCreatorsFromPlacements();
-        await flushServerSave();
+        if(!await flushServerSave()){toast("修改尚未获服务器确认，请查看顶部同步状态");return;}
         renderAll();
         toast("投放记录已删除");
       }
@@ -3847,7 +3645,7 @@
       $("#creator-dialog").close();
       hydrateControls();
       renderCreators();
-      toast("达人资料已保存，正在同步云端");
+      toast("达人资料正在提交，等待服务器确认");
       syncServerInBackground();
     });
     $("#blacklist-list").addEventListener("click", async (event) => {
@@ -3858,7 +3656,7 @@
       creator.isBlacklisted = false;
       creator.blacklistReason = "";
       saveCreators();
-      await flushServerSave();
+      if(!await flushServerSave()){toast("修改尚未获服务器确认，请查看顶部同步状态");return;}
       renderCreators();
       toast("已移出黑名单");
     });
@@ -3869,7 +3667,7 @@
       if (!creatorTypeOptions().includes(value)) {
         customCreatorTypes.push(value);
         saveCustomCreatorTypes();
-        await flushServerSave();
+        if(!await flushServerSave()){toast("修改尚未获服务器确认，请查看顶部同步状态");return;}
       }
       input.value = "";
       hydrateControls();
@@ -3878,7 +3676,7 @@
     });
     $("#resync-creators").addEventListener("click", async () => {
       syncCreatorsFromPlacements();
-      await flushServerSave();
+      if(!await flushServerSave()){toast("修改尚未获服务器确认，请查看顶部同步状态");return;}
       renderAll();
       toast("已根据当前真实台账同步合作记录");
     });
@@ -3903,7 +3701,7 @@
         saveCustomCreatorTypes();
         saveMonthlyBudgets();
         syncCreatorsFromPlacements();
-        await flushServerSave();
+        if(!await flushServerSave()){toast("修改尚未获服务器确认，请查看顶部同步状态");return;}
         renderAll();
         toast("数据已导入");
       } catch {
@@ -3923,7 +3721,7 @@
         placements = [...imported, ...placements];
         savePlacements();
         syncCreatorsFromPlacements();
-        await flushServerSave();
+        if(!await flushServerSave()){toast("修改尚未获服务器确认，请查看顶部同步状态");return;}
         renderAll();
         toast(`已导入 ${imported.length} 条CSV记录`);
       } catch {
@@ -3961,52 +3759,42 @@
     $$(".view").forEach((view) => view.classList.toggle("active", view.id === `${name}-view`));
   }
 
-  function sendPendingStateOnUnload() {
-    if (!hasPendingLocalSync() || !hasUsefulXhsState({ creators, placements })) return;
-    if (!hasCurrentSessionChanges) return;
-    clearTimeout(remoteSaveTimer);
-    try {
-      fetch(API_URL, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(xhsStatePayload()),
-        keepalive: true,
-      });
-    } catch {
-      // The local pending-sync flag remains, so the next open will retry.
-    }
+  function hasPendingLocalSync(){return Boolean(cloud?.pending||cloud?.conflict);}
+  function downloadRecovery(value,name){const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+  async function startSharedApp(){
+    const response=await fetch('/api/xhs-media/session',{cache:'no-store',signal:AbortSignal.timeout(20000)});
+    if(response.status===401){location.replace('/xhs-media/login');return;}
+    if(!response.ok)throw Error('当前账号无法访问PR系统，请联系管理员');
+    const session=await response.json();
+    const syncPanel=document.createElement('div');syncPanel.className='shared-status-panel';
+    syncPanel.innerHTML='<strong id="shared-user"></strong><span id="shared-version"></span><a href="/stock-ops/">经营协作台</a><button id="shared-export-pending">导出待同步修改</button><button id="shared-recover" hidden>核对冲突</button><button id="legacy-export">导出旧设备缓存</button><button id="shared-logout">退出</button>';
+    document.body.prepend(syncPanel);$('#shared-user').textContent=session.user.name+' · PR系统';
+    cloud=new SharedSync({url:API_URL,versionUrl:'/api/xhs-media/version',key:'xhs-v3:'+session.user.id,
+      shape:{creators:'rows',placements:'rows',customCreatorTypes:'value',monthlyBudgets:'map'},
+      read:()=>({creators,placements,customCreatorTypes,monthlyBudgets}),
+      write:s=>{creators=s.creators||[];placements=s.placements||[];customCreatorTypes=s.customCreatorTypes||[];monthlyBudgets=s.monthlyBudgets||{};},
+      render:()=>{hydrateControls();renderAll();},busy:()=>hasOpenEditorDialog()||document.activeElement?.matches('input,textarea,select'),
+      authExpired:()=>{if(cloud?.pending||cloud?.conflict){toast('登录已失效，请先导出待同步修改，再重新登录');document.body.classList.add('shared-unavailable');}else location.replace('/xhs-media/login')},
+      status:s=>{apiOnline=s.online;hasCurrentSessionChanges=s.pending;
+        const message=s.conflict?'保存冲突：修改已保留，请核对':s.pending?(s.online?'正在保存共享数据':'离线：修改待同步'):s.ready&&s.online?'已获服务器确认':'正在连接共享数据';
+        $('#save-status').textContent=message+(s.message?' · '+s.message:'')+(!s.storageOK&&s.pending?' · 本机草稿存储不可用，请勿关闭页面，可先导出':'');
+        $('#shared-version').textContent='最近确认 '+(s.updatedAt?new Date(s.updatedAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'尚未读取');
+        $('#shared-recover').hidden=!s.conflict;
+        document.body.classList.toggle('shared-unavailable',!s.ready||s.conflict);
+      }
+    });
+    $('#shared-export-pending').onclick=()=>downloadRecovery(cloud.exportPending(),'PR待同步更改_'+today()+'.json');
+    $('#shared-recover').onclick=async()=>{downloadRecovery(cloud.exportPending(),'PR冲突更改_'+today()+'.json');if(confirm('已导出双方差异所需的本机修改。是否暂以云端版本继续，并清除这份待同步草稿？原修改请依据导出文件核对后重新登记。'))await cloud.discardAfterExport();};
+    $('#legacy-export').onclick=()=>{const copy={};for(let i=0;i<localStorage.length;i++){const key=localStorage.key(i);if(key?.startsWith('xhs_media'))copy[key]=localStorage.getItem(key);}downloadRecovery(copy,'PR旧设备缓存_仅供核对_'+today()+'.json');};
+    $('#shared-logout').onclick=async()=>{if(hasPendingLocalSync()&&!confirm('仍有未同步修改，建议先导出。确定退出？'))return;cloud.stop();await fetch('/api/content-ops/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});location.replace('/xhs-media/login');};
+    document.body.classList.add('shared-unavailable');
+    for(const type of ['click','submit','input','change','keydown'])document.addEventListener(type,event=>{
+      if((!cloud.ready||cloud.conflict||cloud.stopped)&&!event.target.closest('.shared-status-panel')){event.preventDefault();event.stopImmediatePropagation();}
+    },true);
+    hydrateControls();bindEvents();renderAll();await cloud.start();loadWholesaleProducts();
+    window.addEventListener('online',()=>cloud.refresh());window.addEventListener('focus',()=>cloud.refresh());
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloud.refresh()});
+    window.addEventListener('beforeunload',e=>{if(hasPendingLocalSync()){e.preventDefault();e.returnValue='';}});
   }
-
-  hydrateControls();
-  bindEvents();
-  window.addEventListener("storage", (event) => {
-    if ([CREATORS_STORAGE_KEY, ...MIRROR_CREATORS_STORAGE_KEYS].includes(event.key)) {
-      creators = loadCreators();
-      hydrateControls();
-      renderCreators();
-    }
-    if (Object.values(WHOLESALE_KEYS).includes(event.key)) loadWholesaleProducts();
-  });
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) sendPendingStateOnUnload();
-    else {
-      loadWholesaleProducts();
-      loadServerState({ force: true, silent: true });
-      scheduleServerRefresh(12000);
-    }
-  });
-  window.addEventListener("focus", () => loadServerState({ force: true, silent: true }));
-  window.addEventListener("pagehide", sendPendingStateOnUnload);
-  window.addEventListener("beforeunload", (event) => {
-    if (!hasPendingLocalSync()) return;
-    sendPendingStateOnUnload();
-    event.preventDefault();
-    event.returnValue = "";
-  });
-  syncCreatorsFromPlacements({ markDirty: false, remote: false });
-  renderAll();
-  loadServerState({ force: true }).then(() => {
-    if (!apiOnline) loadRecoveredSnapshot().finally(loadMorningRecovery);
-  }).finally(() => scheduleServerRefresh(12000));
-  loadWholesaleProducts();
+  startSharedApp().catch(e=>{const el=$('#save-status');if(el)el.textContent=e.message+'；请刷新重试';document.body.classList.add('shared-unavailable');});
 })();
