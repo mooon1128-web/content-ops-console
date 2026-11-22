@@ -37,6 +37,15 @@ export function calculateComponentSales(state,job,input){
   if(input.orders.length>30000||input.refunds.length>30000)throw fail('单次明细过多，请按月拆分采集任务');
   const rules=activeRecipes(state),lookup=new Map();for(const r of rules){const key=recipeKey(r);if(!lookup.has(key))lookup.set(key,[]);lookup.get(key).push(r);}
   const shops=job.shops||job.channels.map(c=>({channel:c,shop:defaultShops[c]}));
+  // Exclusions are scoped to this collection, exact platform IDs, and remain auditable.
+  if(input.exclusions!==undefined&&(!Array.isArray(input.exclusions)||input.exclusions.length>100))throw fail('排除范围格式不正确');
+  const exclusions=(input.exclusions||[]).map(e=>{
+    const c=channel(e.channel),shop=text(e.shop,'排除店铺'),itemId=text(e.itemId,'排除商品ID');
+    if(!shops.some(s=>s.channel===c&&s.shop===shop))throw fail('排除店铺超出任务范围');
+    return {channel:c,shop,itemId,platformSkuId:e.platformSkuId?text(e.platformSkuId,'排除规格ID'):null,name:text(e.name,'排除商品名称'),reason:text(e.reason,'排除原因',1000)};
+  });
+  const excludedOrders=[],excludedRefunds=[],rowIssues=[];
+  const excludeFor=o=>exclusions.find(e=>e.channel===o.channel&&e.shop===o.shop&&e.itemId===o.itemId&&(!e.platformSkuId||e.platformSkuId===o.platformSkuId));
   const allowed=new Set(shops.map(s=>tuple(s.channel,s.shop))),orders=new Map(),refunds=new Map(),issues=[],contributions=new Map();let issueCount=0,duplicateOrders=0,duplicateRefunds=0,ignoredRefunds=0;
   const issue=(kind,key,detail)=>{issueCount++;if(issues.length<500)issues.push({kind,key,detail});};
   const rows=new Map(months(job.start,job.end).flatMap(m=>job.skuIds.flatMap(skuId=>job.channels.map(c=>[tuple(skuId,m,c),{skuId,month:m,channel:c,paid:0,refund:0,net:0,payAmount:null,refundAmount:null,through:cohortEnd(m,job.end),refundAsOf:job.refundAsOf,source:`订单行拆分核对 · ${job.id}`,note:'件数按实际商品组成拆分；销售额未分摊，保留原订单口径。',calculationBasis:SALES_COMPONENT_BASIS}]))));
@@ -52,13 +61,15 @@ export function calculateComponentSales(state,job,input){
     const prior=orders.get(key);if(prior){if(prior.fingerprint!==digest(row))throw fail('相同订单行存在数量、日期或规格冲突');duplicateOrders++;continue;}
     const matched=(lookup.get(recipeKey(row))||[]).filter(r=>r.validFrom<=row.paidDate&&(!r.validTo||r.validTo>=row.paidDate));
     const record={...row,fingerprint:digest(row),rule:matched.length===1?matched[0]:null,refunded:{}};orders.set(key,record);
+    const excluded=excludeFor(row);if(excluded){record.excluded=true;record.rule=null;excludedOrders.push({...row,reason:excluded.reason});continue;}
     if(matched.length!==1){issue('商品对应',key,matched.length?'同一规格有多套有效组成规则':`缺少已核实组成：${row.itemId} / ${row.platformSkuId}，不能按名称猜测`);continue;}
     for(const c of record.rule.components){const q=c.units*row.quantity;count(q,'拆分支付数量');add(record,c.skuId,'paid',q);}
   }catch(e){issue('订单',key,e.message);}}
-  for(const raw of input.refunds){let key='退款行';try{
+  for(const raw of input.refunds){let key='退款行',affectedOrder=null;try{
     const r={channel:channel(raw.channel),shop:text(raw.shop,'店铺标识'),orderId:text(raw.orderId,'原订单号'),lineId:text(raw.lineId,'原平台订单行号'),refundId:text(raw.refundId,'退款单号'),refundLineId:text(raw.refundLineId,'退款明细行标识'),status:raw.status};
     key=tuple(r.channel,r.shop,r.refundId,r.refundLineId);
     if(!allowed.has(tuple(r.channel,r.shop)))throw fail('退款店铺超出任务范围');
+    affectedOrder=orders.get(orderKey(r));
     if(!['success','pending','closed','rejected'].includes(r.status))throw fail('退款状态不明确');
     // Exact canonical fingerprints include quantity/type, not customer details or export formatting.
     // Some official exports omit completion time. Preserve that absence; an observed
@@ -68,6 +79,7 @@ export function calculateComponentSales(state,job,input){
     if(r.status==='success'&&!completedDate&&observedAsOf!==job.refundAsOf)throw fail('缺少退款完成时间，须提供与任务截止日一致的成功状态观察日');
     const normalized={...r,completedDate,observedAsOf,kind:raw.kind||null,quantity:raw.quantity??null,components:Array.isArray(raw.components)?raw.components.map(c=>({skuId:c.skuId,quantity:c.quantity})):null};
     const hash=digest(normalized),prior=refunds.get(key);if(prior){if(prior!==hash)throw fail('同一退款明细重复且内容冲突');duplicateRefunds++;continue;}refunds.set(key,hash);
+    if(affectedOrder?.excluded){excludedRefunds.push({...r,reason:excludeFor(affectedOrder).reason});continue;}
     if(r.status!=='success'||completedDate>job.refundAsOf){ignoredRefunds++;continue;}
     const order=orders.get(orderKey(r));if(!order)throw fail('成功退款找不到原付款订单行');
     if((completedDate||observedAsOf)<order.paidDate)throw fail('退款完成或观察日期早于付款日期');
@@ -81,12 +93,13 @@ export function calculateComponentSales(state,job,input){
     }else throw fail('退款件数或套餐退项不明确，不能用退款金额推算');
     for(const q of quantities){const limit=order.rule.components.find(c=>c.skuId===q.skuId).units*order.quantity;if((order.refunded[q.skuId]||0)+q.quantity>limit)throw fail('累计退款扣件超过该商品购买数量');}
     for(const q of quantities){order.refunded[q.skuId]=(order.refunded[q.skuId]||0)+q.quantity;add(order,q.skuId,'refund',q.quantity);}
-  }catch(e){issue('退款',key,e.message);}}
+  }catch(e){issue('退款',key,e.message);for(const c of affectedOrder?.rule?.components||[])rowIssues.push({skuId:c.skuId,month:affectedOrder.paidDate.slice(0,7),channel:affectedOrder.channel,kind:'退款',key,detail:e.message});}}
   for(const store of shops){const matches=input.coverage.filter(c=>c.channel===store.channel&&c.shop===store.shop);const key=tuple(store.channel,store.shop);const own=[...orders.values()].filter(o=>o.channel===store.channel&&o.shop===store.shop);
     if(matches.length!==1){issue('完整性',key,'每家店铺需一份全链接、已付款订单和退款完整性核对');continue;}const c=matches[0];
     try{if(c.start!==job.start||c.end!==job.end||c.refundAsOf!==job.refundAsOf||c.ordersComplete!==true||c.refundsComplete!==true||c.linksComplete!==true)throw fail('尚未确认全链接及所有相关退款均已采集');text(c.source,'完整性核对来源',2000);if(count(c.orderLineCount,'原报表去重订单行数')!==own.length||count(c.paidUnits,'原报表购买套数／件数')!==own.reduce((n,o)=>n+o.quantity,0))throw fail('原报表控制合计与订单明细不一致');}catch(e){issue('完整性',key,e.message);}
   }
   for(const row of rows.values())row.net=row.paid-row.refund;
   const usedRules=new Set([...orders.values()].map(o=>o.rule?.id).filter(Boolean));
-  return {rows:[...rows.values()],issues,issueCount,complete:issueCount===0,summary:{orderLines:orders.size,refundLines:refunds.size,duplicateOrders,duplicateRefunds,ignoredRefunds},contributions:[...contributions.values()].filter(c=>job.skuIds.includes(c.skuId)),rulesSnapshot:rules.filter(r=>usedRules.has(r.id)),rulesHash:recipesDigest(state),inputHash:digest({orders:input.orders,refunds:input.refunds,coverage:input.coverage}),calculationBasis:SALES_COMPONENT_BASIS};
+  const coverage=input.coverage.map(c=>({channel:c.channel,shop:c.shop,start:day(c.start),end:day(c.end),refundAsOf:day(c.refundAsOf),ordersComplete:c.ordersComplete===true,refundsComplete:c.refundsComplete===true,linksComplete:c.linksComplete===true}));
+  return {rows:[...rows.values()],issues,rowIssues,coverage,exclusions,excludedOrders,excludedRefunds,issueCount,complete:issueCount===0,summary:{orderLines:orders.size,refundLines:refunds.size,duplicateOrders,duplicateRefunds,ignoredRefunds,excludedOrderLines:excludedOrders.length,excludedPlatformUnits:excludedOrders.reduce((n,o)=>n+o.quantity,0),excludedRefundLines:excludedRefunds.length},contributions:[...contributions.values()].filter(c=>job.skuIds.includes(c.skuId)),rulesSnapshot:rules.filter(r=>usedRules.has(r.id)),rulesHash:recipesDigest(state),inputHash:digest({orders:input.orders,refunds:input.refunds,coverage:input.coverage,...(exclusions.length?{exclusions}: {})}),calculationBasis:SALES_COMPONENT_BASIS};
 }
