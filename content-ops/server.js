@@ -1,7 +1,15 @@
 import { createAccessControl, publicState, scopedWrite, validateRows, makeAudit } from "./access.js";
+import { createStockStore } from './stock-store.js';
+import { stockView, roleOf, hasStockRole, fail } from './stock-model.js';
+import {createXhsStore,publicXhs} from './xhs-store.js';
+import RecordOps from '../public/content-ops/ops-core.cjs';
+import {createGzip} from 'node:zlib';
+import {Readable} from 'node:stream';
+const BUILD_ID='20261122-shared-sync-v3';
+const contentShape={titles:'rows',accounts:'rows',posts:'rows',products:'rows',inventorySettings:'map'};
 import { createServer } from "node:http";
-import { createHmac, timingSafeEqual, randomUUID } from "node:crypto";
-import { readFile, writeFile, mkdir, stat, readdir, rename } from "node:fs/promises";
+import { createHmac, timingSafeEqual, randomUUID, createHash } from "node:crypto";
+import { readFile, writeFile, mkdir, stat, statfs, readdir, rename, open, unlink } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +18,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
 const publicDir = join(root, "public", "content-ops");
 const xhsPublicDir = join(root, "public", "xhs-media");
+const stockPublicDir = join(root, 'public', 'stock-ops');
 const bundledXhsDataFile = join(__dirname, "xhs-media-data.json");
 const dataFile = process.env.CONTENT_OPS_DATA || join(__dirname, "data.json");
 const xhsDataFile = process.env.XHS_MEDIA_DATA || bundledXhsDataFile;
@@ -32,6 +41,7 @@ const mime = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".cjs": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".webmanifest": "application/manifest+json; charset=utf-8",
   ".svg": "image/svg+xml",
@@ -105,7 +115,8 @@ async function backupFile(filePath, targetDir, prefix) {
     const current = await readFile(filePath, "utf8");
     await mkdir(targetDir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    await writeFile(join(targetDir, `${prefix}-${stamp}-${randomUUID()}.json`), current);
+    const name=hasSupabaseStateStore()?`${prefix}-daily-${stamp.slice(0,10)}.json`:`${prefix}-${stamp}-${randomUUID()}.json`;
+    await writeFile(join(targetDir, name), current,{flag:'wx'}).catch(e=>{if(e.code!=='EEXIST')throw e;});
   } catch (error) {
     if (error?.code !== "ENOENT") {
       console.warn(`Could not create data backup: ${error.message}`);
@@ -139,6 +150,7 @@ async function writeFileState(state) {
 
 async function supabaseRequest(path, options = {}) {
   const response = await fetch(`${supabaseUrl}/rest/v1${path}`, {
+    signal:AbortSignal.timeout(20000),
     ...options,
     headers: {
       apikey: supabaseServiceRoleKey,
@@ -178,7 +190,7 @@ function writeContentOpsState(state, options = {}) {
 }
 
 async function commitContentOpsState(state, options) {
-  if (!validContentOpsState(state)) throw new Error("Invalid state shape");
+  if (!options.operations && !validContentOpsState(state)) throw new Error("Invalid state shape");
   let current;
   let databaseVersion;
   if (hasSupabaseStateStore()) {
@@ -190,7 +202,8 @@ async function commitContentOpsState(state, options) {
   }
   // Bootstrapping must never replace a row created by another instance.
   if (options.preserveUpdatedAt && current) return current;
-  if (!options.preserveUpdatedAt && (!current || current.updatedAt !== options.expectedUpdatedAt)) throw stateConflict();
+  if (!options.preserveUpdatedAt && (!current || !options.operations && current.updatedAt !== options.expectedUpdatedAt)) throw stateConflict();
+  if(options.operations)state=RecordOps.apply(options.actor&&!options.system?publicState(current,options.actor):current,options.operations,contentShape,new Date().toISOString());
   if (options.actor) {
     const activeUser = current?._access?.users.find(user => user.id === options.actor.id && !user.disabled && user.sessionVersion === options.actor.sessionVersion);
     if (!activeUser) throw Object.assign(new Error("登录权限已变更，请重新登录"), { status: 401 });
@@ -680,8 +693,9 @@ function normalizeWholesaleProduct(product, baseUrl, costInfo = {}) {
 }
 
 function send(response, status, body, headers = {}) {
-  response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...corsHeaders, ...headers });
-  response.end(typeof body === "string" ? body : JSON.stringify(body));
+  const payload=typeof body==='string'?body:JSON.stringify(body),compress=response.gzip&&payload.length>2048;
+  response.writeHead(status, { "Content-Type": "application/json; charset=utf-8",'Cache-Control':'no-store',...corsHeaders,...headers,...(compress?{'Content-Encoding':'gzip','Vary':'Accept-Encoding'}:{}) });
+  if(compress)Readable.from([payload]).pipe(createGzip()).pipe(response);else response.end(payload);
 }
 
 function sendHtml(response, status, body, headers = {}) {
@@ -699,152 +713,27 @@ function clearAuthCookie() {
   return `${xhsMediaAuthCookie}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
 }
 
-function xhsLoginPage(errorText = "") {
-  const error = errorText ? `<p class="error">${errorText}</p>` : "";
-  return `<!doctype html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>小红书媒介投放跟踪台 - 登录</title>
-    <style>
-      * { box-sizing: border-box; }
-      body {
-        margin: 0;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
-        background: #f6f3ef;
-        color: #24201c;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
-      }
-      main {
-        width: min(420px, calc(100vw - 32px));
-        background: #fffaf4;
-        border: 1px solid #e5ddd2;
-        border-radius: 8px;
-        padding: 28px;
-        box-shadow: 0 18px 60px rgba(44, 36, 28, 0.14);
-      }
-      h1 {
-        margin: 0 0 8px;
-        font-size: 22px;
-        line-height: 1.25;
-      }
-      p {
-        margin: 0 0 22px;
-        color: #74695f;
-        line-height: 1.6;
-      }
-      label {
-        display: block;
-        margin-bottom: 8px;
-        color: #51483f;
-        font-size: 14px;
-        font-weight: 600;
-      }
-      input {
-        width: 100%;
-        height: 44px;
-        border: 1px solid #cfc5b9;
-        border-radius: 6px;
-        padding: 0 12px;
-        font-size: 16px;
-        background: #fff;
-        color: #24201c;
-      }
-      input:focus {
-        outline: 2px solid rgba(190, 65, 65, 0.22);
-        border-color: #b84b46;
-      }
-      button {
-        width: 100%;
-        height: 44px;
-        margin-top: 16px;
-        border: 0;
-        border-radius: 6px;
-        background: #b84b46;
-        color: #fff;
-        font-size: 15px;
-        font-weight: 700;
-        cursor: pointer;
-      }
-      button:disabled {
-        cursor: wait;
-        opacity: 0.72;
-      }
-      .error {
-        margin: 12px 0 0;
-        color: #a22c2c;
-        font-size: 14px;
-      }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>小红书媒介投放跟踪台</h1>
-      <p>请输入内部访问密码。</p>
-      <form id="login-form">
-        <label for="password">访问密码</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required autofocus />
-        <button type="submit">登录</button>
-        ${error}
-      </form>
-    </main>
-    <script>
-      const form = document.querySelector("#login-form");
-      const button = form.querySelector("button");
-      let error = document.querySelector(".error");
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        button.disabled = true;
-        button.textContent = "登录中...";
-        try {
-          const response = await fetch("/api/xhs-media/login", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ password: form.password.value })
-          });
-          if (!response.ok) throw new Error("密码不正确");
-          location.href = "/xhs-media/";
-        } catch (loginError) {
-          if (!error) {
-            error = document.createElement("p");
-            error.className = "error";
-            form.appendChild(error);
-          }
-          error.textContent = loginError.message || "登录失败，请重试";
-          button.disabled = false;
-          button.textContent = "登录";
-        }
-      });
-    </script>
-  </body>
-</html>`;
+function xhsLoginPage() {
+  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>馒头猫 · 团队登录</title><style>body{font:16px system-ui;background:#f3f6f5;color:#254b43;display:grid;place-items:center;min-height:90vh}form{width:min(380px,85vw);padding:30px;border-radius:18px;background:white}label{display:block;margin:18px 0}input,button{font:inherit;padding:12px;box-sizing:border-box;width:100%;border:1px solid #cadbd4;border-radius:8px}button{background:#286457;color:white}p{line-height:1.7}#message{color:#9f4835}</style><form id="login"><h1>团队登录</h1><p>使用个人账号进入博主投放系统。客服、仓管与新媒体使用同一套账号，权限按岗位分配。</p><label>登录账号<input name="username" autocomplete="username" required></label><label>密码<input name="password" type="password" autocomplete="current-password" required></label><button>登录</button><p id="message" role="alert"></p><a href="/stock-ops/">进入经营协作台</a></form><script>
+  const allowed=u=>u.role==='admin'||['pr','pr_service'].includes(u.stockRole);
+  fetch('/api/content-ops/session',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(s=>{if(s&&allowed(s.user))location.replace('/xhs-media/')}).catch(()=>{});
+  document.querySelector('form').onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector('button');b.disabled=true;try{const r=await fetch('/api/content-ops/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(e.target)))}),s=await r.json();if(!r.ok)throw Error(s.error||'登录失败');if(!allowed(s.user))throw Error('当前账号没有PR权限，请进入经营协作台或联系管理员');location.replace('/xhs-media/')}catch(err){document.querySelector('#message').textContent=err.message}finally{b.disabled=false}};
+  </script></html>`;
 }
-
-function requireXhsAuth(request, response) {
-  const url = new URL(request.url, `http://${request.headers.host}`);
-  const isLoginPage = url.pathname === "/xhs-media/login";
-  const isLoginApi = url.pathname === "/api/xhs-media/login";
-  const isXhsArea = url.pathname === "/xhs-media" || url.pathname.startsWith("/xhs-media/");
-  const isXhsApi = url.pathname.startsWith("/api/xhs-media/");
-
-  if (!isXhsArea && !isXhsApi) return false;
-  if (isLoginPage || isLoginApi || request.method === "OPTIONS") return false;
-  if (hasXhsAuth(request)) return false;
-
-  if (isXhsApi) {
-    send(response, 401, { error: "Unauthorized" });
-    return true;
-  }
-  response.writeHead(302, { Location: "/xhs-media/login" });
-  response.end();
-  return true;
+async function requireXhsAuth(request,response) {
+  const url=new URL(request.url,`http://${request.headers.host}`);
+  if(!url.pathname.startsWith('/xhs-media')&&!url.pathname.startsWith('/api/xhs-media/'))return false;
+  if(url.pathname==='/xhs-media/login')return false;
+  if(request.headers.origin&&new URL(request.headers.origin).host!==request.headers.host||request.headers['sec-fetch-site']==='cross-site')throw fail(403,'不允许跨网站访问');
+  try{const user=await access.requireUser(request);if(!hasStockRole(user,'admin','pr'))throw fail(403,'此账号没有PR权限；请在经营协作台查看获授权的库存与售后');request.xhsUser=user;return false;}
+  catch(e){if(e.status===401&&!url.pathname.startsWith('/api/')){response.writeHead(302,{Location:'/xhs-media/login','Cache-Control':'no-store'});response.end();return true;}throw e;}
 }
 
 async function serveStatic(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
+  response.setHeader('Cache-Control','no-store');
+  if (url.pathname === '/stock-ops') { response.writeHead(302,{Location:'/stock-ops/'});response.end();return; }
+  if (url.pathname.startsWith('/stock-ops/')) response.setHeader('Cache-Control','no-store');
   if (url.pathname === "/assets/styles" || url.pathname === "/assets/app") {
     const isStyles = url.pathname === "/assets/styles";
     const filePath = join(publicDir, isStyles ? "styles.css" : "app.js");
@@ -858,8 +747,9 @@ async function serveStatic(request, response) {
     return;
   }
   const isXhsMedia = url.pathname.startsWith("/xhs-media/");
-  const baseDir = isXhsMedia ? xhsPublicDir : publicDir;
-  const requestPath = isXhsMedia
+  const isStock = url.pathname.startsWith('/stock-ops/');
+  const baseDir = isStock ? stockPublicDir : isXhsMedia ? xhsPublicDir : publicDir;
+  const requestPath = isStock ? url.pathname.replace(/^\/stock-ops/, '') || '/index.html' : isXhsMedia
     ? url.pathname.replace(/^\/xhs-media/, "") || "/index.html"
     : url.pathname === "/" ? "/index.html" : url.pathname;
   const clean = normalize(decodeURIComponent(requestPath)).replace(/^(\.\.[/\\])+/, "");
@@ -893,48 +783,68 @@ async function readContentOpsVersion() {
 }
 
 const access = createAccessControl({ read: readContentOpsState, readAccess: readAccessOnly, write: writeContentOpsState });
+const xhsStore=createXhsStore({file:xhsDataFile,remote:hasSupabaseStateStore()?supabaseRequest:null,stateId:xhsMediaStateId});
+const stockStore = createStockStore({file:process.env.STOCK_OPS_DATA || join(dirname(dataFile),'stock-ops-data.json'),remote:hasSupabaseStateStore()?supabaseRequest:null,stateId:process.env.STOCK_OPS_STATE_ID || `${contentOpsStateId}-stock-ops`});
+const costFilesDir=process.env.STOCK_OPS_FILES_DIR || join(dirname(process.env.STOCK_OPS_DATA || dataFile),'stock-ops-cost-files');
 
 const server = createServer(async (request, response) => {
   try {
+    response.gzip=/\bgzip\b/.test(request.headers['accept-encoding']||'');
     const url = new URL(request.url || "/", `http://${request.headers.host}`);
+    if (url.pathname.startsWith('/api/stock-ops/')) {
+      response.setHeader('Cache-Control','no-store');
+      if (request.headers.origin && new URL(request.headers.origin).host !== request.headers.host || request.headers['sec-fetch-site']==='cross-site') throw fail(403,'不允许跨网站访问');
+      const user=await access.requireUser(request);
+      if(roleOf(user)==='none')throw fail(403,'请管理员分配经营协作权限');
+      if(url.pathname==='/api/stock-ops/storage'&&request.method==='GET'){
+        if(user.role!=='admin')throw fail(403,'仅管理员可查看存储信息');
+        await mkdir(costFilesDir,{recursive:true});const disk=await statfs(costFilesDir);
+        send(response,200,{totalBytes:disk.blocks*disk.bsize,availableBytes:disk.bavail*disk.bsize,warning:disk.bavail/disk.blocks<0.2,structuredData:hasSupabaseStateStore()?'Supabase':'服务器文件',attachmentPath:costFilesDir});return;
+      }
+      if(url.pathname==='/api/stock-ops/cost-file'){
+        if(user.role!=='admin')throw fail(403,'成本原文件仅管理员可查看');
+        const sha=url.searchParams.get('sha');if(!/^[a-f0-9]{64}$/.test(sha||''))throw fail(400,'文件校验码无效');
+        const target=join(costFilesDir,`${sha}.xlsx`);
+        if(request.method==='GET'){
+          let info;try{info=await stat(target)}catch(e){if(e.code==='ENOENT')throw fail(404,'成本数据已导入，但完整Excel原件尚未上传');throw e;}
+          response.writeHead(200,{'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','Content-Length':info.size,'Content-Disposition':`attachment; filename="cost-master.xlsx"; filename*=UTF-8''${encodeURIComponent('馒头猫_SKU成本主表原件.xlsx')}`});createReadStream(target).pipe(response);return;
+        }
+        if(request.method==='POST'){
+          if(request.headers['content-type']!=='application/octet-stream')throw fail(415,'请直接上传Excel文件');
+          await mkdir(costFilesDir,{recursive:true});const temp=join(costFilesDir,`${randomUUID()}.tmp`),handle=await open(temp,'wx');
+          const capacity=await statfs(costFilesDir);if(capacity.bavail*capacity.bsize<180*1024*1024){await handle.close();await unlink(temp);throw fail(507,'附件存储空间不足，管理员扩容后再上传；已有资料仍保留');}
+          const hash=createHash('sha256');let size=0;
+          try{for await(const chunk of request){size+=chunk.length;if(size>160*1024*1024)throw fail(413,'成本原件不能超过160MB');hash.update(chunk);let offset=0;while(offset<chunk.length){const {bytesWritten}=await handle.write(chunk,offset,chunk.length-offset);if(!bytesWritten)throw fail(500,'成本原件写入失败');offset+=bytesWritten;}}
+            await handle.close();if(hash.digest('hex')!==sha)throw fail(400,'上传文件与成本导入资料不一致，请核对版本');await rename(temp,target);send(response,200,{ok:true,sha256:sha,bytes:size});return;
+          }catch(e){await handle.close().catch(()=>{});await unlink(temp).catch(()=>{});throw e;}
+        }
+        throw fail(405,'Method not allowed');
+      }
+      if(url.pathname==='/api/stock-ops/version'&&request.method==='GET'){send(response,200,{updatedAt:await stockStore.version(),build:BUILD_ID});return;}
+      if(url.pathname==='/api/stock-ops/state'&&request.method==='GET'){send(response,200,stockView(await stockStore.read(),user));return;}
+      if(url.pathname==='/api/stock-ops/samples'&&request.method==='GET'){
+        const state=await xhsStore.read();
+        const placements=(state?.placements||[]).map(p=>({id:String(p.id),creator:String(p.creator||''),product:String(p.product||''),productIds:p.productIds||[p.productId].filter(Boolean),sampleQuantity:p.sampleQuantity===undefined||p.sampleQuantity===''?null:p.sampleQuantity,status:p.status||'',sampleStatus:p.sampleStatus||'',owner:p.owner||'',sampleDeliveredAt:p.sampleDeliveredAt||''}));
+        send(response,200,{placements,updatedAt:state?.updatedAt||null});return;
+      }
+      if(url.pathname==='/api/stock-ops/command'&&request.method==='POST'){
+        if(!String(request.headers['content-type']||'').startsWith('application/json'))throw fail(415,'请使用JSON请求');
+        const command=JSON.parse(await readBody(request));
+        const placements=command.action==='sample'?(await xhsStore.read())?.placements||[]:[];
+        const result=await stockStore.commit(command,user,{placements});
+        send(response,200,{ok:true,replayed:Boolean(result.replayed),state:stockView(result.state,user)});return;
+      }
+      throw fail(404,'经营接口不存在');
+    }
     if (url.pathname.startsWith("/api/content-ops/")) response.setHeader("Cache-Control", "no-store");
     if (request.url?.startsWith("/api/health")) {
-      send(response, 200, { ok: true, service: "content-ops", storage: hasSupabaseStateStore() ? "supabase" : "file", updatedAt: new Date().toISOString() });
+      send(response, 200, { ok: true, service: "content-ops",build:BUILD_ID,storage: hasSupabaseStateStore() ? "supabase" : "file", updatedAt: new Date().toISOString() });
       return;
     }
-    if (url.pathname === "/xhs-media/login") {
-      if (hasXhsAuth(request)) {
-        response.writeHead(302, { Location: "/xhs-media/" });
-        response.end();
-        return;
-      }
-      sendHtml(response, 200, xhsLoginPage());
-      return;
-    }
-    if (url.pathname === "/api/xhs-media/login") {
-      if (request.method === "OPTIONS") {
-        response.writeHead(204, corsHeaders);
-        response.end();
-        return;
-      }
-      if (request.method !== "POST") {
-        send(response, 405, { error: "Method not allowed" }, { Allow: "POST, OPTIONS" });
-        return;
-      }
-      const body = await readBody(request);
-      const parsed = body ? JSON.parse(body) : {};
-      if (!safeEqual(parsed.password || "", xhsMediaPassword)) {
-        send(response, 401, { error: "密码不正确" });
-        return;
-      }
-      send(response, 200, { ok: true }, { "Set-Cookie": authCookie(request) });
-      return;
-    }
-    if (url.pathname === "/api/xhs-media/logout") {
-      send(response, 200, { ok: true }, { "Set-Cookie": clearAuthCookie() });
-      return;
-    }
-    if (requireXhsAuth(request, response)) return;
+    if (url.pathname === '/xhs-media/login') {sendHtml(response,200,xhsLoginPage(),{'Cache-Control':'no-store'});return;}
+    if (url.pathname === '/api/xhs-media/login') {throw fail(428,'已升级为个人登录，请刷新登录页面');}
+    if (url.pathname === '/api/xhs-media/logout') {response.writeHead(307,{Location:'/api/content-ops/logout'});response.end();return;}
+    if (await requireXhsAuth(request, response)) return;
     if (await access.handle(request, response, url, send, readBody)) return;
     if (request.url?.startsWith("/api/content-ops/work-auth")) {
       if (request.method === "OPTIONS") {
@@ -966,10 +876,11 @@ const server = createServer(async (request, response) => {
       const url = new URL(request.url, `http://${request.headers.host}`);
       const sourceUrl = url.searchParams.get("url") || "https://pupuhome-wholesale.onrender.com/admin.html";
       const baseUrl = new URL(sourceUrl).origin;
+      if(baseUrl!=="https://pupuhome-wholesale.onrender.com")throw fail(400,"订货数据来源未获配置，请联系管理员");
       const productResponse = await fetch(new URL("/data/products.js", baseUrl));
       if (!productResponse.ok) throw new Error("Could not load wholesale products");
       const script = await productResponse.text();
-      const privateData = await loadWholesalePrivateData(baseUrl);
+      const privateData = request.contentOpsUser.role==='admin'?await loadWholesalePrivateData(baseUrl):{costSettings:{},costSeeds:{},customProducts:[],orders:[],connected:false,reason:"restricted"};
       const costSettings = privateData.costSettings || {};
       const costSeeds = privateData.costSeeds || {};
       const rawProducts = mergeWholesaleProducts(parseProductsScript(script), privateData.customProducts);
@@ -1001,6 +912,11 @@ const server = createServer(async (request, response) => {
         send(response, 200, publicState(await readContentOpsState(), request.contentOpsUser), { "Cache-Control": "no-store" });
         return;
       }
+      if(request.method==='PATCH'){
+        const data=JSON.parse(await readBody(request));
+        const saved=await writeContentOpsState(null,{operations:data.operations,actor:request.contentOpsUser,userAgent:request.headers['user-agent'],clientId:request.headers['x-client-id']});
+        send(response,200,{ok:true,updatedAt:saved.updatedAt,state:publicState(saved,request.contentOpsUser),build:BUILD_ID});return;
+      }
       if (request.method === "PUT") {
         const body = await readBody(request);
         const parsed = JSON.parse(body);
@@ -1020,40 +936,16 @@ const server = createServer(async (request, response) => {
       send(response, 405, { error: "Method not allowed" }, { Allow: "GET, PUT, OPTIONS" });
       return;
     }
-    if (request.url?.startsWith("/api/xhs-media/state")) {
-      if (request.method === "OPTIONS") {
-        response.writeHead(204, corsHeaders);
-        response.end();
-        return;
+    if(url.pathname==='/api/xhs-media/version'&&request.method==='GET'){send(response,200,{updatedAt:await xhsStore.version(),build:BUILD_ID});return;}
+    if(url.pathname==='/api/xhs-media/session'&&request.method==='GET'){const u=request.xhsUser;send(response,200,{user:{id:u.id,name:u.name,username:u.username,role:u.role,stockRole:u.stockRole},build:BUILD_ID});return;}
+    if(url.pathname==='/api/xhs-media/state'){
+      if(request.method==='GET'){send(response,200,await xhsStore.read());return;}
+      if(request.method==='PATCH'){
+        if(!String(request.headers['content-type']||'').startsWith('application/json'))throw fail(415,'请使用JSON请求');
+        const saved=await xhsStore.commit(JSON.parse(await readBody(request)),request.xhsUser);
+        send(response,200,{ok:true,updatedAt:saved.updatedAt,state:publicXhs(saved),build:BUILD_ID});return;
       }
-      if (request.method === "GET") {
-        send(response, 200, await readXhsStateStore({ allowEmpty: true }), { "Cache-Control": "no-store" });
-        return;
-      }
-      if (request.method === "PUT") {
-        const body = await readBody(request);
-        const parsed = JSON.parse(body);
-        if (!validXhsState(parsed)) {
-          send(response, 400, { error: "Invalid XHS media state shape" });
-          return;
-        }
-        parsed.customCreatorTypes = parsed.customCreatorTypes || [];
-        parsed.monthlyBudgets = parsed.monthlyBudgets && typeof parsed.monthlyBudgets === "object" && !Array.isArray(parsed.monthlyBudgets) ? parsed.monthlyBudgets : {};
-        const current = await readXhsStateStore({ allowEmpty: true });
-        if (isDangerousXhsOverwrite(parsed, current)) {
-          send(response, 409, {
-            error: "Refusing to overwrite existing XHS media data with empty or much smaller state",
-            current: xhsStateCounts(current),
-            incoming: xhsStateCounts(parsed),
-          });
-          return;
-        }
-        const saved = await writeXhsStateStore(parsed);
-        send(response, 200, { ok: true, updatedAt: saved.updatedAt, storage: hasSupabaseStateStore() ? "supabase" : "file" });
-        return;
-      }
-      send(response, 405, { error: "Method not allowed" }, { Allow: "GET, PUT, OPTIONS" });
-      return;
+      throw fail(428,'此页面的保存方式已停用，请先导出未同步修改，再刷新页面；旧版本不能覆盖共享数据');
     }
     await serveStatic(request, response);
   } catch (error) {

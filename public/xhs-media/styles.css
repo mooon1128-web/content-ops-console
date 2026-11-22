@@ -1343,3 +1343,7 @@ h3 { color: #172033; font-size: 16px; }
   .product-list { grid-template-columns: 1fr; }
   .task-action { justify-items: start; }
 }
+
+.shared-status-panel{position:sticky;top:0;z-index:30;display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:12px 20px;background:#e5f1ec;border-bottom:1px solid #bed4cb;font-size:14px}.shared-status-panel button,.shared-status-panel a{font:inherit;padding:6px 10px}.shared-unavailable main button,.shared-unavailable main input,.shared-unavailable main select{pointer-events:none;opacity:.6}#save-status{white-space:normal!important;max-width:640px;line-height:1.7}
+
+.shared-status-panel{margin-left:292px;z-index:31}.top-actions>a{grid-column:1 / -1;font-size:13px;white-space:normal!important}.shared-status-panel button{border:1px solid #adc8bc;border-radius:8px;background:white;color:#254b43}.shared-status-panel strong{color:#254b43}@media(max-width:1180px){.shared-status-panel{margin-left:0;position:relative}}
