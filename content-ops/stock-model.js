@@ -1,5 +1,6 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { applySpecial, specialSummary } from './special-aftersales.js';
+import { importCatalog } from './catalog-import.js';
 
 export const fail = (status, message) => Object.assign(new Error(message), {status});
 export const roles = ['none','viewer','warehouse','operations','marketing','customer_service','pr','content','pr_service'];
@@ -13,6 +14,7 @@ const permissions = {
   specialAction: ['admin','warehouse'], specialClose: ['admin','operations','customer_service'],
   reverse: ['admin'], import: ['admin'], costArchive: ['admin'],
   collection: ['admin','operations'], collectionStatus: ['admin','operations'], collectionResult: ['admin','operations'], collectionAccept: ['admin','operations'],
+  catalogImport: ['admin'],
 };
 export function authorize(user, action) {
   if (!hasStockRole(user,...(permissions[action] || []))) throw fail(403,'当前账号没有此操作权限');
@@ -66,10 +68,11 @@ function appendEvent(s,p,user,now,internal=false) {
 }
 function apply(s,action,p,user,now,context={}) {
   authorize(user,action);
+  if(action==='catalogImport')return importCatalog(s,p,user,now,{fail});
   if(action==='sku') {
-    const row={...stamp(p,user,now),code:required(p.code,'统一SKU编码'),name:required(p.name,'款式名称'),spec:text(p.spec),category:text(p.category),status:p.status==='停用'?'停用':'在售',warehouse:required(p.warehouse||'主仓','默认仓库'),barcode:text(p.barcode),taobaoItemId:text(p.taobaoItemId),taobaoSkuId:text(p.taobaoSkuId),xhsProductId:text(p.xhsProductId),xhsSkuId:text(p.xhsSkuId),influencerProductId:text(p.influencerProductId),leadDays:number(p.leadDays,'工期',{optional:true}),moq:number(p.moq,'起订量',{optional:true}),note:text(p.note,2000)};
+    const row={...s.skus.find(k=>k.id===p.id),...stamp(p,user,now),code:required(p.code,'统一SKU编码'),name:required(p.name,'款式名称'),spec:text(p.spec),category:text(p.category),status:['停用','待核'].includes(p.status)?p.status:'在售',warehouse:required(p.warehouse||'主仓','默认仓库'),barcode:text(p.barcode),taobaoItemId:text(p.taobaoItemId),taobaoSkuId:text(p.taobaoSkuId),xhsProductId:text(p.xhsProductId),xhsSkuId:text(p.xhsSkuId),influencerProductId:text(p.influencerProductId),leadDays:number(p.leadDays,'工期',{optional:true}),moq:number(p.moq,'起订量',{optional:true}),note:text(p.note,2000)};
     row.costSkuId=text(p.costSkuId);row.costLinkStatus=text(p.costLinkStatus);
-    for(const field of ['taobaoSkuId','xhsSkuId'])if(row[field]&&s.skus.some(k=>k.id!==row.id&&k[field]===row[field]))throw fail(409,`${field}已绑定另一个SKU`);
+    for(const field of ['taobaoSkuId','xhsSkuId'])if(row[field]&&(s.skus.some(k=>k.id!==row.id&&k[field]===row[field])||(s.platformMappings||[]).some(m=>m.skuId!==row.id&&m.platform===(field==='taobaoSkuId'?'淘宝':'小红书')&&m.platformSkuId===row[field])))throw fail(409,`${field}已绑定另一个SKU`);
     uniqueUpsert(s.skus,row,k=>k.code);return row;
   }
   if(action==='monthly') {
