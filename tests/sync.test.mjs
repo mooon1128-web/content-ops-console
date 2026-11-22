@@ -150,6 +150,35 @@ test('Supabase conditional update prevents races across two service instances an
 });
 
 const api=(url,path,method='GET',payload,cookie)=>fetch(url+'/api/content-ops/'+path,{method,headers:{...(payload?{'Content-Type':'application/json'}:{}),...(cookie?{Cookie:cookie}:{})},...(payload?{body:JSON.stringify(payload)}:{})});
+test('Supabase member creation and updates use full state despite access-only authentication reads',async()=>{
+ const original={...structuredClone(seed),titles:[{id:'title-1',title:'Keep me'}],products:[{id:'sku-1',name:'Keep SKU'}],inventorySettings:{warehouse:'unchanged'},_access:await initialAccess([{username:'test-admin',name:'Admin',role:'admin',password:'Testing123'}])};
+ let row={id:'default',state:structuredClone(original),updated_at:original.updatedAt},accessReads=0;const history=[];
+ const mock=createServer(async(req,res)=>{
+  const url=new URL(req.url,'http://localhost');let raw='';for await(const c of req)raw+=c;const body=raw?JSON.parse(raw):null;
+  res.setHeader('Content-Type','application/json');
+  if(req.method==='GET'){
+   if(url.searchParams.get('select')==='access:state->_access'){accessReads++;return res.end(JSON.stringify([{access:row.state._access}]));}
+   if(url.searchParams.get('select')==='updated_at')return res.end(JSON.stringify([{updated_at:row.updated_at}]));
+   return res.end(JSON.stringify([row]));
+  }
+  if(req.method==='POST'){history.push(body);return res.end('');}
+  if(req.method==='PATCH'){if(url.searchParams.get('updated_at')!==`eq.${row.updated_at}`)return res.end('[]');row={...row,...body};return res.end(JSON.stringify([row]));}
+  res.statusCode=405;res.end('{}');
+ });await new Promise(r=>mock.listen(0,'127.0.0.1',r));
+ let f;
+ try{
+  f=await serverFixture({SUPABASE_URL:`http://127.0.0.1:${mock.address().port}`,SUPABASE_SERVICE_ROLE_KEY:'test-only'});
+  const created=await api(f.url,'users','POST',{username:'test-pr',name:'PR',password:'TestingStaff123',role:'employee',stockRole:'pr_service',accountIds:[]});
+  const result=await created.json();assert.equal(created.status,200,JSON.stringify(result));assert.ok(accessReads>0);
+  const staff=result.user;assert.equal(staff.stockRole,'pr_service');assert.equal(staff.passwordHash,undefined);
+  const changed=await api(f.url,'users','POST',{...staff,stockRole:'warehouse',accountIds:['account-2']});assert.equal(changed.status,200,await changed.text());
+  for(const key of ['posts','accounts','titles','products','inventorySettings'])assert.deepEqual(row.state[key],original[key],key+' must be preserved');
+  assert.equal(row.state._access.users.length,2);assert.equal(row.state._access.sessionSecret,original._access.sessionSecret);assert.equal(history.length,2);
+  const saved=row.state._access.users.find(u=>u.username==='test-pr');assert.equal(saved.stockRole,'warehouse');assert.deepEqual(saved.accountIds,['account-2']);
+  const login=await rawFetch(f.url+'/api/content-ops/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'test-pr',password:'TestingStaff123'})});assert.equal(login.status,200);
+  const cookie=login.headers.get('set-cookie').split(';')[0];assert.equal((await api(f.url,'users','GET',null,cookie)).status,403);
+ }finally{if(f)await f.close();await new Promise(r=>mock.close(r))}
+});
 test('employee scope is enforced by the API and every saved edit has actor, device and before/after history',async()=>{
  const f=await serverFixture();try{
  assert.equal((await rawFetch(f.url+'/api/content-ops/state')).status,401);
