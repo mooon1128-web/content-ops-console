@@ -86,14 +86,11 @@ test('cost source remains complete, missing prices stay null, and staff cannot r
  assert.ok(stockView(s,admin).costWorkbook);assert.equal(stockView(s,warehouse).costWorkbook,undefined);assert.ok(!JSON.stringify(stockView(s,warehouse)).includes('cost.xlsx'));
  assert.throws(()=>run(s,'costArchive',cost,operations),/权限/);
 });
-test('collection jobs stage complete cohort results, reject incomplete/unknown data, and accept once',()=>{
+test('legacy aggregate collection uploads cannot bypass component order checks',()=>{
  let s=seed();s=run(s,'collection',{title:'月销核对',start:'2026-10-01',end:'2026-10-31',refundAsOf:'2026-11-21',skuIds:['fish'],channels:['淘宝']},operations);
- const id=s.collections[0].id,row={skuId:'fish',month:'2026-10',channel:'淘宝',through:'2026-10-31',refundAsOf:'2026-11-21',paid:20,refund:3,source:'子订单去重和完成退款'},evidence=[{name:'orders.csv',source:'千牛订单导出，已脱敏'}];
- assert.throws(()=>run(s,'collectionResult',{jobId:id,rows:[],evidence},operations),/还缺/);
- assert.throws(()=>run(s,'collectionResult',{jobId:id,rows:[{...row,refund:null}],evidence},operations),/未知不能按0/);
- s=run(s,'collectionResult',{jobId:id,rows:[row],evidence},operations);assert.equal(s.monthly.length,0);assert.equal(s.collections[0].status,'待核对');
- s=run(s,'collectionAccept',{jobId:id,note:'逐单核验完毕'},operations);assert.equal(s.monthly[0].net,17);assert.equal(s.events.length,0);assert.equal(s.collections[0].status,'已入账');
- assert.throws(()=>run(s,'collectionAccept',{jobId:id,note:'again'},operations),/已经入账/);
+ const id=s.collections[0].id,evidence=[{name:'orders.csv',source:'千牛订单导出，已脱敏'}];
+ assert.throws(()=>run(s,'collectionResult',{jobId:id,rows:[],evidence},operations),/component-orders-v1/);
+ assert.equal(s.monthly.length,0);
 });
 test('server API requires login, enforces stock roles and sanitizes influencer data',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'stock-api-')),probe=createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
