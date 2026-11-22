@@ -5,3 +5,9 @@ content-ops/xhs-media-data.json
 content-ops/xhs-media-backups/
 public/xhs-media/*.json
 public/xhs-media/data-backups/
+content-ops/stock-ops-data.json
+content-ops/stock-ops-backups/
+content-ops/stock-ops-cost-files/
+.env*
+content-ops/xhs-shared-history/
+content-ops/stock-cost-archives/
