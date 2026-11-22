@@ -61,11 +61,16 @@ export function calculateComponentSales(state,job,input){
     if(!allowed.has(tuple(r.channel,r.shop)))throw fail('退款店铺超出任务范围');
     if(!['success','pending','closed','rejected'].includes(r.status))throw fail('退款状态不明确');
     // Exact canonical fingerprints include quantity/type, not customer details or export formatting.
-    const normalized={...r,completedDate:r.status==='success'?day(raw.completedAt):null,kind:raw.kind||null,quantity:raw.quantity??null,components:Array.isArray(raw.components)?raw.components.map(c=>({skuId:c.skuId,quantity:c.quantity})):null};
+    // Some official exports omit completion time. Preserve that absence; an observed
+    // successful status is usable only at the exact collection cutoff, never backdated.
+    const completedDate=r.status==='success'&&raw.completedAt?day(raw.completedAt):null;
+    const observedAsOf=r.status==='success'&&!completedDate&&raw.observedAsOf?day(raw.observedAsOf):null;
+    if(r.status==='success'&&!completedDate&&observedAsOf!==job.refundAsOf)throw fail('缺少退款完成时间，须提供与任务截止日一致的成功状态观察日');
+    const normalized={...r,completedDate,observedAsOf,kind:raw.kind||null,quantity:raw.quantity??null,components:Array.isArray(raw.components)?raw.components.map(c=>({skuId:c.skuId,quantity:c.quantity})):null};
     const hash=digest(normalized),prior=refunds.get(key);if(prior){if(prior!==hash)throw fail('同一退款明细重复且内容冲突');duplicateRefunds++;continue;}refunds.set(key,hash);
-    if(r.status!=='success'||normalized.completedDate>job.refundAsOf){ignoredRefunds++;continue;}
+    if(r.status!=='success'||completedDate>job.refundAsOf){ignoredRefunds++;continue;}
     const order=orders.get(orderKey(r));if(!order)throw fail('成功退款找不到原付款订单行');
-    if(normalized.completedDate<order.paidDate)throw fail('退款完成早于付款日期');
+    if((completedDate||observedAsOf)<order.paidDate)throw fail('退款完成或观察日期早于付款日期');
     if(!order.rule){issue('退款对应',key,'原订单商品组成尚未核实');continue;}
     let quantities=[];
     if(raw.kind==='amount_only'){if((raw.quantity??0)!==0||(raw.components?.length||0)>0)throw fail('价差补偿不能同时申报扣减件数');continue;}

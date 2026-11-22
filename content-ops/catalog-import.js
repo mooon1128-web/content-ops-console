@@ -1,4 +1,5 @@
 import {createHash,randomUUID} from 'node:crypto';
+import {activeRecipes,addSalesRecipe} from './sales-components.js';
 
 // ERP quantities are documentary observations. They never establish physical stock.
 export function importCatalog(state,input,user,now,{fail}) {
@@ -15,7 +16,8 @@ export function importCatalog(state,input,user,now,{fail}) {
   if(!input.skus.length||!Array.isArray(input.sources)||!input.sources.length||input.sources.length>100)throw fail(400,'缺少档案或来源');
   const sources=input.sources.map(x=>({name:required(x.name,'来源名称',300),sha256:required(x.sha256,'来源校验码',64)}));
   if(sources.some(x=>!/^[a-f0-9]{64}$/i.test(x.sha256)))throw fail(400,'来源校验码不正确');
-  const summary={addedSkus:0,filledFields:0,preservedConflicts:0,addedMappings:0,inventoryRows:0,reviewRows:0};
+  if(input.salesRecipes!==undefined&&(!Array.isArray(input.salesRecipes)||input.salesRecipes.length>10000))throw fail(400,'商品组成列表无效');
+  const summary={addedSkus:0,filledFields:0,preservedConflicts:0,addedMappings:0,inventoryRows:0,reviewRows:0,addedRecipes:0,skippedRecipes:0};
   const conflicts=[];
   const conflict=(skuId,field,existing,incoming)=>{summary.preservedConflicts++;conflicts.push({skuId,field,existing,incoming});};
   const textFields=['code','name','spec','category','status','warehouse','barcode','taobaoItemId','taobaoSkuId','xhsProductId','xhsSkuId','influencerProductId','note','costSkuId','costLinkStatus','erpSkuId','erpProductCode','erpName','erpSpec','erpBarcode','erpStatus','source'];
@@ -66,6 +68,17 @@ export function importCatalog(state,input,user,now,{fail}) {
     const found=state.catalogReviews.find(x=>x.id===row.id);
     if(found){if(found.detail!==row.detail)conflict(row.skuId,'待核说明',found.detail,row.detail);continue;}
     state.catalogReviews.push(row);summary.reviewRows++;
+  }
+  for(const raw of input.salesRecipes||[]){
+    // Validate on a clone first; bulk imports cannot revise or replace an existing rule.
+    if(raw.replaces)throw fail(400,'批量导入只能追加商品组成，修订须单独核对');
+    const probe={...state,salesRecipes:[]},candidate=addSalesRecipe(probe,raw,user,now);
+    const same=activeRecipes(state).filter(r=>r.channel===candidate.channel&&r.shop===candidate.shop&&r.itemId===candidate.itemId&&r.platformSkuId===candidate.platformSkuId);
+    const components=r=>JSON.stringify(r.components.slice().sort((a,b)=>a.skuId.localeCompare(b.skuId)));
+    if(same.some(r=>r.validFrom===candidate.validFrom&&(r.validTo||null)===candidate.validTo&&components(r)===components(candidate))){summary.skippedRecipes++;continue;}
+    const overlap=same.find(r=>candidate.validFrom<=(r.validTo||'9999-12-31')&&r.validFrom<=(candidate.validTo||'9999-12-31'));
+    if(overlap){conflict(candidate.components[0].skuId,'商品组成',overlap,candidate);continue;}
+    addSalesRecipe(state,raw,user,now);summary.addedRecipes++;
   }
   for(const c of conflicts)state.issues.push({id:randomUUID(),skuId:c.skuId,title:'导入字段冲突：保留原值',detail:JSON.stringify(c),source:`ERP导入 ${id}`,status:'待核',quantity:null,updatedAt:now,actor});
   (state.catalogImports??=[]).push({id,hash,title:required(input.title,'导入标题',300),catalogAsOf:timestamp(input.catalogAsOf),note:optional(input.note,4000),sources,summary,conflicts,at:now,actor});
