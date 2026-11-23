@@ -2,6 +2,7 @@ import {readFile,writeFile,mkdir,rename} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
 import RecordOps from '../public/content-ops/ops-core.cjs';
+import {bindPlacementOwners} from './placement-owner.js';
 export const xhsShape={creators:'rows',placements:'rows',customCreatorTypes:'value',monthlyBudgets:'map'};
 const fail=(status,message)=>Object.assign(new Error(message),{status});
 export const publicXhs=s=>Object.fromEntries([...Object.keys(xhsShape),'updatedAt'].map(k=>[k,s[k]]));
@@ -34,12 +35,13 @@ export function createXhsStore({file,remote,stateId}){
       const replay=(current._receipts||[]).find(x=>x.id===command.requestId);
       if(replay){if(replay.actor!==user.id||replay.hash!==hash)throw fail(409,'请求编号已用于其他操作');return current;}
       const now=new Date(Math.max(Date.now(),(Date.parse(current.updatedAt)||0)+1)).toISOString();
-      const next=RecordOps.apply(current,command.operations,xhsShape,now);
+      const operations=bindPlacementOwners(command.operations,user);
+      const next=RecordOps.apply(current,operations,xhsShape,now);
       if(!command.operations.length)return current;
       if(next.creators.length>200000||next.placements.length>200000)throw fail(422,'记录量需要扩容，请联系管理员；本次数据未被删除');
       next.updatedAt=now;
       next._receipts=[...(current._receipts||[]),{id:command.requestId,actor:user.id,hash}].slice(-2000);
-      next._audit=[...(current._audit||[]),{id:randomUUID(),at:now,actor:{id:user.id,name:user.name,username:user.username},requestId:command.requestId,operations:command.operations}].slice(-100);
+      next._audit=[...(current._audit||[]),{id:randomUUID(),at:now,actor:{id:user.id,name:user.name,username:user.username},requestId:command.requestId,operations}].slice(-100);
       if(remote){
         // Keep the previous confirmed audit segment outside the growing live data row.
         await remote('/content_ops_state?on_conflict=id',{method:'POST',headers:{Prefer:'resolution=ignore-duplicates,return=minimal'},body:JSON.stringify({id:`${stateId}-audit-${current.updatedAt}`,state:{updatedAt:current.updatedAt,audit:current._audit||[]},updated_at:current.updatedAt})});
