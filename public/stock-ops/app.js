@@ -1,5 +1,5 @@
 import {renderSalesRecipes,collectionInstructions as componentInstructions} from './sales-recipes-ui.js';
-import {renderPurchases,renderReplenishment} from './purchasing-ui.js';
+import {renderPurchases,renderReplenishment} from './purchasing-ui.js?v=20261123-shipping-private-v1';
 import {renderSpecial} from './special-ui.js';
 import {renderCatalog} from './catalog-ui.js';
 import {renderMonthly,productCell,bindImageFallback,sampleMonthData} from './sales-ui.js';
@@ -180,10 +180,11 @@ function download(name,content,type){const blob=new Blob([content],{type}),url=U
 function csv(name,headers,rows){const cell=v=>{let s=v===null||v===undefined?'':String(v);if(/^[\s]*[=+@-]/.test(s)||/^\d{12,}$/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"'};download(`${name}_${today()}.csv`,'\uFEFF'+[headers,...rows].map(r=>r.map(cell).join(',')).join('\r\n'),'text/csv;charset=utf-8')}
 activate().catch(e=>{$('#login').hidden=false;$('#workspace').hidden=true;$('#login-message').textContent=e.message==='请先登录'?'请输入个人账号和密码。':e.message});
 
+let lastRenderedDay=today();
 async function pollShared(){
  if(!user||!state||refreshing||document.hidden||editing()||pendingCommands.size)return;
  refreshing=true;
- try{const v=await request('/api/stock-ops/version');if(v.updatedAt!==state.updatedAt&&!editing()&&!pendingCommands.size)await refresh();}
+ try{const v=await request('/api/stock-ops/version');if(v.updatedAt!==state.updatedAt&&!editing()&&!pendingCommands.size)await refresh();if(lastRenderedDay!==today()&&!editing()){lastRenderedDay=today();render();}}
  catch(e){$('#sync-status').textContent='连接未完成，显示最近确认数据；'+e.message;}
  finally{refreshing=false;}
 }
