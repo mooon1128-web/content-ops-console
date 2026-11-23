@@ -230,7 +230,7 @@
           <h1>达人投放台账</h1>
         </div>
         <div class="heading-actions">
-          <label class="period-control">显示周期<select id="ledger-period"></select></label>
+          <label class="period-control">登记月份<select id="ledger-period"></select></label>
         </div>
       </div>
       <div class="toolbar">
@@ -248,7 +248,9 @@
         </select>
         <select id="data-entry-filter">
           <option value="all">全部台账记录</option>
-          <option value="missing">未启动/无进度</option>
+          <option value="missing">待建联/未启动</option>
+          <option value="active">合作进行中</option>
+          <option value="check">信息待核对</option>
           <option value="filled">已发布已填数据</option>
         </select>
         <select id="metric-sort">
@@ -527,6 +529,6 @@
   <datalist id="creator-type-list"></datalist>
   <datalist id="creator-name-list"></datalist>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="interface-update.js?v=20261123-cooperation-v2"></script><script src="app.js?v=20261123-cooperation-v2"></script>
+  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="interface-update.js?v=20261123-followups-v3"></script><script src="app.js?v=20261123-followups-v3"></script>
 </body>
 </html>

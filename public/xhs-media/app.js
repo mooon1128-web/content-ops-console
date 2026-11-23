@@ -271,7 +271,7 @@
   let remoteRefreshTimer = null;
   let hasCurrentSessionChanges = false;
   let overviewPeriod = today().slice(0, 7);
-  let ledgerPeriod = today().slice(0, 7);
+  let ledgerPeriod = "all";
 
   function loadPlacements() {
     try {
@@ -1564,7 +1564,21 @@
     return Boolean(publishDueDate(item) && ["已寄样", "寄样中", "已签收", "无需寄样"].includes(item.sampleStatus));
   }
 
+  function placementInformationIssue(item) {
+    const date = String(item.publishedAt || "").trim();
+    if (date && !Number.isFinite(Date.parse(date))) return "实际发布时间格式异常，请核对";
+    const businessToday = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" });
+    if (date && date.slice(0, 10) > businessToday) return `实际发布时间 ${date.slice(0, 10)} 晚于今天，请核对是否误填为计划日期`;
+    if (item.status === "已发布" && !date) return "状态为已发布，但实际发布时间未填写";
+    return "";
+  }
+
   function followupTask(item) {
+    const informationIssue = placementInformationIssue(item);
+    if (informationIssue) return { priority: "高", rank: priorityRank["高"], kind: "information-check", reason: informationIssue, action: "打开记录核对日期和状态；原记录已保留。", warnings: [] };
+    if (item.status === "待建联" && !String(item.publishedAt || "").trim() && !sampleTrackingNumber(item) && !["已寄样", "寄样中", "已签收", "无需寄样"].includes(item.sampleStatus)) {
+      return { priority: "中", rank: priorityRank["中"], kind: "pending-contact", reason: "已登记合作，尚待联系博主并确认合作。", action: "打开记录补充合作内容，确认后再推进寄样。", warnings: [] };
+    }
     const itemProgress = progress(item.deliverableProgress);
     const deliveredDays = daysSince(item.sampleDeliveredAt);
     const contactDays = daysSince(item.lastContactAt);
@@ -1932,7 +1946,7 @@
         return { value: `${year}-${month}`, label: `${year}年${month}月` };
       }),
     ]);
-    if (includeUnpublished) options.unshift({ value: "unpublished", label: "未发布 / 待排期" });
+    if (includeUnpublished) options.unshift({ value: "all", label: "全部时间" }, { value: "unpublished", label: "未发布 / 待排期" });
     return options;
   }
 
@@ -1968,12 +1982,14 @@
         <strong>${escapeHtml(startedPeriodLabel)} 全部合作产品</strong>
         <b class="product-count">${productCount}</b>
         <span>${periodRows.length} 条新增合作 · 已发布ROAS ${totalSpend ? ratio(totalGmv / totalSpend) : "无"}</span>
+        <button type="button" class="text-button" data-cooperation-records="all">查看这 ${periodRows.length} 条记录</button>
       </div>
       ${products.map((item) => `
         <div class="product-chip ${selectedProduct === item.product ? "active" : ""}" data-product="${escapeHtml(item.product)}" role="button" tabindex="0">
           <strong>${escapeHtml(item.product)}</strong>
           <b class="product-count">${item.count}</b>
           <span>${item.count} 次合作 · 最新 ${escapeHtml(item.latest || "未记录")}</span>
+          <button type="button" class="text-button" data-cooperation-records="${escapeHtml(item.product)}">查看记录</button>
           ${item.catalog ? `<a href="${escapeHtml(productUrl(item.catalog))}" target="_blank" rel="noreferrer" class="product-stock-link">库存</a>` : ""}
         </div>
       `).join("")}
@@ -2203,6 +2219,8 @@
     const tasks = followupTasks();
     const bucket = (predicate) => tasks.filter((item) => predicate(item));
     const buckets = {
+      pendingContact: bucket((item) => item.task.kind === "pending-contact"),
+      informationCheck: bucket((item) => item.task.kind === "information-check"),
       sampleShipping: bucket((item) => item.task.kind === "sample-shipping"),
       waitingPublish: bucket((item) => item.task.kind === "waiting-publish"),
       publishOverdue: bucket((item) => item.task.kind === "publish-overdue" && item.task.delayLevel?.key === "overdue"),
@@ -2214,10 +2232,12 @@
     const summaryGroups = [
       {
         title: "合作推进",
-        note: "寄样和等待发布先放这里",
+        note: "从建联到寄样、等待发布",
         cards: [
+          ["待建联", buckets.pendingContact.length, "联系博主并确认合作", "accent-blue", "followup-pending-contact"],
           ["新增合作未寄样", buckets.sampleShipping.length, "寄了后勾选并填单号", "accent-amber", "followup-sample-shipping"],
           ["等待发布", buckets.waitingPublish.length, "已推进到发布排期", "accent-blue", "followup-waiting-publish"],
+          ["信息待核对", buckets.informationCheck.length, "核对实际发布时间与状态", "accent-coral", "followup-information-check"],
         ],
       },
       {
@@ -2258,8 +2278,10 @@
     const groups = [
       {
         title: "合作推进",
-        note: "先处理寄样和发布排期，不和数据统计混在一起。",
+        note: "从待建联开始推进；日期或状态异常单独列出。",
         sections: [
+          ["followup-pending-contact", "待建联", "已登记、尚待联系确认的合作。", buckets.pendingContact],
+          ["followup-information-check", "信息待核对", "原记录保留，请打开记录核对日期和状态。", buckets.informationCheck],
           ["followup-sample-shipping", "新增合作未寄样", "寄出后直接勾选，并填写快递单号。", buckets.sampleShipping],
           ["followup-waiting-publish", "等待发布", "已经进入发布排期，但还没到约定时间。", buckets.waitingPublish],
         ],
@@ -2686,14 +2708,17 @@
     const content = $("#content-filter")?.value || "all";
     const result = $("#result-filter")?.value || "all";
     const dataEntry = $("#data-entry-filter")?.value || "all";
-    return filterSelectedProduct(placementsForPeriod(ledgerPeriod)).filter((item) => {
+    const periodRows = ledgerPeriod === "all" ? placements : ledgerPeriod === "unpublished" ? placements.filter(item => !String(item.publishedAt || "").trim()) : placements.filter(item => dateMatchesPeriod(cooperationRecordDate(item), ledgerPeriod));
+    return filterSelectedProduct(periodRows).filter((item) => {
       const haystack = [item.creator, item.product, item.noteTitle, item.owner, item.contactMethod, item.creatorResponse, item.notes, placementPlatform(item)].join(" ").toLowerCase();
       if (query && !haystack.includes(query)) return false;
       if (status !== "all" && item.status !== status) return false;
       if (content !== "all" && item.contentType !== content) return false;
       if (result !== "all" && feedbackType(item) !== result) return false;
-      if (dataEntry === "missing" && hasPlacementPerformanceData(item)) return false;
-      if (dataEntry === "filled" && !hasPlacementPerformanceData(item)) return false;
+      if (dataEntry === "missing" && !ledgerNoProgressRecord(item)) return false;
+      if (dataEntry === "filled" && !ledgerCompletedRecord(item)) return false;
+      if (dataEntry === "active" && (ledgerNoProgressRecord(item) || ledgerCompletedRecord(item) || placementInformationIssue(item))) return false;
+      if (dataEntry === "check" && !placementInformationIssue(item)) return false;
       return true;
     });
   }
@@ -2776,6 +2801,7 @@
     const agreedPublishAt = item.agreedPublishAt || "未填写";
     const publishedAt = item.publishedAt || "未填写";
     const ageText = publishedAgeText(item);
+    const informationIssue = placementInformationIssue(item);
     const placementNotes = String(item.notes || "").trim() || "未填写";
     const platform = placementPlatform(item);
     const missingMetrics = !hasPlacementPerformanceData(item);
@@ -2786,7 +2812,7 @@
     const link = item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.noteTitle || item.product)}</a>` : `<strong>${escapeHtml(item.noteTitle || item.product)}</strong>`;
     return `
       <tr class="${isPoorPerformance ? "poor-performance-row" : ""} ${isDay7Due ? "day7-due-row" : ""}">
-        <td><span class="pill ${statusClass(item.status)}">${escapeHtml(item.status)}</span></td>
+        <td><span class="pill ${statusClass(item.status)}">${escapeHtml(item.status)}</span>${informationIssue ? `<div class="pill coral">信息待核对</div>` : ""}</td>
         <td>
           <div class="cell-title">
             <div class="placement-title-line">${link}${isPoorPerformance ? `<span class="pill coral">数据较差</span>` : ""}${isDay7Due ? `<span class="pill coral">发布7天待填</span>` : ""}</div>
@@ -2794,6 +2820,7 @@
             <span class="placement-detail-line">
               <span>约定发布：${escapeHtml(agreedPublishAt)}</span>
               <span>实际发布：${escapeHtml(publishedAt)}</span>
+              ${informationIssue ? `<strong class="publish-age-warning">${escapeHtml(informationIssue)}</strong>` : ""}
               <span>快递单号：${escapeHtml(sampleTrackingNumber(item) || "未填写")}</span>
               ${ageText ? `<span class="${missingMetrics && item.status === "已发布" ? "publish-age-warning" : ""}">${escapeHtml(ageText)}</span>` : ""}
               <span>备注：${escapeHtml(placementNotes)}</span>
@@ -2818,25 +2845,44 @@
 
   function renderTable() {
     const rows = filteredPlacements();
-    const ledgerRows = rows.filter(ledgerVisibleRecord);
-    if (!ledgerRows.length) {
-      $("#placement-table").innerHTML = `<tr><td colspan="8"><div class="empty-state">当前筛选下没有台账记录；已发布未满7天、7天待填、到期未发布等中间状态会集中到跟进任务。</div></td></tr>`;
+    if (!rows.length) {
+      $("#placement-table").innerHTML = `<tr><td colspan="8"><div class="empty-state">当前筛选下没有记录。可选择全部时间、全部台账记录并清空搜索查看。</div></td></tr>`;
       return;
     }
-    const idleRows = ledgerRows.filter(ledgerNoProgressRecord).sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")) || String(b.id || "").localeCompare(String(a.id || "")));
-    const completedRows = ledgerRows.filter(ledgerCompletedRecord).sort(filledMetricSort);
-    const dataEntry = $("#data-entry-filter")?.value || "all";
+    const newest = (a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")) || String(b.id || "").localeCompare(String(a.id || ""));
+    const checkRows = rows.filter(placementInformationIssue).sort(newest);
+    const validRows = rows.filter(item => !placementInformationIssue(item));
+    const idleRows = validRows.filter(ledgerNoProgressRecord).sort(newest);
+    const completedRows = validRows.filter(ledgerCompletedRecord).sort(filledMetricSort);
+    const activeRows = validRows.filter(item => !ledgerNoProgressRecord(item) && !ledgerCompletedRecord(item)).sort(newest);
     const sections = [];
-    if (dataEntry !== "filled" && idleRows.length) {
-      sections.push(ledgerGroupHeader("未启动 / 无进度", idleRows.length, "还没有排期、寄样、发布或跟进动作", "gray"));
+    if (checkRows.length) {
+      sections.push(ledgerGroupHeader("信息待核对", checkRows.length, "原日期和状态已保留，请核实后修改", "coral"));
+      sections.push(...checkRows.map(placementRow));
+    }
+    if (idleRows.length) {
+      sections.push(ledgerGroupHeader("待建联 / 未启动", idleRows.length, "尚待联系并确认合作", "gray"));
       sections.push(...idleRows.map(placementRow));
     }
-    if (dataEntry !== "missing" && completedRows.length) {
+    if (activeRows.length) {
+      sections.push(ledgerGroupHeader("合作进行中", activeRows.length, "寄样、排期、发布和待补录记录均保留", "blue"));
+      sections.push(...activeRows.map(placementRow));
+    }
+    if (completedRows.length) {
       const sortLabel = ($("#metric-sort")?.value || "time") === "likes" ? "按点赞从高到低" : "按发布时间从新到旧";
       sections.push(ledgerGroupHeader("已发布并已填写数据", completedRows.length, sortLabel, "teal"));
       sections.push(...completedRows.map(placementRow));
     }
-    $("#placement-table").innerHTML = sections.join("") || `<tr><td colspan="8"><div class="empty-state">当前筛选下没有台账记录；请到跟进任务查看未到7天、7天待填和到期未发布。</div></td></tr>`;
+    $("#placement-table").innerHTML = sections.join("");
+  }
+
+  function openCooperationRecords(product) {
+    selectedProduct = product;
+    ledgerPeriod = overviewPeriod;
+    $("#search-input").value = "";
+    for (const selector of ["#status-filter", "#content-filter", "#result-filter", "#data-entry-filter"]) $(selector).value = "all";
+    switchView("placements");
+    $("#placements-view").scrollIntoView({ block: "start" });
   }
 
   function ledgerMetricsDisplay(item) {
@@ -3537,7 +3583,7 @@
     });
     $("#ledger-period").addEventListener("change", (event) => {
       ledgerPeriod = event.target.value;
-      if (ledgerPeriod !== "unpublished") overviewPeriod = ledgerPeriod;
+      if (!["unpublished", "all"].includes(ledgerPeriod)) overviewPeriod = ledgerPeriod;
       renderAll();
     });
     $("#budget-panel").addEventListener("change", (event) => {
@@ -3564,6 +3610,8 @@
     });
     $("#product-board").addEventListener("click", (event) => {
       if (event.target.closest("a")) return;
+      const recordsButton = event.target.closest("[data-cooperation-records]");
+      if (recordsButton) { openCooperationRecords(recordsButton.dataset.cooperationRecords); return; }
       const chip = event.target.closest("[data-product]");
       if (!chip) return;
       selectedProduct = chip.dataset.product;
@@ -3984,7 +4032,7 @@
     hydrateControls();bindEvents();renderAll();await cloud.start();loadWholesaleProducts();
     window.addEventListener('online',()=>cloud.refresh());window.addEventListener('focus',()=>cloud.refresh());
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloud.refresh()});
-    InterfaceUpdate.mount({current:'20261123-cooperation-v2',url:'/api/xhs-media/version',host:syncPanel,
+    InterfaceUpdate.mount({current:'20261123-followups-v3',url:'/api/xhs-media/version',host:syncPanel,
       getBlockReason:()=>hasPendingLocalSync()||cloud?.saving?'有尚未确认的保存或同步冲突，请先完成同步；必要时导出待同步修改。':
         hasOpenEditorDialog()?'请先保存或取消正在编辑的表单，再更新界面。':
         !cloud?.ready||cloud?.stopped?'请先恢复登录和数据连接。':
