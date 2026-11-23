@@ -115,6 +115,21 @@ async function serverFixture(env={}){
  child.kill();throw Error('Server failed: '+errors);
 }
 const put=(url,s,base)=>fetch(url+'/api/content-ops/state',{method:'PUT',headers:{'Content-Type':'application/json',...(base?{'If-Match':`"${base}"`}:{})},body:JSON.stringify(s)});
+test('stock HTTP receipts, workspace reads and contract retries return saved data without duplicate batches',async()=>{
+ const f=await serverFixture();try{
+  const command=async(action,data,revision,requestId)=>fetch(f.url+'/api/stock-ops/command?receipt=1',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,data,revision,requestId})});
+  const first=await command('sku',{id:'synthetic',name:'Test SKU',code:'TEST',warehouse:'test'},0,'sku-reliable');assert.equal(first.status,200);const ack=await first.json();assert.equal(ack.state,undefined);assert.equal(ack.revision,1);
+  const image=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVmQAAAAASUVORK5CYII=','base64');
+  const upload=()=>fetch(f.url+'/api/stock-ops/purchase-contract?name=synthetic.png',{method:'POST',headers:{'Content-Type':'image/png'},body:image}).then(r=>r.json());
+  const a=await upload(),b=await upload();assert.equal(a.id,b.id);
+  const data={skuId:'synthetic',reference:'SYNTHETIC-ONLY',quantity:500,status:'计划',orderDate:'2026-11-21',expectedShipAt:'2026-12-21',warehouse:'test',note:'isolated test',privateDetails:{balanceDue:123,contracts:[a]}};
+  assert.equal((await command('purchase',data,1,'purchase-reliable')).status,200);
+  const retry=await (await command('purchase',data,1,'purchase-reliable')).json();assert.equal(retry.replayed,true);
+  const receipt=await (await fetch(f.url+'/api/stock-ops/command-status?requestId=purchase-reliable')).json();assert.equal(receipt.committed,true);
+  const full=await (await fetch(f.url+'/api/stock-ops/state')).json(),small=await (await fetch(f.url+'/api/stock-ops/state?view=workspace')).json();assert.equal(full.purchases.length,1);assert.deepEqual(small.purchases,full.purchases);assert.equal(small.purchasePrivate[full.purchases[0].id].balanceDue,123);
+  assert.equal((await fetch(f.url+'/api/stock-ops/purchase-contract?id='+a.id)).status,200);
+ }finally{await f.close();}
+});
 test('HTTP file store rejects legacy and stale writers, serializes racing writers, and returns complete data after writes',async()=>{
  const f=await serverFixture();try{
  const b=await (await fetch(f.url+'/api/content-ops/state')).json();

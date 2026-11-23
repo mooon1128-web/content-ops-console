@@ -72,7 +72,7 @@ test('weekly submission validates all rows atomically and stale revisions never 
  let s=seed(),before=structuredClone(s);
  assert.throws(()=>run(s,'week',{rows:[snapshot,{...snapshot,good:''} ]},warehouse));assert.deepEqual(s,before);
  const c=cmd(s,'observation',{skuId:'fish',date:'2026-11-21',available:125,source:'用户'});s=run(s,'snapshot',snapshot);
- assert.throws(()=>transact(s,c,admin,{now}),/同事已更新/);
+ assert.throws(()=>transact(s,c,admin,{now}),e=>e.status===409&&e.code==='REVISION_CONFLICT');
 });
 test('persisted concurrent commits serialize, maintain backups and survive restart',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'stock-test-')),file=join(dir,'state.json');

@@ -49,7 +49,17 @@ test('a second source cannot move an existing platform mapping or stock snapshot
 test('permissions and revision checks apply; manual SKU edits retain ERP source identifiers',()=>{
  const p=payload(),base=original();assert.throws(()=>commit(base,'catalogImport',p,warehouse),/权限/);
  const s=commit(base,'catalogImport',p).state;
- assert.throws(()=>transact(s,{action:'catalogImport',data:p,revision:0,requestId:randomUUID()},admin,{now}),/同事已更新/);
+ assert.throws(()=>transact(s,{action:'catalogImport',data:p,revision:0,requestId:randomUUID()},admin,{now}),e=>e.status===409&&e.code==='REVISION_CONFLICT');
  const updated=commit(s,'sku',{...s.skus[0],name:'管理员修改'}).state;
  assert.equal(updated.skus[0].erpSkuId,s.skus[0].erpSkuId);assert.equal(updated.skus[0].erpBarcode,'erp-original');assert.equal(updated.skus[0].name,'管理员修改');
+});
+
+const recipe=()=>({channel:'淘宝',shop:'BlueMoon研究所',itemId:'100',platformSkuId:'200',validFrom:'2026-11-01',validTo:'2026-11-22',components:[{skuId:'old',units:1}],source:'官方规格核对'});
+test('bulk recipes append idempotently and preserve overlapping rules and monthly history',()=>{
+ const p=payload();p.salesRecipes=[recipe()];const first=commit(original(),'catalogImport',p);assert.equal(first.result.addedRecipes,1);
+ const q={...p,id:'more'};const second=commit(first.state,'catalogImport',q);assert.equal(second.result.skippedRecipes,1);assert.deepEqual(second.state.salesRecipes,first.state.salesRecipes);
+ q.id='conflict';q.salesRecipes=[{...recipe(),components:[{skuId:'new',units:2}]}];const third=commit(second.state,'catalogImport',q);assert.equal(third.result.addedRecipes,0);assert.deepEqual(third.state.salesRecipes,first.state.salesRecipes);assert.deepEqual(third.state.monthly,original().monthly);assert.ok(third.state.issues.some(x=>x.detail.includes('商品组成')));
+});
+test('invalid bulk recipe or replacement aborts the whole catalog import',()=>{
+ for(const bad of [{...recipe(),components:[{skuId:'missing',units:1}]},{...recipe(),replaces:'existing'}, {...recipe(),components:[{skuId:'old',units:0}]}]){const s=original(),copy=structuredClone(s),p=payload();p.salesRecipes=[recipe(),bad];assert.throws(()=>commit(s,'catalogImport',p));assert.deepEqual(s,copy);}
 });
