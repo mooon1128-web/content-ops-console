@@ -1,6 +1,6 @@
 import {createCommandClient,acceptNewerState} from './reliable-save.js?v=20261123-purchase-reliable-v1';
 import {renderSalesRecipes,collectionInstructions as componentInstructions} from './sales-recipes-ui.js';
-import {renderPurchases,renderReplenishment} from './purchasing-ui.js?v=20261123-purchase-reliable-v1';
+import {renderPurchases,renderReplenishment} from './purchasing-ui.js?v=20261123-balances-v1';
 import {renderSpecial} from './special-ui.js';
 import {renderCatalog} from './catalog-ui.js';
 import {renderMonthly,productCell,bindImageFallback,sampleMonthData} from './sales-ui.js';
