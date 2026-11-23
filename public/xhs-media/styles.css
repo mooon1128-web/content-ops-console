@@ -1347,3 +1347,18 @@ h3 { color: #172033; font-size: 16px; }
 .shared-status-panel{position:sticky;top:0;z-index:30;display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:12px 20px;background:#e5f1ec;border-bottom:1px solid #bed4cb;font-size:14px}.shared-status-panel button,.shared-status-panel a{font:inherit;padding:6px 10px}.shared-unavailable main button,.shared-unavailable main input,.shared-unavailable main select{pointer-events:none;opacity:.6}#save-status{white-space:normal!important;max-width:640px;line-height:1.7}
 
 .shared-status-panel{margin-left:292px;z-index:31}.top-actions>a{grid-column:1 / -1;font-size:13px;white-space:normal!important}.shared-status-panel button{border:1px solid #adc8bc;border-radius:8px;background:white;color:#254b43}.shared-status-panel strong{color:#254b43}@media(max-width:1180px){.shared-status-panel{margin-left:0;position:relative}}
+
+/* Keep action feedback in the modal top layer, reachable while synchronization is blocked. */
+.dialog-sync-feedback { position:sticky;bottom:0;padding:10px 0 4px;background:#fff;z-index:2; }
+.dialog-sync-feedback p { margin:0 0 8px;line-height:1.6;color:#285951; }
+.dialog-sync-feedback p:empty { display:none; }
+.dialog-sync-feedback a { margin-left:16px;font-size:14px; }
+.delete-confirm { padding:16px;border:1px solid #e7bdb7;border-radius:12px;background:#fff5f3; }
+.delete-confirm[hidden] { display:none; }
+.delete-confirm p { margin:0 0 12px; }
+.table-pagination { display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:12px;padding:16px 0;color:var(--muted); }
+.table-pagination button { font:inherit;padding:8px 14px;border:1px solid var(--line);border-radius:9px;background:#fff;cursor:pointer; }
+button:disabled { cursor:wait;opacity:.55; }
+.table-pagination button:disabled { cursor:default; }
+
+.dialog-sync-feedback:has([data-dialog-status]:empty) { display:none; }
