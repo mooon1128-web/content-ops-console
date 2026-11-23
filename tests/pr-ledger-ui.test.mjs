@@ -10,12 +10,13 @@ const shape={creators:'rows',placements:'rows',customCreatorTypes:'value',monthl
 const seed={creators:[{id:'c1',name:'Synthetic creator',placementIds:['p1','p2'],cooperationCount:2,email:'retained@example.invalid',outreachEmailSentCount:3}],placements:[{id:'p1',creator:'Synthetic creator',product:'Synthetic sample'},{id:'p2',creator:'Synthetic creator',product:'Keep'}],customCreatorTypes:[],monthlyBudgets:{},updatedAt:'2026-11-01T00:00:00.000Z'};
 function setup(){
  const nodes=new Map();let timer=0;const timers=new Map(),calls=[];
- function node(key){if(!nodes.has(key))nodes.set(key,{value:'',innerHTML:'',textContent:'',hidden:true,disabled:false,dataset:{},style:{},classList:{add(){},remove(){},toggle(){}},elements:{id:{value:'p1'}},open:true,close(){this.open=false},scrollIntoView(){},querySelector:s=>node(s)});return nodes.get(key)}
+ function node(key){if(!nodes.has(key))nodes.set(key,{value:'',innerHTML:'',textContent:'',hidden:true,disabled:false,dataset:{},style:{},classList:{add(){},remove(){},toggle(){}},elements:{id:{value:'p1'}},open:true,showModal(){this.open=true},close(){this.open=false},scrollIntoView(){},querySelector:s=>node(s)});return nodes.get(key)}
  node('.tab.active').dataset.view='placements';
  const document={querySelector:node,querySelectorAll:s=>s==='dialog[open] [data-dialog-status]'?[node('feedback')]:[],activeElement:null};
  const ctx=vm.createContext({document,structuredClone,RecordOps,crypto:{randomUUID},AbortSignal,console,fetch:()=>{},setTimeout:(fn,ms)=>{timers.set(++timer,{fn,ms});return timer},clearTimeout:id=>timers.delete(id)});
  vm.runInContext(syncSource,ctx);
- vm.runInContext(app.slice(0,app.lastIndexOf('  startSharedApp().catch('))+`globalThis.subject={deletePlacement,updatePlacementDeletion,allowSyncInteraction,requestPlacementDeletion,
+ vm.runInContext(app.slice(0,app.lastIndexOf('  startSharedApp().catch('))+`globalThis.subject={deletePlacements,selectFollowups,requestBulkPlacementDeletion,
+ groups:value=>followupGroups=new Map(value),selection:()=>[...selectedFollowupIds],confirmIds:()=>confirmedBulkIds,deletePlacement,updatePlacementDeletion,allowSyncInteraction,requestPlacementDeletion,
  setState:s=>{creators=s.creators;placements=s.placements;customCreatorTypes=s.customCreatorTypes;monthlyBudgets=s.monthlyBudgets},
  read:()=>({creators,placements,customCreatorTypes,monthlyBudgets}),setCloud:c=>cloud=c,pending:()=>pendingPlacementDeletion,
  renderCurrent:()=>renderAll(),renderCreators:()=>renderCreators(),page:n=>creatorPage=n,
@@ -79,4 +80,38 @@ test('533 creators render 50 rows per page, and the last page remains reachable'
  f.s.prepareCreatorTable();f.s.renderCreators();assert.equal((f.node('#creator-table').innerHTML.match(/<tr>/g)||[]).length,50);
  assert.match(f.node('#creator-pagination').innerHTML,/共 533 位 · 第 1 \/ 11 页/);
  f.s.page(11);f.s.renderCreators();assert.equal((f.node('#creator-table').innerHTML.match(/<tr>/g)||[]).length,33);assert.match(f.node('#creator-table').innerHTML,/Synthetic 532/);
+});
+
+test('bulk selection is limited to the current list and confirmation names the selected records',()=>{
+ const f=setup();f.s.groups([['delay',['p1','p2']]]);f.s.selectFollowups(['p1','outside'],true);
+ assert.deepEqual(Array.from(f.s.selection()),['p1']);assert.equal(f.node('#followup-select-all').indeterminate,true);
+ f.s.selectFollowups(['p2'],true);assert.equal(f.node('#followup-select-all').checked,true);
+ f.s.requestBulkPlacementDeletion();assert.deepEqual(Array.from(f.s.confirmIds()),['p1','p2']);
+ assert.match(f.node('#followup-delete-preview').innerHTML,/Synthetic sample/);assert.match(f.node('#followup-delete-preview').innerHTML,/Keep/);
+ assert.equal(f.node('#followup-confirm-delete').textContent,'确认删除 2 条');
+ f.node('#followup-delete-dialog').close();assert.equal(f.s.read().placements.length,2);
+ f.s.selectFollowups(['p1','p2'],false);assert.equal(f.node('#followup-delete-selected').disabled,true);
+});
+test('bulk deletion is one request, detaches selected associations and preserves concurrent additions',async()=>{
+ const f=await synced();f.editRemote(s=>{s.placements.push({id:'new',product:'Colleague new record'});s.creators[0].email='newer@example.invalid'});
+ await f.s.deletePlacements(['p1','p2','p1'],true);
+ assert.equal(f.patches(),1);assert.deepEqual(f.remote().placements.map(x=>x.id),['new']);assert.deepEqual(f.remote().creators[0].placementIds,[]);
+ assert.equal(f.remote().creators[0].cooperationCount,0);assert.equal(f.remote().creators[0].email,'newer@example.invalid');assert.equal(f.remote().creators.length,1);
+ assert.equal(f.node('#followup-delete-dialog').open,false);assert.match(f.node('#toast').textContent,/2 条投放记录已删除/);
+});
+test('bulk deletion with one concurrent edit leaves the entire server batch intact',async()=>{
+ const f=await synced();f.editRemote(s=>s.placements[1].notes='New colleague edit');await f.s.deletePlacements(['p1','p2'],true);
+ assert.equal(f.cloud.conflict,true);assert.equal(f.remote().placements.length,2);assert.equal(f.remote().creators[0].cooperationCount,2);
+ assert.equal(f.remote().placements[1].notes,'New colleague edit');assert.match(f.node('#followup-bulk-status').textContent,/版本冲突/);
+});
+test('offline batch is recoverable, retries once connected and cannot be duplicated while waiting',async()=>{
+ const f=await synced();f.online(false);await f.s.deletePlacements(['p1','p2'],true);
+ assert.equal(f.remote().placements.length,2);assert.equal(f.node('#followup-confirm-delete').disabled,true);
+ assert.equal(f.cloud.exportPending().operations.filter(x=>x.kind==='remove').length,2);
+ await f.s.deletePlacements(['p1','p2'],true);assert.equal(f.patches(),1);
+ f.online(true);await f.cloud.flush();assert.equal(f.remote().placements.length,0);assert.equal(f.node('#followup-delete-dialog').open,false);
+});
+test('a stale or empty bulk selection never causes a partial delete',async()=>{
+ const f=await synced();await f.s.deletePlacements(['p1','gone'],true);await f.s.deletePlacements([],true);
+ assert.equal(f.patches(),0);assert.equal(f.remote().placements.length,2);assert.equal(f.s.pending(),null);
 });
