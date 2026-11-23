@@ -1,5 +1,6 @@
+import {createCommandClient,acceptNewerState} from './reliable-save.js?v=20261123-purchase-reliable-v1';
 import {renderSalesRecipes,collectionInstructions as componentInstructions} from './sales-recipes-ui.js';
-import {renderPurchases,renderReplenishment} from './purchasing-ui.js?v=20261123-shipping-private-v1';
+import {renderPurchases,renderReplenishment} from './purchasing-ui.js?v=20261123-purchase-reliable-v1';
 import {renderSpecial} from './special-ui.js';
 import {renderCatalog} from './catalog-ui.js';
 import {renderMonthly,productCell,bindImageFallback,sampleMonthData} from './sales-ui.js';
@@ -11,7 +12,7 @@ const today=()=>new Date(Date.now()+8*3600000).toISOString().slice(0,10);
 const localNow=()=>new Date(Date.now()+8*3600000).toISOString().slice(0,16);
 const iso=v=>v?new Date(v+':00+08:00').toISOString():null;
 let user=null,state=null,tab='monthly',samples=[],sampleError='',editorHandler=null;
-const pendingCommands=new Map();let refreshing=false;const editing=()=>Boolean(document.querySelector('dialog[open]'))||document.activeElement?.matches('input,textarea,select');
+let editorBusy=false,costLoading=false;const commandClient=createCommandClient({request,getState:()=>state,refresh,userId:()=>user?.id,storage:globalThis.sessionStorage,progress:message=>{if(editorBusy)$('#form-message').textContent=message;}});const pendingCommands=commandClient.pending;let refreshing=false;const editing=()=>Boolean(document.querySelector('dialog[open]'))||document.activeElement?.matches('input,textarea,select');
 let filters={month:today().slice(0,7),sku:'',channel:''};
 let sampleFilters={month:today().slice(0,7),mode:'registered'};
 const tabs=[['monthly','▤','月度销售'],['purchases','▦','补货与到货'],['replenishment','↗','补货建议'],['warehouse','▥','库存盘点'],['samples','✧','博主寄样'],['special','▧','售后处理'],['costs','¥','成本资料'],['settings','⚙','协作设置']];
@@ -24,24 +25,35 @@ const skuLabel=id=>sku(id)?.name||id;
 const pill=(label,kind='')=>`<span class="pill ${kind}">${escape(label)}</span>`;
 function notice(message,error=false){$('#notice').textContent=message;$('#notice').hidden=!message;$('#notice').className=error?'error':'';}
 async function request(path,options={}) {
-  const response=await fetch(path,{cache:'no-store',signal:AbortSignal.timeout(20000),...options,headers:{'Content-Type':'application/json',...options.headers}});
+  const response=await fetch(path,{cache:'no-store',signal:AbortSignal.timeout(60000),...options,headers:{'Content-Type':'application/json',...options.headers}});
   let result;try{result=await response.json()}catch{throw Error('服务器响应异常，请稍后重试')}
-  if(!response.ok){if(response.status===401){$('#login').hidden=false;$('#workspace').hidden=true;}throw Object.assign(Error(result.error||'请求失败'),{status:response.status});}return result;
+  if(!response.ok){if(response.status===401){$('#login').hidden=false;$('#workspace').hidden=true;}throw Object.assign(Error(result.error||'请求失败'),{status:response.status,code:result.code});}return result;
 }
-async function refresh(renderPage=true){state=await request('/api/stock-ops/state');$('#sync-status').innerHTML=`<i class="live-dot"></i>已同步 · ${state.updatedAt?textDate(state.updatedAt):'尚未登记'}`;if(renderPage)render();}
+async function refresh(renderPage=true){const incoming=await request('/api/stock-ops/state?view=workspace');state=acceptNewerState(state,incoming);$('#sync-status').innerHTML=`<i class="live-dot"></i>已同步 · ${state.updatedAt?textDate(state.updatedAt):'尚未登记'}`;if(renderPage&&!editing())render();}
 async function command(action,data,key){
-  const identity=JSON.stringify({action,data});const requestId=key||pendingCommands.get(identity)||crypto.randomUUID();pendingCommands.set(identity,requestId);
-  try{const result=await request('/api/stock-ops/command',{method:'POST',body:JSON.stringify({action,data,revision:state.revision,requestId})});pendingCommands.delete(identity);state=result.state;$('#sync-status').textContent='已保存到共享台';notice('服务器已确认保存，其他在线设备会自动同步。');return result;}
-  catch(error){if(error.status===409)await refresh(false);throw error;}
+  const result=await commandClient.send(action,data);
+  $('#sync-status').textContent='服务器已确认保存';
+  try{await refresh(false);notice('服务器已确认保存，列表已更新。');}
+  catch(error){notice('记录已保存，但列表尚未刷新成功。请点刷新查看，不要重新登记。',true);}
+  return result;
 }
 async function activate(){const session=await request('/api/content-ops/session');user=session.user;await refresh(false);$('#login').hidden=true;$('#workspace').hidden=false;$('#identity').innerHTML=`${escape(user.name)}<br>${escape(roleLabels[state.role]||state.role)}`;tab=({pr_service:'special',customer_service:'special',warehouse:'warehouse',pr:'samples',content:'monthly'})[state.role]||'monthly';render();}
 $('#login-form').onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector('button');b.disabled=true;try{await request('/api/content-ops/login',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});e.target.reset();await activate();}catch(err){$('#login-message').textContent=err.message}finally{b.disabled=false}};
 $('#logout').onclick=async()=>{await request('/api/content-ops/logout',{method:'POST',body:'{}'});location.reload()};
 $('#refresh').onclick=()=>refresh().catch(e=>notice(e.message,true));
-$('#backup').onclick=()=>download(`经营协作备份_${today()}.json`,JSON.stringify(state,null,2),'application/json');
-$('#close-editor').onclick=$('#cancel-editor').onclick=()=>$('#editor').close();
-$('#editor-form').onsubmit=async e=>{e.preventDefault();const b=$('#save-editor');b.disabled=true;$('#form-message').textContent='';try{await editorHandler(Object.fromEntries(new FormData(e.target)));$('#editor').close();render();}catch(err){$('#form-message').textContent=err.message}finally{b.disabled=false}};
-function showEditor(title,fields,handler,hint='') {$('#save-editor').textContent='保存记录';$('#editor-title').textContent=title;$('#editor-hint').textContent=hint;$('#editor-hint').hidden=!hint;$('#editor-fields').innerHTML=fields;$('#form-message').textContent='';editorHandler=handler;$('#editor').showModal();}
+$('#backup').onclick=async()=>{const b=$('#backup');b.disabled=true;try{const full=await request('/api/stock-ops/state');download(`经营协作备份_${today()}.json`,JSON.stringify(full,null,2),'application/json');}catch(e){notice('备份未完成：'+e.message,true);}finally{b.disabled=false;}};
+const closeEditor=()=>{if(editorBusy){$('#form-message').textContent='正在上传或确认保存结果，请稍候；填写内容保留中。';return;}$('#editor').close();render();};
+$('#close-editor').onclick=$('#cancel-editor').onclick=closeEditor;
+$('#editor').addEventListener('cancel',e=>{if(editorBusy){e.preventDefault();closeEditor();}});
+$('#editor-form').onsubmit=async e=>{
+ e.preventDefault();if(editorBusy)return;
+ const handler=editorHandler,data=Object.fromEntries(new FormData(e.target)),controls=[...e.target.querySelectorAll('input,textarea,select,button')].map(el=>[el,el.disabled]);
+ editorBusy=true;controls.forEach(([el])=>el.disabled=true);$('#form-message').textContent='正在处理，请稍候…';
+ try{await handler(data);$('#editor').close();render();}
+ catch(err){$('#form-message').textContent=err.message;}
+ finally{editorBusy=false;controls.forEach(([el,disabled])=>el.disabled=disabled);}
+};
+function showEditor(title,fields,handler,hint='') {if(editorBusy)return;$('#save-editor').textContent='保存记录';$('#editor-title').textContent=title;$('#editor-hint').textContent=hint;$('#editor-hint').hidden=!hint;$('#editor-fields').innerHTML=fields;$('#form-message').textContent='';editorHandler=handler;$('#editor').showModal();}
 function field(name,label,value='',type='text',required=true,wide=false){return `<label class="${wide?'wide':''}">${escape(label)}<input name="${name}" type="${type}" value="${escape(value??'')}" ${required?'required':''} ${type==='number'?'step="any"':''}></label>`;}
 function area(name,label,value='',required=true){return `<label class="wide">${escape(label)}<textarea name="${name}" ${required?'required':''}>${escape(value)}</textarea></label>`;}
 function select(name,label,options,value=''){return `<label>${escape(label)}<select name="${name}" required>${options.map(o=>{const [v,l]=Array.isArray(o)?o:[o,o];return `<option value="${escape(v)}" ${String(value)===String(v)?'selected':''}>${escape(l)}</option>`}).join('')}</select></label>`;}
@@ -114,6 +126,7 @@ function skus(){
 }
 function editSku(k={}){const key=crypto.randomUUID();showEditor(k.id?'编辑SKU':'新建SKU',field('code','统一SKU编码',k.code)+field('name','款式名称',k.name)+field('spec','规格',k.spec,'text',false)+field('category','分类',k.category,'text',false)+field('barcode','条码',k.barcode,'text',false)+field('warehouse','默认仓库',k.warehouse||'主仓')+select('status','状态',['在售','停用','待核'],k.status)+field('taobaoItemId','淘宝商品ID',k.taobaoItemId,'text',false)+field('taobaoSkuId','淘宝SKU ID',k.taobaoSkuId,'text',false)+field('xhsProductId','小红书商品ID',k.xhsProductId,'text',false)+field('xhsSkuId','小红书规格ID',k.xhsSkuId,'text',false)+field('influencerProductId','博主系统商品ID',k.influencerProductId,'text',false)+field('costSkuId','关联成本档案内部SKU',k.costSkuId,'text',false)+field('costLinkStatus','成本档案关联说明',k.costLinkStatus,'text',false)+field('leadDays','生产工期（天）',k.leadDays,'number',false)+field('moq','最低起订量',k.moq,'number',false)+area('note','来源 / 备注',k.note,false),d=>command('sku',{...d,...(k.id?{id:k.id}:{})},key));}
 function issues(){
+  if(state.audit.some(a=>a.result?.detailDeferred)){request('/api/stock-ops/state').then(full=>{if(full.revision>=state.revision){state=full;if(tab==='issues')issues();}}).catch(e=>notice(e.message,true));$('#content').innerHTML=heading('待核与操作记录','正在读取完整历史…');return;}
   const actions={sku:'SKU建档 / 更新',monthly:'月销售更新',snapshot:'单款盘点',week:'周报盘点',observation:'库存参考',event:'库存流水',sample:'寄样出库',case:'售后登记',caseAction:'售后出入库',issue:'待核事项',import:'初始资料导入',reverse:'流水冲正'};
   $('#content').innerHTML=heading('待核与操作记录','差额保留证据与处理状态；每次提交保留填写人和结果。',can('operations','warehouse','customer_service')?button('new-issue','＋ 记录待核事项',true):'')+`<div class="card"><div class="section-heading"><h2>待核事项</h2><span>差额不会自动核销</span></div>${table(['款式 / 事项','数量','依据与说明','状态',''],state.issues.map(i=>[`${escape(skuLabel(i.skuId))}<small>${escape(i.title)}</small>`,num(i.quantity),`<div class="wrap">${escape(i.detail)}<small>${escape(i.source)}</small></div>`,pill(i.status,i.status==='待核'?'warn':''),can('operations','warehouse','customer_service')?`<button data-issue="${i.id}">更新</button>`:'']))}</div><div class="card"><div class="section-heading"><h2>最近操作记录</h2><span>最近300次；完整历史保留在服务器</span></div>${table(['时间','填写人','动作','版本','内容'],state.audit.map(a=>[textDate(a.at),escape(a.actor.name),escape(actions[a.action]||a.action),String(a.revision),`<details><summary>查看本次记录</summary><pre>${escape(JSON.stringify(a.result,null,2))}</pre></details>`]))}</div>`;
   bind('new-issue',()=>editIssue());bindAll('[data-issue]',el=>editIssue(state.issues.find(i=>i.id===el.dataset.issue)));
@@ -129,7 +142,8 @@ function collections(){
   bind('new-collection',()=>{if(!state.skus.length)throw Error('请先建SKU档案');const key=crypto.randomUUID();showEditor('新建净销量采集任务',field('title','任务名称','淘宝与小红书月净销量')+field('start','支付起始（月初）',today().slice(0,7)+'-01','date')+field('end','支付截止',today(),'date')+field('refundAsOf','成功退款核对截止',today(),'date')+`<fieldset class="wide"><legend>采集款式</legend>${state.skus.filter(k=>k.status!=='停用').map(k=>`<label class="check-label"><input type="checkbox" name="sku-${escape(k.id)}" value="${escape(k.id)}" checked>${escape(k.name)}</label>`).join('')}</fieldset><fieldset class="wide"><legend>销售平台</legend><label class="check-label"><input type="checkbox" name="channel-tb" value="淘宝" checked>淘宝</label><label class="check-label"><input type="checkbox" name="channel-xhs" value="小红书" checked>小红书</label></fieldset>`+area('note','补充要求','检查所有链接及套餐中的实际商品，退款按组成核对；无法确认的保留待补。',false),d=>command('collection',{...d,skuIds:Object.keys(d).filter(k=>k.startsWith('sku-')).map(k=>d[k]),channels:Object.keys(d).filter(k=>k.startsWith('channel-')).map(k=>d[k])},key));});
   bindAll('[data-job]',el=>openCollection(jobs.find(j=>j.id===el.dataset.job)));
 }
-function openCollection(j){
+async function openCollection(j){
+  if(j.detailDeferred){const full=await request('/api/stock-ops/state');j=full.collections.find(x=>x.id===j.id);}
   showEditor(j.title,`<div class="wide"><p>${pill(j.status)} 支付 ${escape(j.start)}—${escape(j.end)}</p><details><summary>给采集助手的完整任务</summary><pre>${escape(collectionInstructions(j))}</pre></details><div class="actions">${button('copy-job','复制任务指令')}${button('download-job','下载任务 JSON')}</div>${can('operations')&&j.status!=='已入账'?`<label>上传采集结果 JSON<input id="job-result" type="file" accept=".json,application/json"></label><p class="muted" id="job-result-status">上传原平台订单行与退款行，系统按已核实组成重新计算；有缺失不能入账。</p><label>标记进度<select id="job-status"><option>待执行</option><option>采集中</option><option>需登录验证</option><option>待补资料</option></select></label><label>进度说明<input id="job-note" value="${escape(j.note)}"></label><br>${button('update-job','保存进度')}`:''}${j.calculation?`<p class="hint">订单行 ${j.calculation.summary.orderLines} 条；去重 ${j.calculation.summary.duplicateOrders} 条；待核 ${j.calculation.issueCount} 项。${j.calculation.complete?'组成拆分已通过校验。':'以下仅为可确认部分，不能作为完整净销量入账。'}</p>${table(['待核类型','对应订单／规格','原因'],(j.calculation.issues||[]).map(x=>[escape(x.kind),escape(x.key),escape(x.detail)]))}`:'<p class="hint">此任务尚未完成跨链接与套餐拆分核对。</p>'}<h3 style="margin-top:22px">暂存结果（未核验不入月报）</h3>${table(['款式','月份','平台','支付','退款扣件','净量'],(j.results||[]).map(r=>[escape(skuLabel(r.skuId)),escape(r.month),escape(r.channel),num(r.paid),num(r.refund),num(r.net)]))}${(j.evidence||[]).map(e=>`<p class="muted">${escape(e.name)} · ${escape(e.source)}</p>`).join('')}${can('operations')&&j.status==='待核对'?`<h3>与已录月销售对比</h3>${table(['款式 / 平台 / 月份','原支付 / 退款','本次支付 / 退款'],(j.results||[]).flatMap(r=>{const old=state.monthly.find(x=>x.skuId===r.skuId&&x.channel===r.channel&&x.month===r.month);return old?[[escape(skuLabel(r.skuId)+' / '+r.channel+' / '+r.month),num(old.paid)+' / '+num(old.refund),num(r.paid)+' / '+num(r.refund)]]:[]}))}<label class="check-label"><input name="replaceExisting" type="checkbox" value="yes">确认更新涉及的已有月销售（旧值留档；本次金额未分摊，显示待补）</label>${area('note','核验说明','已核对全链接覆盖、组成、退款扣件、去重及原报表控制合计。')}`:''}</div>`,async d=>{if(j.status==='待核对'&&can('operations'))await command('collectionAccept',{jobId:j.id,note:d.note,replaceExisting:d.replaceExisting==='yes'});},'按实际商品拆分统计；未确认的对应和退款不会按0入账。');
   $('#save-editor').hidden=j.status!=='待核对'||!can('operations');$('#save-editor').textContent='核验并写入月报';
   $('#editor').addEventListener('close',()=>{$('#save-editor').hidden=false;$('#save-editor').textContent='保存记录'},{once:true});
@@ -140,6 +154,7 @@ function openCollection(j){
 }
 function costs(){
   if(!can()){$('#content').innerHTML='<div class="empty">成本资料仅管理员可见。</div>';return;}
+  if(state.costWorkbookDeferred&&!state.costWorkbook){$('#content').innerHTML=heading('成本资料','正在读取完整成本资料…');if(!costLoading){costLoading=true;request('/api/stock-ops/state').then(full=>{if(full.revision>=state.revision){state=full;if(tab==='costs')costs();}}).catch(e=>notice(e.message,true)).finally(()=>costLoading=false);}return;}
   const book=state.costWorkbook;
   if(!book){$('#content').innerHTML=heading('成本资料','保留完整成本主表、价格历史、包装、运费与平台映射。')+'<div class="card empty">尚未导入成本资料。请在协作设置导入包含成本原表的数据包。</div>';return;}
   const sheet=book.sheets.find(s=>s.name===costSheet)||book.sheets[0];costSheet=sheet.name;
@@ -189,4 +204,4 @@ async function pollShared(){
  finally{refreshing=false;}
 }
 setInterval(pollShared,10000);window.addEventListener('focus',pollShared);window.addEventListener('online',pollShared);document.addEventListener('visibilitychange',pollShared);
-window.addEventListener('beforeunload',e=>{if(pendingCommands.size){e.preventDefault();e.returnValue='';}});
+window.addEventListener('beforeunload',e=>{if(editorBusy||pendingCommands.size){e.preventDefault();e.returnValue='';}});
