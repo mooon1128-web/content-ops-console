@@ -256,6 +256,9 @@
   let creatorPage = 1;
   const creatorPageSize = 50;
   let pendingPlacementDeletion = null;
+  let selectedFollowupIds = new Set();
+  let followupGroups = new Map();
+  let confirmedBulkIds = [];
   let syncMessage = "";
   let apiOnline = false;
   let applyingServerState = false;
@@ -2269,6 +2272,9 @@
         ],
       },
     ];
+    followupGroups = new Map(groups.flatMap(group => group.sections.map(([id, title, note, items]) => [id, items.map(item => item.id)])));
+    const visibleIds = new Set([...followupGroups.values()].flat());
+    selectedFollowupIds = new Set([...selectedFollowupIds].filter(id => visibleIds.has(id)));
     $("#followup-list").innerHTML = groups.map((group) => `
       <section class="followup-block">
         <div class="followup-block-head">
@@ -2280,6 +2286,7 @@
         </div>
       </section>
     `).join("");
+    updateFollowupSelection();
   }
 
   function followupBucket(id, title, note, items) {
@@ -2290,7 +2297,9 @@
             <h3>${escapeHtml(title)}</h3>
             <span class="muted">${escapeHtml(note)}</span>
           </div>
-          <strong>${items.length}</strong>
+          <div class="followup-bucket-tools"><strong>${items.length}</strong>
+            ${items.length ? `<label class="followup-select"><input type="checkbox" data-followup-group="${escapeHtml(id)}" />全选本组</label>` : ""}
+          </div>
         </div>
         <div class="task-list">
           ${items.length ? items.map(renderFollowupTaskCard).join("") : `<div class="empty-state">暂无记录。</div>`}
@@ -2321,6 +2330,7 @@
           ${task.warnings.length ? `<p><strong>风险提醒：</strong>${task.warnings.map(escapeHtml).join("；")}。</p>` : ""}
         </div>
         <div class="task-action">
+          <label class="followup-select"><input type="checkbox" data-followup-select="${escapeHtml(item.id)}" aria-label="选择 ${escapeHtml(item.creator)} · ${escapeHtml(item.product)}" />选择</label>
           ${task.kind === "day7-review" && normalizeProfileLink(item.url) ? `<a class="secondary-button small" href="${escapeHtml(normalizeProfileLink(item.url))}" target="_blank" rel="noreferrer">打开笔记</a>` : ""}
           <button class="secondary-button small" data-edit="${item.id}">${task.kind === "day7-review" ? "编辑全部" : "编辑记录"}</button>
           <span class="muted">${escapeHtml(item.contactMethod || "未填联系方式")}</span>
@@ -3468,6 +3478,17 @@
       const editId = event.target.closest("[data-edit]")?.dataset.edit;
       if (editId) openForm(placements.find((item) => item.id === editId));
     });
+    $("#followup-list").addEventListener("change", event => {
+      const item = event.target.closest("[data-followup-select]");
+      const group = event.target.closest("[data-followup-group]");
+      if (item) selectFollowups([item.dataset.followupSelect], item.checked);
+      if (group) selectFollowups(followupGroups.get(group.dataset.followupGroup) || [], group.checked);
+    });
+    $("#followup-select-all").addEventListener("change", event => selectFollowups([...followupGroups.values()].flat(), event.target.checked));
+    $("#followup-clear-selection").addEventListener("click", () => selectFollowups([...selectedFollowupIds], false));
+    $("#followup-delete-selected").addEventListener("click", requestBulkPlacementDeletion);
+    $("#followup-confirm-delete").addEventListener("click", () => deletePlacements(confirmedBulkIds, true));
+    $$('[data-close="followup-delete-dialog"]').forEach(button => button.addEventListener("click", () => $("#followup-delete-dialog").close()));
     $("#followup-list").addEventListener("submit", async (event) => {
       const form = event.target.closest("[data-review-form]");
       const shipmentForm = event.target.closest("[data-shipment-form]");
@@ -3782,36 +3803,99 @@
     $("#placement-delete-confirm").scrollIntoView({block:"nearest"});
   }
 
+  function selectFollowups(ids, checked) {
+    if (pendingPlacementDeletion) return;
+    const visible = new Set([...followupGroups.values()].flat());
+    for (const id of ids) {
+      if (checked && visible.has(id)) selectedFollowupIds.add(id);
+      else if (!checked) selectedFollowupIds.delete(id);
+    }
+    updateFollowupSelection();
+  }
+
+  function updateFollowupSelection() {
+    const visible = [...new Set([...followupGroups.values()].flat())];
+    const busy = Boolean(pendingPlacementDeletion);
+    const mark = (input, ids) => {
+      const count = ids.filter(id => selectedFollowupIds.has(id)).length;
+      input.checked = ids.length > 0 && count === ids.length;
+      input.indeterminate = count > 0 && count < ids.length;
+      input.disabled = busy || !ids.length;
+    };
+    mark($("#followup-select-all"), visible);
+    $$("[data-followup-group]").forEach(input => mark(input, followupGroups.get(input.dataset.followupGroup) || []));
+    $$("[data-followup-select]").forEach(input => {
+      mark(input, [input.dataset.followupSelect]);
+      input.closest(".task-card")?.classList.toggle("is-selected", input.checked);
+    });
+    $("#followup-selected-count").textContent = `已选 ${selectedFollowupIds.size} 条`;
+    $("#followup-clear-selection").disabled = busy || !selectedFollowupIds.size;
+    $("#followup-delete-selected").disabled = busy || !selectedFollowupIds.size;
+  }
+
+  function requestBulkPlacementDeletion() {
+    if (pendingPlacementDeletion) { updatePlacementDeletion(); return; }
+    confirmedBulkIds = [...selectedFollowupIds];
+    const rows = confirmedBulkIds.map(id => placements.find(row => row.id === id));
+    if (!rows.length || rows.some(row => !row)) { renderFollowups(); toast("选择的记录已变化，请重新核对选择"); return; }
+    $("#followup-delete-summary").textContent = `已选择 ${rows.length} 条投放记录。`;
+    $("#followup-delete-preview").innerHTML = rows.map(row => `<li>${escapeHtml(row.creator || "未命名博主")} · ${escapeHtml(row.product || "未填写产品")}</li>`).join("");
+    $("#followup-confirm-delete").textContent = `确认删除 ${rows.length} 条`;
+    $("#followup-confirm-delete").disabled = false;
+    const dialog = $("#followup-delete-dialog");
+    const feedback = $("[data-dialog-status]", dialog); if (feedback) feedback.textContent = "";
+    dialog.showModal();
+  }
+
   function updatePlacementDeletion() {
     if (!pendingPlacementDeletion) return;
-    const id = pendingPlacementDeletion.id;
-    if (cloud?.base && !cloud.base.placements.some(row => row.id === id) && !cloud.conflict) {
+    const { ids, bulk } = pendingPlacementDeletion;
+    if (cloud?.base && ids.every(id => !cloud.base.placements.some(row => row.id === id)) && !cloud.conflict) {
       pendingPlacementDeletion = null;
-      if ($("#placement-form").elements.id.value === id) $("#placement-dialog").close();
+      if (bulk) $("#followup-delete-dialog").close();
+      else if (ids.includes($("#placement-form").elements.id.value)) $("#placement-dialog").close();
+      ids.forEach(id => selectedFollowupIds.delete(id));
       $("[data-delete]").disabled = false;
       $("#placement-form [type='submit']").disabled = false;
-      renderAll();toast("投放记录已删除，服务器已确认");return;
+      $("#followup-confirm-delete").disabled = false;
+      $("#followup-bulk-status").textContent = "";
+      updateFollowupSelection();renderAll();toast(`${bulk ? `${ids.length} 条` : ""}投放记录已删除，服务器已确认`);return;
     }
     const message = cloud?.conflict ? "删除未完成：存在版本冲突。请先导出待同步修改，再关闭窗口核对；未覆盖同事的新记录。"
       : cloud?.stopped ? "登录已失效，删除尚未确认。请导出待同步修改，再关闭窗口重新登录。"
       : cloud?.online ? "正在删除，等待服务器确认，请勿重复点击…"
       : "删除尚未获服务器确认，联网后会自动重试。请勿刷新，可先导出待同步修改。";
-    toast(syncMessage ? `${message} ${syncMessage}` : message);
+    const feedback = syncMessage ? `${message} ${syncMessage}` : message;
+    if (bulk) {
+      $("#followup-bulk-status").textContent = feedback;
+      $("#followup-delete-summary").textContent = feedback;
+      $("#followup-confirm-delete").textContent = cloud?.conflict || cloud?.stopped ? "删除待处理" : `正在删除 ${ids.length} 条…`;
+    }
+    toast(feedback);
   }
 
   async function deletePlacement(id) {
+    return deletePlacements([id], false);
+  }
+
+  async function deletePlacements(requestedIds, bulk = false) {
     if (pendingPlacementDeletion) return;
     if (!cloud?.ready || cloud.conflict || cloud.stopped) { toast("当前无法删除，请先处理同步提示；记录仍保留"); return; }
-    const item = placements.find(row => row.id === id);
-    if (!item) { toast("这条记录已不存在"); return; }
-    pendingPlacementDeletion = {id};
+    const ids = [...new Set(requestedIds)];
+    if (!ids.length || ids.some(id => !placements.some(row => row.id === id))) { toast("所选记录已变化，请关闭窗口重新选择；未提交删除"); return; }
+    const deleting = new Set(ids);
+    pendingPlacementDeletion = {ids, bulk};
     $("#placement-delete-confirm").hidden = true;
     $("[data-delete]").disabled = true;
     $("#placement-form [type='submit']").disabled = true;
-    placements = placements.filter(row => row.id !== id);
-    // Only detach this placement; never rebuild all creator profiles on deletion.
-    creators = creators.map(row => Array.isArray(row.placementIds) && row.placementIds.includes(id)
-      ? {...row, placementIds:row.placementIds.filter(value => value !== id), cooperationCount:Math.max(0, number(row.cooperationCount) - 1)} : row);
+    $("#followup-confirm-delete").disabled = true;
+    updateFollowupSelection();
+    placements = placements.filter(row => !deleting.has(row.id));
+    // One captured change set: server conflict checking keeps the batch atomic.
+    creators = creators.map(row => {
+      const removed = new Set((Array.isArray(row.placementIds) ? row.placementIds : []).filter(id => deleting.has(id))).size;
+      return removed ? {...row, placementIds:row.placementIds.filter(id => !deleting.has(id)), cooperationCount:Math.max(0, number(row.cooperationCount) - removed)} : row;
+    });
     savePlacements();updatePlacementDeletion();
     try { await flushServerSave(); } catch (error) { syncMessage = error.message; }
     updatePlacementDeletion();
@@ -3831,7 +3915,7 @@
     const session=await response.json();
     const syncPanel=document.createElement('div');syncPanel.className='shared-status-panel';
     syncPanel.innerHTML='<strong id="shared-user"></strong><span id="shared-version"></span><a href="/stock-ops/">经营协作台</a><button id="shared-export-pending">导出待同步修改</button><button id="shared-recover" hidden>核对冲突</button><button id="legacy-export">导出旧设备缓存</button><button id="shared-logout">退出</button>';
-    document.body.prepend(syncPanel);$('#shared-user').textContent=session.user.name+' · PR系统 · 11/23 台账修复版';
+    document.body.prepend(syncPanel);$('#shared-user').textContent=session.user.name+' · PR系统 · 11/23 多选删除版';
     $$("dialog").forEach(dialog => {
       const panel = document.createElement("div");panel.className="dialog-sync-feedback";
       panel.innerHTML='<p data-dialog-status role="status" aria-live="polite"></p><button type="button" class="secondary-button small" data-dialog-export>导出待同步修改</button><a data-dialog-login href="/xhs-media/login" target="_blank" rel="noopener">重新登录</a>';
@@ -3855,7 +3939,7 @@
       }
     });
     $('#shared-export-pending').onclick=()=>downloadRecovery(cloud.exportPending(),'PR待同步更改_'+today()+'.json');
-    $('#shared-recover').onclick=async()=>{downloadRecovery(cloud.exportPending(),'PR冲突更改_'+today()+'.json');if(confirm('已导出双方差异所需的本机修改。是否暂以云端版本继续，并清除这份待同步草稿？原修改请依据导出文件核对后重新登记。')){pendingPlacementDeletion=null;await cloud.discardAfterExport();}};
+    $('#shared-recover').onclick=async()=>{downloadRecovery(cloud.exportPending(),'PR冲突更改_'+today()+'.json');if(confirm('已导出双方差异所需的本机修改。是否暂以云端版本继续，并清除这份待同步草稿？原修改请依据导出文件核对后重新登记。')){pendingPlacementDeletion=null;$("#followup-bulk-status").textContent="";$("#followup-delete-dialog").close();await cloud.discardAfterExport();}};
     $('#legacy-export').onclick=()=>{const copy={};for(let i=0;i<localStorage.length;i++){const key=localStorage.key(i);if(key?.startsWith('xhs_media'))copy[key]=localStorage.getItem(key);}downloadRecovery(copy,'PR旧设备缓存_仅供核对_'+today()+'.json');};
     $('#shared-logout').onclick=async()=>{if(hasPendingLocalSync()&&!confirm('仍有未同步修改，建议先导出。确定退出？'))return;cloud.stop();await fetch('/api/content-ops/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});location.replace('/xhs-media/login');};
     document.body.classList.add('shared-unavailable');

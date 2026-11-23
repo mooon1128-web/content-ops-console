@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>小红书媒介投放跟踪台</title>
-  <link rel="stylesheet" href="styles.css?v=20261123-ledger-v1" />
+  <link rel="stylesheet" href="styles.css?v=20261123-bulk-v1" />
 </head>
 <body>
   <header class="topbar">
@@ -213,6 +213,13 @@
         </div>
       </div>
       <div id="followup-summary" class="followup-summary-board"></div>
+      <div class="followup-bulk-bar" aria-label="跟进任务批量操作">
+        <label class="followup-select"><input type="checkbox" id="followup-select-all" />全选当前列表</label>
+        <strong id="followup-selected-count" aria-live="polite">已选 0 条</strong>
+        <button type="button" class="secondary-button small" id="followup-clear-selection" disabled>取消选择</button>
+        <button type="button" class="danger-button small" id="followup-delete-selected" disabled>删除所选</button>
+        <span id="followup-bulk-status" role="status"></span>
+      </div>
       <div id="followup-list" class="task-list followup-board"></div>
     </section>
 
@@ -435,6 +442,22 @@
     </div>
   </dialog>
 
+  <dialog id="followup-delete-dialog" class="form-dialog brief-dialog" aria-labelledby="followup-delete-title">
+    <div class="brief-shell">
+      <div class="dialog-title">
+        <h2 id="followup-delete-title">删除所选投放记录</h2>
+        <button type="button" class="icon-button" data-close="followup-delete-dialog" aria-label="关闭">×</button>
+      </div>
+      <p id="followup-delete-summary" role="status" aria-live="polite"></p>
+      <p class="muted">将同时从跟进任务和投放台账移除以下投放记录，保留达人档案。确认前请核对清单。</p>
+      <ul id="followup-delete-preview" class="bulk-delete-preview"></ul>
+      <div class="dialog-actions">
+        <button type="button" class="secondary-button" data-close="followup-delete-dialog">取消</button>
+        <button type="button" class="danger-button" id="followup-confirm-delete">确认删除</button>
+      </div>
+    </div>
+  </dialog>
+
   <dialog id="wechat-dialog" class="form-dialog brief-dialog">
     <div class="brief-shell">
       <div class="dialog-title">
@@ -495,6 +518,6 @@
   <datalist id="creator-type-list"></datalist>
   <datalist id="creator-name-list"></datalist>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="app.js?v=20261123-ledger-v1"></script>
+  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="app.js?v=20261123-bulk-v1"></script>
 </body>
 </html>
