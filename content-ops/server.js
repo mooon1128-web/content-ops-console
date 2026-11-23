@@ -1,11 +1,12 @@
 import { createAccessControl, publicState, scopedWrite, validateRows, makeAudit } from "./access.js";
 import { createStockStore } from './stock-store.js';
+import {createPurchaseFiles} from './purchase-files.js';
 import { stockView, roleOf, hasStockRole, fail } from './stock-model.js';
 import {createXhsStore,publicXhs} from './xhs-store.js';
 import RecordOps from '../public/content-ops/ops-core.cjs';
 import {createGzip} from 'node:zlib';
 import {Readable} from 'node:stream';
-const BUILD_ID='20261122-monthly-v8';
+const BUILD_ID='20261123-shipping-private-v1';
 const contentShape={titles:'rows',accounts:'rows',posts:'rows',products:'rows',inventorySettings:'map'};
 import { createServer } from "node:http";
 import { createHmac, timingSafeEqual, randomUUID, createHash } from "node:crypto";
@@ -786,6 +787,7 @@ const access = createAccessControl({ read: readContentOpsState, readAccess: read
 const xhsStore=createXhsStore({file:xhsDataFile,remote:hasSupabaseStateStore()?supabaseRequest:null,stateId:xhsMediaStateId});
 const stockStore = createStockStore({file:process.env.STOCK_OPS_DATA || join(dirname(dataFile),'stock-ops-data.json'),remote:hasSupabaseStateStore()?supabaseRequest:null,stateId:process.env.STOCK_OPS_STATE_ID || `${contentOpsStateId}-stock-ops`});
 const costFilesDir=process.env.STOCK_OPS_FILES_DIR || join(dirname(process.env.STOCK_OPS_DATA || dataFile),'stock-ops-cost-files');
+const purchaseFiles=createPurchaseFiles({dir:join(costFilesDir,'purchase-contracts'),readState:()=>stockStore.read()});
 
 const server = createServer(async (request, response) => {
   try {
@@ -796,6 +798,7 @@ const server = createServer(async (request, response) => {
       if (request.headers.origin && new URL(request.headers.origin).host !== request.headers.host || request.headers['sec-fetch-site']==='cross-site') throw fail(403,'不允许跨网站访问');
       const user=await access.requireUser(request);
       if(roleOf(user)==='none')throw fail(403,'请管理员分配经营协作权限');
+      if(url.pathname==='/api/stock-ops/purchase-contract'){await purchaseFiles.handle(request,response,url,user,send);return;}
       if(url.pathname==='/api/stock-ops/storage'&&request.method==='GET'){
         if(user.role!=='admin')throw fail(403,'仅管理员可查看存储信息');
         await mkdir(costFilesDir,{recursive:true});const disk=await statfs(costFilesDir);
@@ -830,6 +833,7 @@ const server = createServer(async (request, response) => {
       if(url.pathname==='/api/stock-ops/command'&&request.method==='POST'){
         if(!String(request.headers['content-type']||'').startsWith('application/json'))throw fail(415,'请使用JSON请求');
         const command=JSON.parse(await readBody(request));
+        if(command.data?.privateDetails!==undefined)await purchaseFiles.validate(user,command.data.privateDetails?.contracts||[]);
         const placements=command.action==='sample'?(await xhsStore.read())?.placements||[]:[];
         const result=await stockStore.commit(command,user,{placements});
         send(response,200,{ok:true,replayed:Boolean(result.replayed),state:stockView(result.state,user)});return;

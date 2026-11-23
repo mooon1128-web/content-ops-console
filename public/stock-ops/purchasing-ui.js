@@ -1,18 +1,52 @@
 import {productCell,bindImageFallback,groupSales,salesValue} from './sales-ui.js';
-import {purchaseSummary,forecastSupply,dayCount,addDays} from './purchasing-math.js';
+import {purchaseSummary,shippingSummary,forecastSupply,dayCount,addDays} from './purchasing-math.js';
 let purchaseMonth='',forecastSku='';
 export function renderPurchases(a){
   const {state,$,can,heading,button,table,escape,num,pill,bind,bindAll,showEditor,field,area,select,skuSelect,command,localNow,iso,today,sku,render}=a;
   const orders=state.purchases||[],receipts=state.purchaseReceipts||[],inspections=state.purchaseInspections||[],returns=state.purchaseReturns||[];
   const summary=o=>purchaseSummary(o,receipts,inspections,returns);
+  const ship=o=>shippingSummary(o,receipts,today());
   const rows=orders.filter(o=>!purchaseMonth||o.orderDate.startsWith(purchaseMonth)).slice().reverse();
-  $('#content').innerHTML=heading('补货与到货','一批货从下单、收货到验收，放在一起核对。',can('operations')?button('new-purchase','登记补货批次',true):'')+`<div class="sales-toolbar"><label>下单月份<input id="purchase-month" type="month" value="${purchaseMonth}"></label>${button('purchase-all','全部批次')}</div><div class="card">${table(['商品／批次','下单','实收','合格入库','当前可售','瑕疵／已退厂','待检','少到／超收','状态',''],rows.map(o=>{const x=summary(o);return [productCell(sku(o.skuId),o.reference),num(o.quantity),num(x.received),num(x.good),num(state.balances.find(b=>b.skuId===o.skuId&&b.warehouse===o.warehouse)?.available),`${num(x.defect)} / ${num(x.returned)}`,num(x.pending),x.over?pill('超收 '+x.over,'warn'):num(x.shortfall),pill(o.status==='计划'?'计划未下单':x.pending?'待验收':x.shortfall?'待到货':'已收齐',x.pending||x.shortfall?'warn':''),`<button type="button" data-purchase="${o.id}">查看／收货</button>`]}),'尚未登记补货批次。补货建议、工厂下单和实际到货分开记录。')}</div><p class="muted">合格入库是本批次累计合格数；当前可售是该款在此仓库的合格实物减预留，并包含已登记出入库。尚未建立实盘基准时显示待核。</p>`;
+  const overdue=rows.filter(o=>ship(o).overdueDays>0);
+  const privateRow=o=>state.purchasePrivate?.[o.id];
+  const money=v=>v===null||v===undefined?'<span class="missing">待填写</span>':'¥'+Number(v).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
+  function shippingCell(o){
+    const x=ship(o);
+    return `<div class="shipping-date">${escape(x.expected||'待补出货时间')}</div>`+
+      (x.overdueDays?`<strong class="shipping-overdue">已超时 ${x.overdueDays} 天</strong><small>尚未出货 ${num(x.outstanding)} 件</small>`:
+      x.complete?`<small>${x.completedAt?'已全部出货 '+escape(x.completedAt):'已收齐 · 出货记录待补'}</small>${x.lateDays?`<strong class="shipping-late">出货晚了 ${x.lateDays} 天</strong>`:''}`:
+      `<small>${x.shipped?'已登记出货 '+num(x.shipped)+' 件':o.status==='计划'?'计划未下单':'待出货'}${x.expected===today()?' · 今天出货':''}</small>`);
+  }
+  const privateFields=value=>`<section class="purchase-private wide"><h3>合同与尾款 <span>仅管理员可见</span></h3>${field('balanceDue','尾款金额（元）',value?.balanceDue??'','number',false)}<label>上传合同图片<input id="purchase-contract-files" type="file" accept="image/jpeg,image/png,image/webp" multiple></label><p class="muted">JPG、PNG、WebP，每张最多10MB；可上传多张。</p><p id="contract-upload-progress" role="status"></p></section>`;
+  function privateReader(){
+    const uploaded=new Map();
+    return async d=>{
+      if(state.role!=='admin')return undefined;
+      const files=Array.from($('#purchase-contract-files')?.files||[]),contracts=[];
+      if(files.length>20)throw Error('每批次最多20张合同图片');
+      for(const [i,file]of files.entries()){
+        if(file.size>10*1024*1024)throw Error('每张合同图片不能超过10MB');
+        if(!uploaded.has(file)){
+          $('#contract-upload-progress').textContent=`正在上传合同图片 ${i+1} / ${files.length}…`;
+          const r=await fetch('/api/stock-ops/purchase-contract?name='+encodeURIComponent(file.name),{method:'POST',headers:{'Content-Type':file.type||'application/octet-stream'},body:file,signal:AbortSignal.timeout(60000)});
+          const result=await r.json();if(!r.ok)throw Error(result.error||'合同上传失败');uploaded.set(file,result);
+        }
+        contracts.push(uploaded.get(file));
+      }
+      return {balanceDue:d.balanceDue,contracts};
+    };
+  }
+  $('#content').innerHTML=heading('补货与到货','一批货从下单、出货、收货到验收，放在一起核对。',can('operations')?button('new-purchase','登记补货批次',true):'')+`<div class="sales-toolbar"><label>下单月份<input id="purchase-month" type="month" value="${purchaseMonth}"></label>${button('purchase-all','全部批次')}</div>${overdue.length?`<div class="shipping-alert" role="status"><strong>${overdue.length} 个批次出货超时</strong><span>最长已超时 ${Math.max(...overdue.map(o=>ship(o).overdueDays))} 天，请跟进工厂出货。</span></div>`:''}<div class="card">${table(['商品／批次','预计出货时间','下单','实收','合格入库','当前可售','瑕疵／已退厂','待检','少到／超收','状态',...(state.role==='admin'?['尾款金额']:[]),''],rows.map(o=>{const x=summary(o);return [productCell(sku(o.skuId),o.reference),shippingCell(o),num(o.quantity),num(x.received),num(x.good),num(state.balances.find(b=>b.skuId===o.skuId&&b.warehouse===o.warehouse)?.available),`${num(x.defect)} / ${num(x.returned)}`,num(x.pending),x.over?pill('超收 '+x.over,'warn'):num(x.shortfall),pill(o.status==='计划'?'计划未下单':x.pending?'待验收':x.shortfall?'待到货':'已收齐',x.pending||x.shortfall?'warn':''),...(state.role==='admin'?[money(privateRow(o)?.balanceDue)]:[]),`<button type="button" data-purchase="${o.id}">查看／收货</button>`]}),'尚未登记补货批次。补货建议、工厂下单和实际到货分开记录。')}</div><p class="muted">超时按北京时间计算，预计出货当天不计超时；分批出货后，未出完的部分继续提醒。合格入库与当前可售分别记录。</p>`;
   $('#purchase-month').onchange=e=>{purchaseMonth=e.target.value;render();};bind('purchase-all',()=>{purchaseMonth='';render();});
-  bind('new-purchase',()=>{const key=crypto.randomUUID();showEditor('登记补货批次',skuSelect()+field('reference','工厂订单／补货批次号')+field('quantity','下单数量','','number')+select('status','下单状态',['计划','已下单'],'计划')+field('orderDate','计划／实际下单日',today(),'date')+field('expectedAt','预计到货日','','date')+field('warehouse','收货仓库','主仓')+area('note','工厂确认或计划说明'),d=>command('purchase',d,key),'登记仅记录事实，不会向工厂下单，也不会增加库存。');});
+  bind('new-purchase',()=>{const key=crypto.randomUUID(),readPrivate=privateReader();showEditor('登记补货批次',skuSelect()+field('reference','工厂订单／补货批次号')+field('quantity','下单数量','','number')+select('status','下单状态',['计划','已下单'],'计划')+field('orderDate','计划／实际下单日',today(),'date')+field('expectedShipAt','预计出货时间','','date')+field('warehouse','收货仓库','主仓')+area('note','工厂确认或计划说明')+(state.role==='admin'?privateFields():''),async d=>{const privateDetails=await readPrivate(d);delete d.balanceDue;delete d['purchase-contract-files'];return command('purchase',{...d,...(privateDetails?{privateDetails}:{})},key);},'登记仅记录事实，不会向工厂下单，也不会增加库存。');});
   bindAll('[data-purchase]',el=>detail(orders.find(o=>o.id===el.dataset.purchase)));bindImageFallback();
   function detail(o){
-    const x=summary(o),rs=receipts.filter(r=>r.purchaseId===o.id);
-    showEditor(o.reference,`<div class="wide">${productCell(sku(o.skuId))}<p>下单 ${num(o.quantity)} 件 · 预计到货 ${escape(o.expectedAt)} · ${escape(o.status)}</p><p>实收 ${x.received}，合格 ${x.good}，瑕疵 ${x.defect}，待检 ${x.pending}，已退厂 ${x.returned}</p><div class="actions">${o.status==='计划'&&can('operations')?button('confirm-purchase','确认已向工厂下单'):''}${o.status==='已下单'&&can('warehouse')?button('receive-purchase','登记本次到货',true):''}</div>${table(['收货单','合格／瑕疵／待检','退厂处理',''],rs.map(r=>[escape(r.reference),`${r.good} / ${r.defect} / ${r.pending}`,escape(r.returnDecision),can('warehouse')?`<button type="button" data-receipt="${r.id}">验收／退厂</button>`:'']))}<p class="muted">${escape(o.note)}</p></div>`,async()=>{});$('#save-editor').textContent='关闭';
+    const x=summary(o),sh=ship(o),rs=receipts.filter(r=>r.purchaseId===o.id),priv=privateRow(o);
+    const contracts=(priv?.contracts||[]).map(f=>`<a href="/api/stock-ops/purchase-contract?id=${encodeURIComponent(f.id)}" target="_blank" rel="noopener"><img loading="lazy" src="/api/stock-ops/purchase-contract?id=${encodeURIComponent(f.id)}" alt="${escape(f.name)}"><span>${escape(f.name)}</span></a>`).join('');
+    showEditor(o.reference,`<div class="wide">${productCell(sku(o.skuId))}<p>下单 ${num(o.quantity)} 件 · ${escape(o.status)}</p><div class="purchase-shipping-summary">预计出货时间 ${shippingCell(o)}</div>${o.expectedAt?`<p class="muted">预计到货日 ${escape(o.expectedAt)}</p>`:''}<p>实收 ${x.received}，合格 ${x.good}，瑕疵 ${x.defect}，待检 ${x.pending}，已退厂 ${x.returned}</p><div class="actions">${can('operations')?button('schedule-purchase','出货时间'):''}${o.status==='计划'&&can('operations')?button('confirm-purchase','确认已向工厂下单'):''}${o.status==='已下单'&&sh.shipped<o.quantity&&can('operations','warehouse')?button('ship-purchase','登记工厂出货'):''}${o.status==='已下单'&&can('warehouse')?button('receive-purchase','登记本次到货',true):''}</div>${(o.shipments||[]).length?table(['实际出货时间','出货数量','出货／物流单号'],o.shipments.map(r=>[escape(r.at),num(r.quantity),escape(r.reference)])):''}${table(['收货单','合格／瑕疵／待检','退厂处理',''],rs.map(r=>[escape(r.reference),`${r.good} / ${r.defect} / ${r.pending}`,escape(r.returnDecision),can('warehouse')?`<button type="button" data-receipt="${r.id}">验收／退厂</button>`:'']))}<p class="muted">${escape(o.note)}</p>${state.role==='admin'?`<section class="purchase-private"><h3>合同与尾款 <span>仅管理员可见</span></h3><p>尾款金额 <strong>${money(priv?.balanceDue)}</strong></p><div class="contract-gallery">${contracts||'<p class="muted">尚未上传合同图片</p>'}</div>${button('private-purchase','补充合同／尾款')}</section>`:''}${(o.scheduleHistory||[]).length?`<details><summary>出货时间变更记录</summary>${table(['登记时间','原预计出货','现预计出货','说明'],o.scheduleHistory.map(r=>[escape(r.updatedAt.slice(0,10)),escape(r.previous.expectedShipAt||'未登记'),escape(r.expectedShipAt),escape(r.note)]))}</details>`:''}</div>`,async()=>{});$('#save-editor').textContent='关闭';
+    bind('schedule-purchase',()=>showEditor('出货时间 · '+o.reference,field('expectedShipAt','预计出货时间',o.expectedShipAt||'','date')+field('expectedAt','预计到货日（选填，用于补货测算）',o.expectedAt||'','date',false)+area('note','工厂确认或变更说明'),d=>command('purchaseSchedule',{...d,purchaseId:o.id}),'旧日期及变更说明会保留。'));
+    bind('ship-purchase',()=>{const key=crypto.randomUUID();showEditor('登记工厂出货 · '+o.reference,field('at','实际出货时间',today(),'date')+field('quantity','本次出货数量',o.quantity-sh.shipped,'number')+field('reference','出货单号或物流单号')+area('note','工厂出货确认依据'),d=>command('purchaseShip',{...d,purchaseId:o.id},key),'可分批登记，全部出货后停止累计超时。工厂出货不会增加仓库可售库存。');});
+    bind('private-purchase',()=>{const readPrivate=privateReader();showEditor('合同与尾款 · '+o.reference,privateFields(priv),async d=>command('purchasePrivate',{purchaseId:o.id,privateDetails:await readPrivate(d)}),'仅管理员可查看和维护，新增图片会保留已有合同。');});
     bind('confirm-purchase',()=>showEditor('确认已下单',area('note','工厂下单确认依据'),d=>command('purchaseConfirm',{...d,purchaseId:o.id})));
     bind('receive-purchase',()=>{const key=crypto.randomUUID();showEditor('登记到货 · '+o.reference,field('reference','本次收货单号')+field('at','实际收货时间',localNow(),'datetime-local')+field('good','已验收合格数量','','number')+field('defect','已确认瑕疵数量','','number')+field('pending','尚未验收数量','','number')+select('returnDecision','瑕疵品处理',['待确认','需寄回','留仓处理'])+area('note','收货验收说明')+area('overReceiptReason','超收原因（未超收可留空）','',false),d=>command('purchaseReceive',{...d,purchaseId:o.id,at:iso(d.at)},key),'三个数量相加为本次实收。未知是否合格的数量填入待检，不填入合格。');});
     bindAll('[data-receipt]',el=>receiptDetail(o,rs.find(r=>r.id===el.dataset.receipt)));bindImageFallback();

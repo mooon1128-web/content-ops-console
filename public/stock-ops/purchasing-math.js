@@ -1,5 +1,18 @@
 export const addDays=(date,n)=>new Date(Date.parse(date+'T00:00:00Z')+n*86400000).toISOString().slice(0,10);
 export const dayCount=(a,b)=>Math.round((Date.parse(b+'T00:00:00Z')-Date.parse(a+'T00:00:00Z'))/86400000)+1;
+// Shipping and arrival are separate facts. Legacy expectedAt remains an arrival date.
+export function shippingSummary(order,receipts=[],asOf=new Date(Date.now()+8*3600000).toISOString().slice(0,10)){
+  const shipments=(order.shipments||[]).filter(r=>r.at<=asOf).slice().sort((a,b)=>a.at.localeCompare(b.at));
+  const shipped=shipments.reduce((n,r)=>n+r.quantity,0);
+  const received=receipts.filter(r=>r.purchaseId===order.id&&new Date(Date.parse(r.at)+8*3600000).toISOString().slice(0,10)<=asOf).reduce((n,r)=>n+r.good+r.defect+r.pending,0);
+  // A receipt proves those units left the factory, but does not prove the shipping day.
+  const outstanding=Math.max(0,order.quantity-Math.max(shipped,received));
+  let total=0;const completedAt=shipments.find(r=>(total+=r.quantity)>=order.quantity)?.at||null;
+  const expected=order.expectedShipAt||null;
+  return {expected,shipped,received,outstanding,completedAt,complete:outstanding===0,
+    overdueDays:expected&&outstanding>0?Math.max(0,dayCount(expected,asOf)-1):0,
+    lateDays:expected&&completedAt?Math.max(0,dayCount(expected,completedAt)-1):0};
+}
 export function purchaseSummary(order,receipts=[],inspections=[],returns=[]){
   const rs=receipts.filter(r=>r.purchaseId===order.id),ids=new Set(rs.map(r=>r.id)),is=inspections.filter(i=>ids.has(i.receiptId)),rt=returns.filter(r=>ids.has(r.receiptId));
   const sum=(rows,key)=>rows.reduce((s,r)=>s+(r[key]||0),0);
@@ -14,7 +27,7 @@ export function forecastSupply(input){
   const available=n('available',false,true),daily=n('daily',true),lead=n('leadDays',false,true),transport=n('transportDays',false,true),pause=n('pauseDays',false,true),buffer=n('bufferDays',false,true),safety=n('safetyDays'),moq=n('moq',true,true),pack=n('packSize',true,true),other=n('otherDemand',false,true);
   const wait=lead+transport+pause+buffer;if(wait>730)throw Error('到货等待期超过两年，请核对');
   if(!Array.isArray(input.inTransit||[])||(input.inTransit||[]).length>1000)throw Error('在途数据格式不正确');
-  const arrival=addDays(orderDate,wait),inTransit=(input.inTransit||[]).map(r=>{const at=date(r.at,'在途到货日期'),quantity=Number(r.quantity);if(!Number.isSafeInteger(quantity)||quantity<0)throw Error('在途数量无效');if(quantity&&at<orderDate)throw Error('有逾期未收货的补货批次，请先核实预计到货日');return {at,quantity};}).filter(r=>r.at>=start&&r.at<=target);
+  const arrival=addDays(orderDate,wait),inTransit=(input.inTransit||[]).map(r=>{if(!r.at)throw Error('待到货批次缺少预计到货日，请在“补货与到货 → 出货时间”补齐；预计出货时间不能代替到货日');const at=date(r.at,'在途到货日期'),quantity=Number(r.quantity);if(!Number.isSafeInteger(quantity)||quantity<0)throw Error('在途数量无效');if(quantity&&at<orderDate)throw Error('有逾期未收货的补货批次，请先核实预计到货日');return {at,quantity};}).filter(r=>r.at>=start&&r.at<=target);
   const inbound=inTransit.reduce((s,r)=>s+r.quantity,0),demand=daily*days+other,safe=daily*safety,shortage=Math.max(0,demand+safe-available-inbound);
   const quantity=shortage>1e-9?Math.ceil(Math.max(moq,Math.ceil(shortage))/pack)*pack:0;
   let stock=available-other,firstShortage=null,gapBeforeArrival=0;

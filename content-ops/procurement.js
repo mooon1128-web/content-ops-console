@@ -4,6 +4,18 @@ export function applyProcurement(s,action,p,user,now,h){
   const {fail,required,number,date,instant,stamp,skuExists,appendEvent}=h;
   const chinaDay=v=>new Date(Date.parse(v)+8*3600000).toISOString().slice(0,10);
   s.purchases??=[];s.purchaseReceipts??=[];s.purchaseInspections??=[];s.purchaseReturns??=[];s.forecasts??=[];
+  function savePrivate(purchaseId,details){
+    if(user.role!=='admin')throw fail(403,'合同与尾款仅管理员可登记');
+    const balanceDue=number(details.balanceDue,'尾款金额',{optional:true,decimal:true});
+    if(balanceDue!==null&&Math.abs(balanceDue*100-Math.round(balanceDue*100))>0.00001)throw fail(400,'尾款金额最多保留两位小数');
+    const contracts=details.contracts||[];
+    if(!Array.isArray(contracts)||contracts.length>20)throw fail(400,'每批次最多20张合同图片');
+    const files=contracts.map(f=>{if(!/^[a-f0-9-]{36}$/.test(f.id||'')||!['image/png','image/jpeg','image/webp'].includes(f.mime)||!Number.isSafeInteger(f.bytes)||f.bytes<=0||f.bytes>10*1024*1024)throw fail(400,'合同图片资料无效');return {id:f.id,name:required(f.name,'合同图片名称',200),mime:f.mime,bytes:f.bytes};});
+    s.purchasePrivate??={};const previous=s.purchasePrivate[purchaseId];
+    const all=[...(previous?.contracts||[])];for(const f of files)if(!all.some(x=>x.id===f.id))all.push(f);
+    if(all.length>20)throw fail(400,'每批次最多20张合同图片');
+    s.purchasePrivate[purchaseId]={...stamp({},user,now),balanceDue,contracts:all,history:[...(previous?.history||[]),...(previous?[{at:previous.updatedAt,balanceDue:previous.balanceDue,contracts:previous.contracts}]:[])]};
+  }
   if(action==='forecast'){
     skuExists(s,p.skuId);let result;try{result=forecastSupply(p.inputs)}catch(e){throw fail(400,e.message);}
     const record={...stamp({},user,now),skuId:p.skuId,inputs:structuredClone(p.inputs),result,basis:required(p.basis,'日均与库存假设依据',3000),status:'参考建议，未下单',salesSnapshot:s.monthly.filter(r=>r.skuId===p.skuId)};
@@ -13,12 +25,33 @@ export function applyProcurement(s,action,p,user,now,h){
     const ref=required(p.reference,'补货批次号');if(s.purchases.some(r=>r.reference===ref&&r.skuId===p.skuId))throw fail(409,'此批次的该SKU已经登记');
     const quantity=number(p.quantity,'下单数量');if(!quantity)throw fail(400,'下单数量须大于0');
     if(!['计划','已下单'].includes(p.status))throw fail(400,'请选择计划或已下单');
-    const row={...stamp({},user,now),reference:ref,skuId:skuExists(s,p.skuId),quantity,status:p.status,orderDate:date(p.orderDate),expectedAt:date(p.expectedAt),warehouse:required(p.warehouse,'仓库'),note:required(p.note,'工厂确认或计划说明',2000)};
-    if(row.expectedAt<row.orderDate)throw fail(400,'预计到货日不能早于下单日');
+    // Accept a legacy arrival-only form without silently changing its meaning.
+    const expectedShipAt=p.expectedShipAt?date(p.expectedShipAt):null,expectedAt=p.expectedAt?date(p.expectedAt):null;
+    if(!expectedShipAt&&!expectedAt)throw fail(400,'请填写预计出货时间');
+    const row={...stamp({},user,now),reference:ref,skuId:skuExists(s,p.skuId),quantity,status:p.status,orderDate:date(p.orderDate),expectedShipAt,expectedAt,warehouse:required(p.warehouse,'仓库'),note:required(p.note,'工厂确认或计划说明',2000)};
+    if(expectedShipAt&&expectedShipAt<row.orderDate)throw fail(400,'预计出货时间不能早于下单日');
+    if(expectedAt&&expectedAt<(expectedShipAt||row.orderDate))throw fail(400,'预计到货日不能早于出货或下单日');
     if(row.status==='已下单'&&row.orderDate>chinaDay(now))throw fail(400,'未来计划不能标为已下单');
-    s.purchases.push(row);return row;
+    s.purchases.push(row);if(p.privateDetails!==undefined)savePrivate(row.id,p.privateDetails);return row;
   }
   const order=s.purchases.find(r=>r.id===p.purchaseId);if(!order)throw fail(404,'补货批次不存在');
+  if(action==='purchasePrivate'){savePrivate(order.id,p.privateDetails||{});return {kind:'purchasePrivate',purchaseId:order.id};}
+  if(action==='purchaseSchedule'){
+    const expectedShipAt=date(p.expectedShipAt),expectedAt=p.expectedAt?date(p.expectedAt):null,note=required(p.note,'出货时间确认依据',2000);
+    if(expectedShipAt<order.orderDate)throw fail(400,'预计出货时间不能早于下单日');
+    if(expectedAt&&expectedAt<expectedShipAt)throw fail(400,'预计到货日不能早于出货时间');
+    order.scheduleHistory??=[];order.scheduleHistory.push({...stamp({},user,now),previous:{expectedShipAt:order.expectedShipAt||null,expectedAt:order.expectedAt||null},expectedShipAt,expectedAt,note});
+    order.expectedShipAt=expectedShipAt;order.expectedAt=expectedAt;order.updatedAt=now;return order;
+  }
+  if(action==='purchaseShip'){
+    if(order.status!=='已下单')throw fail(400,'请先确认该批次已经下单');
+    const reference=required(p.reference,'出货单号或物流单号'),at=date(p.at),quantity=number(p.quantity,'本次出货数量'),note=required(p.note,'出货依据',2000);
+    if(at<order.orderDate||at>chinaDay(now))throw fail(400,'实际出货时间须在下单后且已实际发生');
+    order.shipments??=[];
+    if(order.shipments.some(r=>r.reference===reference))throw fail(409,'这次出货已经登记');
+    if(!quantity||quantity+order.shipments.reduce((n,r)=>n+r.quantity,0)>order.quantity)throw fail(400,'出货数量须大于0且累计不能超过下单数量');
+    const row={...stamp({},user,now),reference,at,quantity,note};order.shipments.push(row);order.updatedAt=now;return row;
+  }
   if(action==='purchaseConfirm'){
     if(order.status!=='计划')throw fail(409,'批次已经确认');if(order.orderDate>chinaDay(now))throw fail(400,'未来计划不能标为已下单');order.status='已下单';order.confirmedAt=now;order.confirmation=required(p.note,'工厂下单确认依据',2000);order.updatedAt=now;order.actor=stamp({},user,now).actor;return order;
   }
