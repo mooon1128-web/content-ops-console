@@ -2,9 +2,11 @@ import { readFile,writeFile,mkdir,rename } from 'node:fs/promises';
 import { dirname,join } from 'node:path';
 import { randomUUID,createHash } from 'node:crypto';
 import { emptyStock,transact,fail } from './stock-model.js';
+import {createStockArchives} from './stock-archives.js';
 
 export function createStockStore({file,remote=null,stateId='stock-ops'}) {
   let queue=Promise.resolve();
+  const archives=createStockArchives({file,remote,stateId});
   // Immutable cost archives are stored once, not copied into every inventory revision.
   async function pack(state){
     if(!state.costWorkbook||state.costWorkbook._archiveKey)return state;
@@ -22,9 +24,13 @@ export function createStockStore({file,remote=null,stateId='stock-ops'}) {
     if(!workbook)throw fail(503,'成本资料读取失败，请稍后重试；不会用空白覆盖');
     return {...state,costWorkbook:workbook};
   }
-  async function load() {
-    if(remote){const rows=await remote(`/content_ops_state?id=eq.${encodeURIComponent(stateId)}&select=state,updated_at`);return {state:await unpack(rows?.[0]?.state||emptyStock()),version:rows?.[0]?.updated_at,exists:Boolean(rows?.length)};}
-    try{return {state:await unpack(JSON.parse(await readFile(file,'utf8'))),exists:true};}catch(e){if(e.code==='ENOENT'&&e.path===file)return {state:emptyStock(),exists:false};throw e;}
+  async function hydrate(state,mode='full'){
+    if(mode==='packed')return state;
+    return archives.unpack(mode==='full'?await unpack(state):state,mode);
+  }
+  async function load(mode='full') {
+    if(remote){const rows=await remote(`/content_ops_state?id=eq.${encodeURIComponent(stateId)}&select=state,updated_at`);return {state:await hydrate(rows?.[0]?.state||emptyStock(),mode),version:rows?.[0]?.updated_at,exists:Boolean(rows?.length)};}
+    try{return {state:await hydrate(JSON.parse(await readFile(file,'utf8')),mode),exists:true};}catch(e){if(e.code==='ENOENT'&&e.path===file)return {state:emptyStock(),exists:false};throw e;}
   }
   async function localWrite(state,current) {
     await mkdir(dirname(file),{recursive:true});
@@ -33,17 +39,17 @@ export function createStockStore({file,remote=null,stateId='stock-ops'}) {
   }
   function commit(command,user,context) {
     const operation=queue.then(async()=>{
-      const loaded=await load();
+      const loaded=await load('command');
       const now=new Date(Math.max(Date.now(),(Date.parse(loaded.state.updatedAt)||0)+1)).toISOString();
       const changed=transact(loaded.state,command,user,{...context,now});if(changed.replayed)return changed;
-      const persisted=await pack(changed.state),previous=await pack(loaded.state);
+      const persisted=await archives.pack(await pack(changed.state)),previous=await archives.pack(await pack(loaded.state));
       if(remote){
         if(loaded.exists){
           await remote('/content_ops_state?on_conflict=id',{method:'POST',headers:{Prefer:'resolution=ignore-duplicates,return=minimal'},body:JSON.stringify({id:`${stateId}-history-${loaded.state.revision}`,state:previous,updated_at:loaded.version})});
-          const rows=await remote(`/content_ops_state?id=eq.${encodeURIComponent(stateId)}&updated_at=eq.${encodeURIComponent(loaded.version)}`,{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify({state:persisted,updated_at:changed.state.updatedAt})});
+          const rows=await remote(`/content_ops_state?id=eq.${encodeURIComponent(stateId)}&updated_at=eq.${encodeURIComponent(loaded.version)}&select=updated_at`,{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify({state:persisted,updated_at:changed.state.updatedAt})});
           if(!rows?.length)throw fail(409,'共享数据刚被更新，请刷新后重新提交');
         }else{
-          const rows=await remote('/content_ops_state?on_conflict=id',{method:'POST',headers:{Prefer:'resolution=ignore-duplicates,return=representation'},body:JSON.stringify({id:stateId,state:persisted,updated_at:changed.state.updatedAt})});
+          const rows=await remote('/content_ops_state?on_conflict=id&select=updated_at',{method:'POST',headers:{Prefer:'resolution=ignore-duplicates,return=representation'},body:JSON.stringify({id:stateId,state:persisted,updated_at:changed.state.updatedAt})});
           if(!rows?.length)throw fail(409,'共享数据已被初始化，请刷新后重试');
         }
         await localWrite(persisted,previous).catch(()=>console.warn('Stock local mirror unavailable; shared database saved'));
@@ -51,5 +57,26 @@ export function createStockStore({file,remote=null,stateId='stock-ops'}) {
       return changed;
     });queue=operation.catch(()=>{});return operation;
   }
-  return {read:async()=>(await load()).state,commit,version:async()=>{if(!remote)return (await load()).state.updatedAt;const rows=await remote(`/content_ops_state?id=eq.${encodeURIComponent(stateId)}&select=updated_at`);return rows?.[0]?.updated_at?new Date(rows[0].updated_at).toISOString():null;}};
+  async function receipt(requestId,user){
+    if(typeof requestId!=='string'||!requestId||requestId.length>100)throw fail(400,'请求编号无效');
+    const data=remote?(await remote(`/content_ops_state?id=eq.${encodeURIComponent(stateId)}&select=requests:state->requests,revision:state->revision,updated_at`))?.[0]:{...(await load('workspace')).state};
+    const r=data?.requests?.find(r=>r.id===requestId&&r.actor===user.id);
+    return {committed:Boolean(r),requestId,...(r?{revision:r.revision,updatedAt:data.updated_at||data.updatedAt}:{})};
+  }
+  function optimize(){
+    const operation=queue.then(async()=>{
+      const loaded=await load('packed');if(!loaded.exists||!Array.isArray(loaded.state.skus))return {status:'empty'};
+      const before=JSON.stringify(loaded.state),persisted=await archives.pack(await pack(loaded.state)),after=JSON.stringify(persisted);
+      if(before===after)return {status:'complete',changed:false,bytes:Buffer.byteLength(after)};
+      // Only representation changes. Revision, timestamps and every business value
+      // stay identical; a concurrent writer causes the optimization to stop.
+      if(remote){
+        const rows=await remote(`/content_ops_state?id=eq.${encodeURIComponent(stateId)}&updated_at=eq.${encodeURIComponent(loaded.version)}&select=updated_at`,{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify({state:persisted})});
+        if(!rows?.length)return {status:'deferred',reason:'concurrent update'};
+      }
+      await localWrite(persisted,loaded.state);
+      return {status:'complete',changed:true,beforeBytes:Buffer.byteLength(before),afterBytes:Buffer.byteLength(after)};
+    });queue=operation.catch(()=>{});return operation;
+  }
+  return {read:async(mode='full')=>(await load(mode)).state,hydrate,commit,receipt,optimize,version:async()=>{if(!remote)return (await load('workspace')).state.updatedAt;const rows=await remote(`/content_ops_state?id=eq.${encodeURIComponent(stateId)}&select=updated_at`);return rows?.[0]?.updated_at?new Date(rows[0].updated_at).toISOString():null;}};
 }
