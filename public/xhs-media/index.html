@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>小红书媒介投放跟踪台</title>
-  <link rel="stylesheet" href="styles.css?v=20261123-bulk-v1" />
+  <link rel="stylesheet" href="styles.css?v=20261123-cooperation-v1" />
 </head>
 <body>
   <header class="topbar">
@@ -307,26 +307,26 @@
         <input type="hidden" name="productCategory" />
         <input type="hidden" name="productStatus" />
         <input type="hidden" name="productUrl" />
-        <label class="wide product-picker-field">产品
+        <label class="wide product-picker-field">合作产品
           <div class="product-picker">
             <input name="product" required maxlength="300" placeholder="点击选择产品，或手动用、隔开多个产品" autocomplete="off" />
             <button type="button" id="product-picker-toggle" class="picker-toggle" aria-label="展开产品列表">⌄</button>
-            <button type="button" id="sync-wholesale-products" class="sync-products-button">同步订货产品</button>
             <div id="product-picker-menu" class="product-picker-menu" hidden>
               <input id="product-picker-search" class="product-picker-search" placeholder="在这里搜索产品名称/货号" autocomplete="off" />
               <div id="product-picker-options" class="product-picker-options"></div>
             </div>
           </div>
         </label>
+        <div class="wide catalog-sync-row"><button type="button" id="sync-wholesale-products" class="secondary-button sync-products-button">同步订货产品</button><span id="catalog-sync-status" role="status" aria-live="polite">正在连接订货后台…</span></div>
         <div id="duplicate-cooperation-panel" class="duplicate-cooperation-panel wide" hidden></div>
         <label>库存状态<input name="productStatusDisplay" disabled /></label>
         <label>样品数量<input name="sampleQuantity" type="number" min="1" step="1" /></label>
-        <label>自动产品成本<input name="productCostDisplay" disabled /></label>
-        <label class="wide product-link-row"><a id="product-stock-link" href="../wholesale-portal/partner.html" target="_blank" rel="noreferrer">打开订货站查看库存</a></label>
-        <label>内容类型<select name="contentType"></select></label>
+        <label data-admin-cost>自动产品成本<input name="productCostDisplay" disabled /></label>
+        <label class="wide product-link-row"><a id="product-stock-link" href="https://pupuhome-wholesale.onrender.com/partner.html" target="_blank" rel="noreferrer">打开订货站查看库存</a></label>
+        <input type="hidden" name="contentType" />
         <label>平台<select name="platform"></select></label>
         <label>联系方式<input name="contactMethod" maxlength="40" placeholder="小红书私信、微信、邮箱" /></label>
-        <label>负责人<input name="owner" maxlength="24" placeholder="例如：Chloe" /></label>
+        <label>负责人<input name="owner" readonly /><small>新建记录自动绑定登录账号</small></label>
         <label>投放状态<select name="status"></select></label>
         <label>快递单号<input name="sampleTrackingNumber" maxlength="80" placeholder="填写后自动变成已寄样" /></label>
         <label>约定发布日期<input name="agreedPublishAt" type="date" /></label>
@@ -334,7 +334,7 @@
         <input name="sampleStatus" type="hidden" />
         <input name="sampleDeliveredAt" type="hidden" />
         <input name="deliverableProgress" type="hidden" />
-        <input name="requiresDraftReview" type="hidden" />
+
         <input name="draftStatus" type="hidden" />
         <input name="draftSubmittedAt" type="hidden" />
         <input name="lastContactAt" type="hidden" />
@@ -343,18 +343,27 @@
         <input name="plannedAt" type="hidden" />
         <label>合作费<input name="fee" type="number" min="0" step="1" /></label>
         <label>样品/履约成本<input name="extraCost" type="number" min="0" step="1" /></label>
-        <label>曝光<input name="exposure" type="number" min="0" step="1" /></label>
-        <label>阅读/点击<input name="clicks" type="number" min="0" step="1" /></label>
-        <label>点赞<input name="likes" type="number" min="0" step="1" /></label>
-        <label>收藏<input name="saves" type="number" min="0" step="1" /></label>
-        <label>评论<input name="comments" type="number" min="0" step="1" /></label>
-        <label>分享<input name="shares" type="number" min="0" step="1" /></label>
-        <label>新增私信/线索<input name="leads" type="number" min="0" step="1" /></label>
-        <label>成交单数<input name="orders" type="number" min="0" step="1" /></label>
-        <label>GMV<input name="gmv" type="number" min="0" step="1" /></label>
+        <fieldset class="wide cooperation-options"><legend>发布内容</legend><div class="choice-row">
+          <label><input type="radio" name="publicationFormat" value="合集" />合集</label>
+          <label><input type="radio" name="publicationFormat" value="单推" />单推</label>
+          <label><input type="radio" name="publicationFormat" value="" checked />待确认</label>
+        </div></fieldset>
+        <fieldset class="wide cooperation-options"><legend>封面露出</legend><div class="choice-row">
+          <label><input type="radio" name="coverExposure" value="yes" />需要封面露出</label>
+          <label><input type="radio" name="coverExposure" value="no" />不要求</label>
+          <label><input type="radio" name="coverExposure" value="" checked />待确认</label>
+        </div></fieldset>
+        <fieldset class="wide cooperation-options"><legend>转化方式（可多选）</legend><div class="choice-row">
+          <label><input type="checkbox" name="conversionMethods" value="直接带链接" />直接带链接</label>
+          <label><input type="checkbox" name="conversionMethods" value="评论回复" />评论回复</label>
+        </div></fieldset>
+        <label class="wide">具体合作内容<textarea name="cooperationDetails" rows="4" placeholder="例如：合集 vlog 植入，坑位 1/2/3 随机；外观展示＋收纳过程；选题、时长、口播、评论区配合等具体要求"></textarea></label>
+        <label>稿件审核<select name="requiresDraftReview"><option value="yes">需要审核</option><option value="no">无需审核</option></select></label>
+        <label>最晚提交审核稿<input name="draftDeadline" type="date" /><small>未填写时按约定发布前 1 天</small></label>
+        <label>改期最晚告知日期<input name="changeNoticeDeadline" type="date" /><small>未填写时按约定发布前 7 天</small></label>
         <label>笔记链接<input name="url" type="url" placeholder="https://www.xiaohongshu.com/..." /></label>
         <label class="wide">笔记标题<input name="noteTitle" maxlength="90" placeholder="实际发布标题或脚本主题" /></label>
-        <label class="wide">备注<textarea name="notes" rows="3" placeholder="建联情况、脚本修改、评论区反馈、后续动作"></textarea></label>
+        <label class="wide">内部跟进备注<textarea name="notes" rows="3" placeholder="建联情况、脚本修改、评论区反馈、后续动作"></textarea></label>
       </div>
       <div id="placement-delete-confirm" class="delete-confirm" hidden>
         <p id="placement-delete-label"></p>
@@ -518,6 +527,6 @@
   <datalist id="creator-type-list"></datalist>
   <datalist id="creator-name-list"></datalist>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="app.js?v=20261123-bulk-v1"></script>
+  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="app.js?v=20261123-cooperation-v1"></script>
 </body>
 </html>
