@@ -79,6 +79,35 @@ test('full browser storage does not block cloud writes or subsequent edits',asyn
  c.edit(s=>s.creators[0].fans=3);assert.equal(await c.sync.flush(),true);assert.equal((await f.store.read()).creators[0].fans,3);assert.equal(c.sync.storageOK,false);
  }finally{await f.close()}
 });
+test('adding creators with full browser storage preserves other staff edits and is visible in a fresh session',async()=>{
+ const f=await fixture();try{
+ const quota=async()=>{throw Object.assign(Error('storage full'),{name:'QuotaExceededError'})};
+ const a=client(network(f.store),{read:quota,write:quota,clear:quota}),b=client(network(f.store));
+ await a.sync.start();await b.sync.start();
+ b.edit(s=>s.creators[0].notes='Newer staff record');await b.sync.flush();
+ a.edit(s=>s.creators.push({id:'synthetic-new-creator',name:'Synthetic new creator',notes:''}));
+ assert.equal(await a.sync.flush(),true);assert.equal(a.sync.storageOK,false);
+ const fresh=client(network(f.store));await fresh.sync.start();
+ assert.equal(fresh.state.creators.length,2);
+ assert.equal(fresh.state.creators[0].notes,'Newer staff record');
+ assert.equal(fresh.state.creators[1].id,'synthetic-new-creator');
+ assert.deepEqual(plain(fresh.state.placements),seed.placements);
+ assert.equal(a.sync.pending,false);
+ }finally{await f.close()}
+});
+test('an offline new creator with full storage stays pending and retries exactly once after reconnection',async()=>{
+ const f=await fixture();try{
+ let offline=true;const net=network(f.store),quota=async()=>{throw Error('storage full')};
+ const c=client(async(u,o)=>{if(offline&&o?.method==='PATCH')throw Error('offline');return net(u,o)},
+ {read:quota,write:quota,clear:quota});
+ await c.sync.start();c.edit(s=>s.creators.push({id:'synthetic-offline-creator',name:'Synthetic offline creator'}));
+ assert.equal(await c.sync.flush(),false);assert.equal(c.sync.pending,true);
+ assert.equal((await f.store.read()).creators.length,1);assert.equal(c.state.creators.length,2);
+ assert.ok(c.sync.exportPending().operations.length);
+ offline=false;assert.equal(await c.sync.flush(),true);assert.equal(await c.sync.flush(),true);
+ assert.equal((await f.store.read()).creators.length,2);assert.equal((await f.store.raw())._audit.length,1);
+ }finally{await f.close()}
+});
 test('a lost acknowledgement retries the same request and keeps edits made in flight',async()=>{
  const f=await fixture();try{
  const requests=[];let lost=true;const net=network(f.store);

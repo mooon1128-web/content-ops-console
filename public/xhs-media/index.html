@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>小红书媒介投放跟踪台</title>
-  <link rel="stylesheet" href="styles.css?v=20261122-shared-v3" />
+  <link rel="stylesheet" href="styles.css?v=20261123-ledger-v1" />
 </head>
 <body>
   <header class="topbar">
@@ -191,6 +191,7 @@
           <tbody id="creator-table"></tbody>
         </table>
       </div>
+      <div id="creator-pagination" class="table-pagination" aria-label="达人分页"></div>
       <section class="panel blacklist-panel">
         <div class="panel-head">
           <h2>黑名单博主</h2>
@@ -348,6 +349,11 @@
         <label class="wide">笔记标题<input name="noteTitle" maxlength="90" placeholder="实际发布标题或脚本主题" /></label>
         <label class="wide">备注<textarea name="notes" rows="3" placeholder="建联情况、脚本修改、评论区反馈、后续动作"></textarea></label>
       </div>
+      <div id="placement-delete-confirm" class="delete-confirm" hidden>
+        <p id="placement-delete-label"></p>
+        <button type="button" class="danger-button" data-confirm-placement-delete>确认删除这条投放</button>
+        <button type="button" class="secondary-button" data-cancel-placement-delete>取消</button>
+      </div>
       <div class="dialog-actions">
         <div class="dialog-action-group">
           <button type="button" class="danger-button" data-delete>删除</button>
@@ -489,6 +495,6 @@
   <datalist id="creator-type-list"></datalist>
   <datalist id="creator-name-list"></datalist>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="app.js?v=20261122-shared-v3"></script>
+  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="app.js?v=20261123-ledger-v1"></script>
 </body>
 </html>

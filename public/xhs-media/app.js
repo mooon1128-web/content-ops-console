@@ -253,6 +253,10 @@
   let activeBriefDraft = null;
   let activeOutreachCreatorIds = [];
   let selectedCreatorIds = new Set();
+  let creatorPage = 1;
+  const creatorPageSize = 50;
+  let pendingPlacementDeletion = null;
+  let syncMessage = "";
   let apiOnline = false;
   let applyingServerState = false;
   let remoteSaveTimer = null;
@@ -2405,7 +2409,11 @@
     `).join("");
     renderClassificationWorkbench();
 
-    const rows = filteredCreators();
+    const allRows = filteredCreators();
+    const pageCount = Math.max(1, Math.ceil(allRows.length / creatorPageSize));
+    creatorPage = Math.min(creatorPage, pageCount);
+    const rows = allRows.slice((creatorPage - 1) * creatorPageSize, creatorPage * creatorPageSize);
+    $("#creator-pagination").innerHTML = `<span>共 ${allRows.length} 位 · 第 ${creatorPage} / ${pageCount} 页 · 每页 ${creatorPageSize} 位</span><button type="button" data-creator-page="-1" ${creatorPage === 1 ? "disabled" : ""}>上一页</button><button type="button" data-creator-page="1" ${creatorPage === pageCount ? "disabled" : ""}>下一页</button>`;
     $("#creator-table").innerHTML = rows.length ? rows.map((item) => {
       const delayTag = creatorDelayTag(item);
       const cooperatedProducts = creatorCooperatedProducts(item);
@@ -2458,7 +2466,7 @@
         </tr>
       `;
     }).join("") : `<tr><td colspan="11"><div class="empty-state">暂无匹配达人。</div></td></tr>`;
-    const selectableRows = rows.filter(canSelectCreator);
+    const selectableRows = allRows.filter(canSelectCreator);
     const selectAll = $("#select-all-outreach");
     if (selectAll) {
       selectAll.checked = selectableRows.length > 0 && selectableRows.every((item) => selectedCreatorIds.has(item.id));
@@ -2907,16 +2915,14 @@
   function renderAll() {
     renderPeriodControls();
     renderProductBoard();
-    renderCreators();
-    renderMetrics();
-    renderBudgetPanel();
-    renderMonthlyStats();
-    renderAnnualTrend();
-    renderStatusBoard();
-    renderRanking();
-    renderFollowups();
-    renderTable();
-    renderFeedback();
+    const view = $(".tab.active")?.dataset.view || "overview";
+    if (view === "creators") renderCreators();
+    else if (view === "followups") renderFollowups();
+    else if (view === "placements") renderTable();
+    else if (view === "feedback") renderFeedback();
+    else {
+      renderMetrics();renderBudgetPanel();renderMonthlyStats();renderAnnualTrend();renderStatusBoard();renderRanking();
+    }
   }
 
   function fillSelect(selector, values, allLabel) {
@@ -3094,6 +3100,12 @@
     const dialog = $("#placement-dialog");
     const form = $("#placement-form");
     form.reset();
+    if (pendingPlacementDeletion) { toast("上一条删除仍在等待服务器确认，请先查看同步状态"); return; }
+    $("#placement-delete-confirm").hidden = true;
+    $("[data-delete]", form).disabled = false;
+    $("[type='submit']", form).disabled = false;
+    const feedback = $("[data-dialog-status]", dialog);
+    if (feedback) feedback.textContent = "";
     hydrateControls();
     $("[data-delete]", form).style.visibility = item ? "visible" : "hidden";
     if (item) {
@@ -3233,6 +3245,7 @@
   function toast(message) {
     const node = $("#toast");
     node.textContent = message;
+    $$("dialog[open] [data-dialog-status]").forEach(el => { el.textContent = message; });
     node.classList.add("show");
     setTimeout(() => node.classList.remove("show"), 1800);
   }
@@ -3420,6 +3433,7 @@
     });
     $("#placement-form").addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (pendingPlacementDeletion) { toast("删除仍待服务器确认，请勿重复保存这条记录"); return; }
       const next = formToPlacement(event.currentTarget);
       const index = placements.findIndex((item) => item.id === next.id);
       if (index >= 0) placements[index] = next;
@@ -3431,15 +3445,10 @@
       toast("投放记录已保存，正在同步云端");
       syncServerInBackground();
     });
-    $("[data-delete]").addEventListener("click", async () => {
-      const id = $("#placement-form").elements.id.value;
-      placements = placements.filter((item) => item.id !== id);
-      savePlacements();
-      syncCreatorsFromPlacements();
-      if(!await flushServerSave()){toast("修改尚未获服务器确认，请查看顶部同步状态");return;}
-      $("#placement-dialog").close();
-      renderAll();
-      toast("投放记录已删除");
+    $("[data-delete]").addEventListener("click", () => requestPlacementDeletion($("#placement-form").elements.id.value));
+    $("#placement-delete-confirm").addEventListener("click", event => {
+      if (event.target.closest("[data-confirm-placement-delete]")) deletePlacement($("#placement-form").elements.id.value);
+      if (event.target.closest("[data-cancel-placement-delete]")) $("#placement-delete-confirm").hidden = true;
     });
     $("#placement-form").addEventListener("click", (event) => {
       const placementId = event.target.closest("[data-duplicate-placement]")?.dataset.duplicatePlacement;
@@ -3453,14 +3462,7 @@
       const editId = event.target.closest("[data-edit]")?.dataset.edit;
       const removeId = event.target.closest("[data-remove]")?.dataset.remove;
       if (editId) openForm(placements.find((item) => item.id === editId));
-      if (removeId) {
-        placements = placements.filter((item) => item.id !== removeId);
-        savePlacements();
-        syncCreatorsFromPlacements();
-        if(!await flushServerSave()){toast("修改尚未获服务器确认，请查看顶部同步状态");return;}
-        renderAll();
-        toast("投放记录已删除");
-      }
+      if (removeId) requestPlacementDeletion(removeId);
     });
     $("#followup-list").addEventListener("click", (event) => {
       const editId = event.target.closest("[data-edit]")?.dataset.edit;
@@ -3493,8 +3495,18 @@
     ["search-input", "status-filter", "content-filter", "result-filter", "data-entry-filter", "metric-sort"].forEach((id) => {
       $(`#${id}`).addEventListener("input", renderTable);
     });
+    let creatorSearchTimer;
     ["creator-search", "creator-type-filter", "creator-tier-filter", "creator-outreach-filter", "creator-added-filter", "creator-contact-filter", "creator-sort"].forEach((id) => {
-      $(`#${id}`).addEventListener("input", renderCreators);
+      $(`#${id}`).addEventListener("input", () => {
+        creatorPage = 1; clearTimeout(creatorSearchTimer);
+        if (id === "creator-search") creatorSearchTimer = setTimeout(renderCreators, 150);
+        else renderCreators();
+      });
+    });
+    $("#creator-pagination").addEventListener("click", event => {
+      const button = event.target.closest("[data-creator-page]");
+      if (!button || button.disabled) return;
+      creatorPage += Number(button.dataset.creatorPage);renderCreators();
     });
     $("#product-board").addEventListener("click", (event) => {
       if (event.target.closest("a")) return;
@@ -3757,6 +3769,57 @@
   function switchView(name) {
     $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === name));
     $$(".view").forEach((view) => view.classList.toggle("active", view.id === `${name}-view`));
+    renderAll();
+  }
+
+  function requestPlacementDeletion(id) {
+    if (pendingPlacementDeletion) { toast("删除正在提交，请勿重复点击"); return; }
+    const item = placements.find(row => row.id === id);
+    if (!item) { toast("这条记录已不存在，请关闭窗口查看最新台账"); return; }
+    if (!$("#placement-dialog").open) openForm(item);
+    $("#placement-delete-label").textContent = `确认删除「${item.creator || "未命名博主"} · ${item.product || "未填写产品"}」这条投放记录？`;
+    $("#placement-delete-confirm").hidden = false;
+    $("#placement-delete-confirm").scrollIntoView({block:"nearest"});
+  }
+
+  function updatePlacementDeletion() {
+    if (!pendingPlacementDeletion) return;
+    const id = pendingPlacementDeletion.id;
+    if (cloud?.base && !cloud.base.placements.some(row => row.id === id) && !cloud.conflict) {
+      pendingPlacementDeletion = null;
+      if ($("#placement-form").elements.id.value === id) $("#placement-dialog").close();
+      $("[data-delete]").disabled = false;
+      $("#placement-form [type='submit']").disabled = false;
+      renderAll();toast("投放记录已删除，服务器已确认");return;
+    }
+    const message = cloud?.conflict ? "删除未完成：存在版本冲突。请先导出待同步修改，再关闭窗口核对；未覆盖同事的新记录。"
+      : cloud?.stopped ? "登录已失效，删除尚未确认。请导出待同步修改，再关闭窗口重新登录。"
+      : cloud?.online ? "正在删除，等待服务器确认，请勿重复点击…"
+      : "删除尚未获服务器确认，联网后会自动重试。请勿刷新，可先导出待同步修改。";
+    toast(syncMessage ? `${message} ${syncMessage}` : message);
+  }
+
+  async function deletePlacement(id) {
+    if (pendingPlacementDeletion) return;
+    if (!cloud?.ready || cloud.conflict || cloud.stopped) { toast("当前无法删除，请先处理同步提示；记录仍保留"); return; }
+    const item = placements.find(row => row.id === id);
+    if (!item) { toast("这条记录已不存在"); return; }
+    pendingPlacementDeletion = {id};
+    $("#placement-delete-confirm").hidden = true;
+    $("[data-delete]").disabled = true;
+    $("#placement-form [type='submit']").disabled = true;
+    placements = placements.filter(row => row.id !== id);
+    // Only detach this placement; never rebuild all creator profiles on deletion.
+    creators = creators.map(row => Array.isArray(row.placementIds) && row.placementIds.includes(id)
+      ? {...row, placementIds:row.placementIds.filter(value => value !== id), cooperationCount:Math.max(0, number(row.cooperationCount) - 1)} : row);
+    savePlacements();updatePlacementDeletion();
+    try { await flushServerSave(); } catch (error) { syncMessage = error.message; }
+    updatePlacementDeletion();
+  }
+
+  function allowSyncInteraction(event) {
+    if (event.target.closest('.shared-status-panel,[data-close],[data-dialog-export],[data-dialog-login]') || event.type === 'keydown' && event.key === 'Escape') return true;
+    return Boolean(cloud?.ready && !cloud.conflict && !cloud.stopped);
   }
 
   function hasPendingLocalSync(){return Boolean(cloud?.pending||cloud?.conflict);}
@@ -3768,28 +3831,36 @@
     const session=await response.json();
     const syncPanel=document.createElement('div');syncPanel.className='shared-status-panel';
     syncPanel.innerHTML='<strong id="shared-user"></strong><span id="shared-version"></span><a href="/stock-ops/">经营协作台</a><button id="shared-export-pending">导出待同步修改</button><button id="shared-recover" hidden>核对冲突</button><button id="legacy-export">导出旧设备缓存</button><button id="shared-logout">退出</button>';
-    document.body.prepend(syncPanel);$('#shared-user').textContent=session.user.name+' · PR系统';
+    document.body.prepend(syncPanel);$('#shared-user').textContent=session.user.name+' · PR系统 · 11/23 台账修复版';
+    $$("dialog").forEach(dialog => {
+      const panel = document.createElement("div");panel.className="dialog-sync-feedback";
+      panel.innerHTML='<p data-dialog-status role="status" aria-live="polite"></p><button type="button" class="secondary-button small" data-dialog-export>导出待同步修改</button><a data-dialog-login href="/xhs-media/login" target="_blank" rel="noopener">重新登录</a>';
+      (dialog.querySelector("form") || dialog).append(panel);
+      panel.querySelector("[data-dialog-export]").onclick=()=>downloadRecovery(cloud.exportPending(),'PR待同步更改_'+today()+'.json');
+    });
     cloud=new SharedSync({url:API_URL,versionUrl:'/api/xhs-media/version',key:'xhs-v3:'+session.user.id,
       shape:{creators:'rows',placements:'rows',customCreatorTypes:'value',monthlyBudgets:'map'},
       read:()=>({creators,placements,customCreatorTypes,monthlyBudgets}),
       write:s=>{creators=s.creators||[];placements=s.placements||[];customCreatorTypes=s.customCreatorTypes||[];monthlyBudgets=s.monthlyBudgets||{};},
       render:()=>{hydrateControls();renderAll();},busy:()=>hasOpenEditorDialog()||document.activeElement?.matches('input,textarea,select'),
       authExpired:()=>{if(cloud?.pending||cloud?.conflict){toast('登录已失效，请先导出待同步修改，再重新登录');document.body.classList.add('shared-unavailable');}else location.replace('/xhs-media/login')},
-      status:s=>{apiOnline=s.online;hasCurrentSessionChanges=s.pending;
+      status:s=>{apiOnline=s.online;hasCurrentSessionChanges=s.pending;syncMessage=s.message||'';
         const message=s.conflict?'保存冲突：修改已保留，请核对':s.pending?(s.online?'正在保存共享数据':'离线：修改待同步'):s.ready&&s.online?'已获服务器确认':'正在连接共享数据';
         $('#save-status').textContent=message+(s.message?' · '+s.message:'')+(!s.storageOK&&s.pending?' · 本机草稿存储不可用，请勿关闭页面，可先导出':'');
         $('#shared-version').textContent='最近确认 '+(s.updatedAt?new Date(s.updatedAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'尚未读取');
         $('#shared-recover').hidden=!s.conflict;
         document.body.classList.toggle('shared-unavailable',!s.ready||s.conflict);
+        if(pendingPlacementDeletion)updatePlacementDeletion();
+        else if(s.conflict||cloud?.stopped)$$('dialog[open] [data-dialog-status]').forEach(el=>el.textContent=$('#save-status').textContent+'；可导出修改并关闭窗口处理');
       }
     });
     $('#shared-export-pending').onclick=()=>downloadRecovery(cloud.exportPending(),'PR待同步更改_'+today()+'.json');
-    $('#shared-recover').onclick=async()=>{downloadRecovery(cloud.exportPending(),'PR冲突更改_'+today()+'.json');if(confirm('已导出双方差异所需的本机修改。是否暂以云端版本继续，并清除这份待同步草稿？原修改请依据导出文件核对后重新登记。'))await cloud.discardAfterExport();};
+    $('#shared-recover').onclick=async()=>{downloadRecovery(cloud.exportPending(),'PR冲突更改_'+today()+'.json');if(confirm('已导出双方差异所需的本机修改。是否暂以云端版本继续，并清除这份待同步草稿？原修改请依据导出文件核对后重新登记。')){pendingPlacementDeletion=null;await cloud.discardAfterExport();}};
     $('#legacy-export').onclick=()=>{const copy={};for(let i=0;i<localStorage.length;i++){const key=localStorage.key(i);if(key?.startsWith('xhs_media'))copy[key]=localStorage.getItem(key);}downloadRecovery(copy,'PR旧设备缓存_仅供核对_'+today()+'.json');};
     $('#shared-logout').onclick=async()=>{if(hasPendingLocalSync()&&!confirm('仍有未同步修改，建议先导出。确定退出？'))return;cloud.stop();await fetch('/api/content-ops/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});location.replace('/xhs-media/login');};
     document.body.classList.add('shared-unavailable');
     for(const type of ['click','submit','input','change','keydown'])document.addEventListener(type,event=>{
-      if((!cloud.ready||cloud.conflict||cloud.stopped)&&!event.target.closest('.shared-status-panel')){event.preventDefault();event.stopImmediatePropagation();}
+      if(!allowSyncInteraction(event)){event.preventDefault();event.stopImmediatePropagation();if(event.type==='click')toast(syncMessage||'当前无法提交，请先导出修改并关闭窗口处理登录或同步冲突');}
     },true);
     hydrateControls();bindEvents();renderAll();await cloud.start();loadWholesaleProducts();
     window.addEventListener('online',()=>cloud.refresh());window.addEventListener('focus',()=>cloud.refresh());
