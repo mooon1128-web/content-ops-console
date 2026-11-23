@@ -1,4 +1,5 @@
 import {purchaseSummary,forecastSupply} from '../public/stock-ops/purchasing-math.js';
+import {balanceCents,paymentDueDate} from '../public/stock-ops/purchase-balances.js';
 
 export function applyProcurement(s,action,p,user,now,h){
   const {fail,required,number,date,instant,stamp,skuExists,appendEvent}=h;
@@ -12,9 +13,10 @@ export function applyProcurement(s,action,p,user,now,h){
     if(!Array.isArray(contracts)||contracts.length>20)throw fail(400,'每批次最多20张合同图片');
     const files=contracts.map(f=>{if(!/^[a-f0-9-]{36}$/.test(f.id||'')||!['image/png','image/jpeg','image/webp'].includes(f.mime)||!Number.isSafeInteger(f.bytes)||f.bytes<=0||f.bytes>10*1024*1024)throw fail(400,'合同图片资料无效');return {id:f.id,name:required(f.name,'合同图片名称',200),mime:f.mime,bytes:f.bytes};});
     s.purchasePrivate??={};const previous=s.purchasePrivate[purchaseId];
+    if(previous?.settlement?.status==='已结清'&&balanceDue!==previous.balanceDue)throw fail(409,'该尾款已结清，请先恢复未结清再修改金额');
     const all=[...(previous?.contracts||[])];for(const f of files)if(!all.some(x=>x.id===f.id))all.push(f);
     if(all.length>20)throw fail(400,'每批次最多20张合同图片');
-    s.purchasePrivate[purchaseId]={...stamp({},user,now),balanceDue,contracts:all,history:[...(previous?.history||[]),...(previous?[{at:previous.updatedAt,balanceDue:previous.balanceDue,contracts:previous.contracts}]:[])]};
+    s.purchasePrivate[purchaseId]={...previous,...stamp(previous||{},user,now),balanceDue,contracts:all,history:[...(previous?.history||[]),...(previous?[{at:previous.updatedAt,balanceDue:previous.balanceDue,contracts:previous.contracts}]:[])]};
   }
   if(action==='forecast'){
     skuExists(s,p.skuId);let result;try{result=forecastSupply(p.inputs)}catch(e){throw fail(400,e.message);}
@@ -35,6 +37,24 @@ export function applyProcurement(s,action,p,user,now,h){
     s.purchases.push(row);if(p.privateDetails!==undefined)savePrivate(row.id,p.privateDetails);return row;
   }
   const order=s.purchases.find(r=>r.id===p.purchaseId);if(!order)throw fail(404,'补货批次不存在');
+  if(action==='purchaseSettle'||action==='purchaseReopen'){
+    if(user.role!=='admin')throw fail(403,'尾款结清情况仅管理员可维护');
+    const priv=s.purchasePrivate?.[order.id];
+    if(!priv)throw fail(400,'请先补充尾款金额');
+    const previous=priv.settlement||null;
+    if(action==='purchaseSettle'){
+      if(previous?.status==='已结清')throw fail(409,'这笔尾款已标记结清');
+      const amountCents=balanceCents(priv.balanceDue);if(amountCents===null)throw fail(400,'请先补充有效尾款金额');
+      const settledAt=date(p.settledAt);if(settledAt>chinaDay(now)||settledAt<order.orderDate)throw fail(400,'实际结清日期须在下单日之后且不能晚于今天');
+      priv.settlement={status:'已结清',amountCents,settledAt,expectedShipAt:order.expectedShipAt||null,dueAt:paymentDueDate(order.expectedShipAt),markedAt:now,actor:stamp({},user,now).actor};
+    }else{
+      if(previous?.status!=='已结清')throw fail(409,'这笔尾款当前未结清');
+      priv.settlement=null;
+    }
+    priv.settlementHistory??=[];priv.settlementHistory.push({action,at:now,actor:stamp({},user,now).actor,previous,current:priv.settlement});
+    priv.updatedAt=now;priv.actor=stamp({},user,now).actor;
+    return {kind:action,purchaseId:order.id};
+  }
   if(action==='purchasePrivate'){savePrivate(order.id,p.privateDetails||{});return {kind:'purchasePrivate',purchaseId:order.id};}
   if(action==='purchaseSchedule'){
     const expectedShipAt=date(p.expectedShipAt),expectedAt=p.expectedAt?date(p.expectedAt):null,note=required(p.note,'出货时间确认依据',2000);

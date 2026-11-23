@@ -8,7 +8,7 @@ import {currentWholesaleProducts,catalogCostInfo} from './wholesale-catalog.js';
 import RecordOps from '../public/content-ops/ops-core.cjs';
 import {createGzip} from 'node:zlib';
 import {Readable} from 'node:stream';
-const BUILD_ID='20261123-purchase-reliable-v1';
+const BUILD_ID='20261123-balances-v1';
 const contentShape={titles:'rows',accounts:'rows',posts:'rows',products:'rows',inventorySettings:'map'};
 import { createServer } from "node:http";
 import { createHmac, timingSafeEqual, randomUUID, createHash } from "node:crypto";
