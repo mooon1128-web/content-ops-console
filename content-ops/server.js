@@ -8,7 +8,8 @@ import {currentWholesaleProducts,catalogCostInfo} from './wholesale-catalog.js';
 import RecordOps from '../public/content-ops/ops-core.cjs';
 import {createGzip} from 'node:zlib';
 import {Readable} from 'node:stream';
-const BUILD_ID='20261123-balances-v1';
+const BUILD_ID='20261123-interface-update-v1';
+const XHS_UI_VERSION='20261123-cooperation-v2';
 const contentShape={titles:'rows',accounts:'rows',posts:'rows',products:'rows',inventorySettings:'map'};
 import { createServer } from "node:http";
 import { createHmac, timingSafeEqual, randomUUID, createHash } from "node:crypto";
@@ -956,7 +957,7 @@ const server = createServer(async (request, response) => {
       send(response, 405, { error: "Method not allowed" }, { Allow: "GET, PUT, OPTIONS" });
       return;
     }
-    if(url.pathname==='/api/xhs-media/version'&&request.method==='GET'){send(response,200,{updatedAt:await xhsStore.version(),build:BUILD_ID});return;}
+    if(url.pathname==='/api/xhs-media/version'&&request.method==='GET'){send(response,200,{updatedAt:await xhsStore.version(),build:BUILD_ID,uiVersion:XHS_UI_VERSION});return;}
     if(url.pathname==='/api/xhs-media/session'&&request.method==='GET'){const u=request.xhsUser;send(response,200,{user:{id:u.id,name:u.name,username:u.username,role:u.role,stockRole:u.stockRole},build:BUILD_ID});return;}
     if(url.pathname==='/api/xhs-media/state'){
       if(request.method==='GET'){send(response,200,await xhsStore.read());return;}

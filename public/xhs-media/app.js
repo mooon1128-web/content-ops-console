@@ -3935,7 +3935,7 @@
   }
 
   function allowSyncInteraction(event) {
-    if (event.target.closest('.shared-status-panel,[data-close],[data-dialog-export],[data-dialog-login]') || event.type === 'keydown' && event.key === 'Escape') return true;
+    if (event.target.closest('.shared-status-panel,[data-app-update],[data-close],[data-dialog-export],[data-dialog-login]') || event.type === 'keydown' && event.key === 'Escape') return true;
     return Boolean(cloud?.ready && !cloud.conflict && !cloud.stopped);
   }
 
@@ -3984,7 +3984,13 @@
     hydrateControls();bindEvents();renderAll();await cloud.start();loadWholesaleProducts();
     window.addEventListener('online',()=>cloud.refresh());window.addEventListener('focus',()=>cloud.refresh());
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloud.refresh()});
-    window.addEventListener('beforeunload',e=>{if(hasPendingLocalSync()){e.preventDefault();e.returnValue='';}});
+    InterfaceUpdate.mount({current:'20261123-cooperation-v2',url:'/api/xhs-media/version',host:syncPanel,
+      getBlockReason:()=>hasPendingLocalSync()||cloud?.saving?'有尚未确认的保存或同步冲突，请先完成同步；必要时导出待同步修改。':
+        hasOpenEditorDialog()?'请先保存或取消正在编辑的表单，再更新界面。':
+        !cloud?.ready||cloud?.stopped?'请先恢复登录和数据连接。':
+        document.activeElement?.matches('input,textarea,select')?'请先完成当前输入，再更新界面。':''
+    });
+    window.addEventListener('beforeunload',e=>{if(hasPendingLocalSync()||hasOpenEditorDialog()){e.preventDefault();e.returnValue='';}});
   }
   startSharedApp().catch(e=>{const el=$('#save-status');if(el)el.textContent=e.message+'；请刷新重试';document.body.classList.add('shared-unavailable');});
 })();
