@@ -1,13 +1,14 @@
 import { createAccessControl, publicState, scopedWrite, validateRows, makeAudit } from "./access.js";
 import { createStockStore } from './stock-store.js';
 import {createPurchaseFiles} from './purchase-files.js';
+import {workspaceView} from './stock-archives.js';
 import { stockView, roleOf, hasStockRole, fail } from './stock-model.js';
 import {createXhsStore,publicXhs} from './xhs-store.js';
 import {currentWholesaleProducts,catalogCostInfo} from './wholesale-catalog.js';
 import RecordOps from '../public/content-ops/ops-core.cjs';
 import {createGzip} from 'node:zlib';
 import {Readable} from 'node:stream';
-const BUILD_ID='20261123-cooperation-v1';
+const BUILD_ID='20261123-purchase-reliable-v1';
 const contentShape={titles:'rows',accounts:'rows',posts:'rows',products:'rows',inventorySettings:'map'};
 import { createServer } from "node:http";
 import { createHmac, timingSafeEqual, randomUUID, createHash } from "node:crypto";
@@ -792,7 +793,8 @@ const access = createAccessControl({ read: readContentOpsState, readAccess: read
 const xhsStore=createXhsStore({file:xhsDataFile,remote:hasSupabaseStateStore()?supabaseRequest:null,stateId:xhsMediaStateId});
 const stockStore = createStockStore({file:process.env.STOCK_OPS_DATA || join(dirname(dataFile),'stock-ops-data.json'),remote:hasSupabaseStateStore()?supabaseRequest:null,stateId:process.env.STOCK_OPS_STATE_ID || `${contentOpsStateId}-stock-ops`});
 const costFilesDir=process.env.STOCK_OPS_FILES_DIR || join(dirname(process.env.STOCK_OPS_DATA || dataFile),'stock-ops-cost-files');
-const purchaseFiles=createPurchaseFiles({dir:join(costFilesDir,'purchase-contracts'),readState:()=>stockStore.read()});
+const purchaseFiles=createPurchaseFiles({dir:join(costFilesDir,'purchase-contracts'),readState:()=>stockStore.read('workspace')});
+let stockOptimization={status:'pending'};
 
 const server = createServer(async (request, response) => {
   try {
@@ -829,7 +831,14 @@ const server = createServer(async (request, response) => {
         throw fail(405,'Method not allowed');
       }
       if(url.pathname==='/api/stock-ops/version'&&request.method==='GET'){send(response,200,{updatedAt:await stockStore.version(),build:BUILD_ID});return;}
-      if(url.pathname==='/api/stock-ops/state'&&request.method==='GET'){send(response,200,stockView(await stockStore.read(),user));return;}
+      if(url.pathname==='/api/stock-ops/state'&&request.method==='GET'){
+        const compact=url.searchParams.get('view')==='workspace';
+        const view=stockView(await stockStore.read(compact?'workspace':'full'),user);
+        send(response,200,compact?workspaceView(view):view);return;
+      }
+      if(url.pathname==='/api/stock-ops/command-status'&&request.method==='GET'){
+        send(response,200,await stockStore.receipt(url.searchParams.get('requestId'),user));return;
+      }
       if(url.pathname==='/api/stock-ops/samples'&&request.method==='GET'){
         const state=await xhsStore.read();
         const placements=(state?.placements||[]).map(p=>({id:String(p.id),creator:String(p.creator||''),product:String(p.product||''),productIds:p.productIds||[p.productId].filter(Boolean),sampleQuantity:p.sampleQuantity===undefined||p.sampleQuantity===''?null:p.sampleQuantity,status:p.status||'',sampleStatus:p.sampleStatus||'',owner:p.owner||'',sampleDeliveredAt:p.sampleDeliveredAt||'',createdAt:p.createdAt||''}));
@@ -841,13 +850,14 @@ const server = createServer(async (request, response) => {
         if(command.data?.privateDetails!==undefined)await purchaseFiles.validate(user,command.data.privateDetails?.contracts||[]);
         const placements=command.action==='sample'?(await xhsStore.read())?.placements||[]:[];
         const result=await stockStore.commit(command,user,{placements});
-        send(response,200,{ok:true,replayed:Boolean(result.replayed),state:stockView(result.state,user)});return;
+        if(url.searchParams.get('receipt')==='1')send(response,200,{ok:true,replayed:Boolean(result.replayed),requestId:command.requestId,revision:result.state.revision,updatedAt:result.state.updatedAt});
+        else send(response,200,{ok:true,replayed:Boolean(result.replayed),state:stockView(await stockStore.hydrate(result.state),user)});return;
       }
       throw fail(404,'经营接口不存在');
     }
     if (url.pathname.startsWith("/api/content-ops/")) response.setHeader("Cache-Control", "no-store");
     if (request.url?.startsWith("/api/health")) {
-      send(response, 200, { ok: true, service: "content-ops",build:BUILD_ID,storage: hasSupabaseStateStore() ? "supabase" : "file", updatedAt: new Date().toISOString() });
+      send(response, 200, { ok: true, service: "content-ops",build:BUILD_ID,storage: hasSupabaseStateStore() ? "supabase" : "file",stockOptimization, updatedAt: new Date().toISOString() });
       return;
     }
     if (url.pathname === '/xhs-media/login') {sendHtml(response,200,xhsLoginPage(),{'Cache-Control':'no-store'});return;}
@@ -959,7 +969,7 @@ const server = createServer(async (request, response) => {
     }
     await serveStatic(request, response);
   } catch (error) {
-    send(response, error.status || (error instanceof SyntaxError ? 400 : 500), { error: error.message || "Server error" });
+    send(response, error.status || (error instanceof SyntaxError ? 400 : 500), { error: error.message || "Server error",...(error.code?{code:error.code}:{}) });
   }
 });
 
@@ -967,4 +977,5 @@ server.listen(port, host, () => {
   console.log(`Content Ops is running at http://${host === "0.0.0.0" ? "localhost" : host}:${port}`);
   console.log(`Shared data file: ${dataFile}`);
   console.log(`XHS media data file: ${xhsDataFile}`);
+  stockStore.optimize().then(result=>{stockOptimization=result;}).catch(error=>{stockOptimization={status:'deferred'};console.warn('Stock evidence optimization deferred:',error.message);});
 });

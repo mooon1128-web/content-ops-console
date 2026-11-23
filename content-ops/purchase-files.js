@@ -1,6 +1,6 @@
-import {mkdir,writeFile,readFile,stat,statfs} from 'node:fs/promises';
+import {mkdir,writeFile,readFile,stat,statfs,rename,unlink} from 'node:fs/promises';
 import {join} from 'node:path';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const validId=id=>/^[a-f0-9-]{36}$/.test(id||'');
 export function imageMime(data){
@@ -27,11 +27,18 @@ export function createPurchaseFiles({dir,readState}){
       if(capacity.bavail*capacity.bsize<30*1024*1024)throw fail(507,'合同附件空间不足，请扩容后上传');
       let size=0;const chunks=[];
       for await(const chunk of request){size+=chunk.length;if(size>10*1024*1024)throw fail(413,'每张合同图片不能超过10MB');chunks.push(chunk);}
-      const data=Buffer.concat(chunks),mime=imageMime(data),id=randomUUID();
+      const data=Buffer.concat(chunks),mime=imageMime(data);
+      // A late upload response or a reselected file must not create another copy.
+      const hash=createHash('sha256').update(String(user.id)).update('\0').update(data).digest('hex');
+      const id=`${hash.slice(0,8)}-${hash.slice(8,12)}-${hash.slice(12,16)}-${hash.slice(16,20)}-${hash.slice(20,32)}`;
       const name=String(url.searchParams.get('name')||'合同图片').replace(/[\x00-\x1f]/g,'').slice(0,200);
       const meta={id,name,mime,bytes:size};
-      await writeFile(join(dir,id),data,{flag:'wx',mode:0o600});await writeFile(join(dir,id+'.json'),JSON.stringify(meta),{flag:'wx',mode:0o600});
-      send(response,200,meta);return;
+      async function atomic(target,body){const temp=target+'.'+randomUUID()+'.tmp';try{await writeFile(temp,body,{flag:'wx',mode:0o600});await rename(temp,target);}finally{await unlink(temp).catch(()=>{});}}
+      // Atomic replacement contains identical bytes for this content-derived ID.
+      // Interrupted or simultaneous retries cannot expose a half-written file.
+      await atomic(join(dir,id),data);await atomic(join(dir,id+'.json'),JSON.stringify(meta));
+      const saved=JSON.parse(await readFile(join(dir,id+'.json'),'utf8'));await validate(user,[saved]);
+      send(response,200,saved);return;
     }
     if(request.method==='GET'){
       const id=url.searchParams.get('id');if(!validId(id))throw fail(400,'合同图片编号无效');

@@ -1,3 +1,4 @@
+import {uploadContract} from './reliable-save.js?v=20261123-purchase-reliable-v1';
 import {productCell,bindImageFallback,groupSales,salesValue} from './sales-ui.js';
 import {purchaseSummary,shippingSummary,forecastSupply,dayCount,addDays} from './purchasing-math.js';
 let purchaseMonth='',forecastSku='';
@@ -27,18 +28,18 @@ export function renderPurchases(a){
       for(const [i,file]of files.entries()){
         if(file.size>10*1024*1024)throw Error('每张合同图片不能超过10MB');
         if(!uploaded.has(file)){
-          $('#contract-upload-progress').textContent=`正在上传合同图片 ${i+1} / ${files.length}…`;
-          const r=await fetch('/api/stock-ops/purchase-contract?name='+encodeURIComponent(file.name),{method:'POST',headers:{'Content-Type':file.type||'application/octet-stream'},body:file,signal:AbortSignal.timeout(60000)});
-          const result=await r.json();if(!r.ok)throw Error(result.error||'合同上传失败');uploaded.set(file,result);
+          const progress=$('#contract-upload-progress');progress.textContent=`正在上传合同图片 ${i+1} / ${files.length}…`;
+          const result=await uploadContract(file,percent=>{progress.textContent=percent===100?'图片传输完成，正在确认文件保存…':`正在上传合同图片 ${i+1} / ${files.length} · ${percent===null?'传输中':percent+'%'}`;});uploaded.set(file,result);
         }
         contracts.push(uploaded.get(file));
       }
+      const progress=$('#contract-upload-progress');if(progress)progress.textContent=files.length?'合同图片已保存，正在登记补货信息…':'正在保存补货信息…';
       return {balanceDue:d.balanceDue,contracts};
     };
   }
   $('#content').innerHTML=heading('补货与到货','一批货从下单、出货、收货到验收，放在一起核对。',can('operations')?button('new-purchase','登记补货批次',true):'')+`<div class="sales-toolbar"><label>下单月份<input id="purchase-month" type="month" value="${purchaseMonth}"></label>${button('purchase-all','全部批次')}</div>${overdue.length?`<div class="shipping-alert" role="status"><strong>${overdue.length} 个批次出货超时</strong><span>最长已超时 ${Math.max(...overdue.map(o=>ship(o).overdueDays))} 天，请跟进工厂出货。</span></div>`:''}<div class="card">${table(['商品／批次','预计出货时间','下单','实收','合格入库','当前可售','瑕疵／已退厂','待检','少到／超收','状态',...(state.role==='admin'?['尾款金额']:[]),''],rows.map(o=>{const x=summary(o);return [productCell(sku(o.skuId),o.reference),shippingCell(o),num(o.quantity),num(x.received),num(x.good),num(state.balances.find(b=>b.skuId===o.skuId&&b.warehouse===o.warehouse)?.available),`${num(x.defect)} / ${num(x.returned)}`,num(x.pending),x.over?pill('超收 '+x.over,'warn'):num(x.shortfall),pill(o.status==='计划'?'计划未下单':x.pending?'待验收':x.shortfall?'待到货':'已收齐',x.pending||x.shortfall?'warn':''),...(state.role==='admin'?[money(privateRow(o)?.balanceDue)]:[]),`<button type="button" data-purchase="${o.id}">查看／收货</button>`]}),'尚未登记补货批次。补货建议、工厂下单和实际到货分开记录。')}</div><p class="muted">超时按北京时间计算，预计出货当天不计超时；分批出货后，未出完的部分继续提醒。合格入库与当前可售分别记录。</p>`;
   $('#purchase-month').onchange=e=>{purchaseMonth=e.target.value;render();};bind('purchase-all',()=>{purchaseMonth='';render();});
-  bind('new-purchase',()=>{const key=crypto.randomUUID(),readPrivate=privateReader();showEditor('登记补货批次',skuSelect()+field('reference','工厂订单／补货批次号')+field('quantity','下单数量','','number')+select('status','下单状态',['计划','已下单'],'计划')+field('orderDate','计划／实际下单日',today(),'date')+field('expectedShipAt','预计出货时间','','date')+field('warehouse','收货仓库','主仓')+area('note','工厂确认或计划说明')+(state.role==='admin'?privateFields():''),async d=>{const privateDetails=await readPrivate(d);delete d.balanceDue;delete d['purchase-contract-files'];return command('purchase',{...d,...(privateDetails?{privateDetails}:{})},key);},'登记仅记录事实，不会向工厂下单，也不会增加库存。');});
+  bind('new-purchase',()=>{const key=crypto.randomUUID(),readPrivate=privateReader();showEditor('登记补货批次',skuSelect()+field('reference','工厂订单／补货批次号')+field('quantity','下单数量','','number')+select('status','下单状态',['计划','已下单'],'计划')+field('orderDate','计划／实际下单日',today(),'date')+field('expectedShipAt','预计出货时间','','date')+field('warehouse','收货仓库','主仓')+area('note','工厂确认或计划说明')+(state.role==='admin'?privateFields():''),async d=>{const privateDetails=await readPrivate(d);delete d.balanceDue;delete d['purchase-contract-files'];const result=await command('purchase',{...d,...(privateDetails?{privateDetails}:{})},key);purchaseMonth='';return result;},'登记仅记录事实，不会向工厂下单，也不会增加库存。');});
   bindAll('[data-purchase]',el=>detail(orders.find(o=>o.id===el.dataset.purchase)));bindImageFallback();
   function detail(o){
     const x=summary(o),sh=ship(o),rs=receipts.filter(r=>r.purchaseId===o.id),priv=privateRow(o);

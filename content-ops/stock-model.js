@@ -200,7 +200,7 @@ export function transact(current,command,user,{now=new Date().toISOString(),plac
   const retry=current.requests.find(r=>r.id===requestId);
   const payloadHash=createHash('sha256').update(JSON.stringify({action:command.action,data:command.data})).digest('hex');
   if(retry){if(retry.actor!==user.id||retry.payloadHash!==payloadHash)throw fail(409,'请求编号已用于其他操作');return {state:current,replayed:true};}
-  if(command.revision!==current.revision)throw fail(409,'其他同事已更新数据。请刷新后再提交；当前填写内容会保留');
+  if(command.revision!==current.revision)throw Object.assign(fail(409,'共享数据版本已变化，可能包含前一次提交。当前填写内容已保留，请核对最新记录后重试'),{code:'REVISION_CONFLICT'});
   const next=structuredClone(current),result=apply(next,command.action,command.data||{},user,now,{placements});
   next.revision++;next.updatedAt=now;
   next.requests.push({id:requestId,actor:user.id,payloadHash,revision:next.revision});
