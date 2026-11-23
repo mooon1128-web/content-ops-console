@@ -3,10 +3,11 @@ import { createStockStore } from './stock-store.js';
 import {createPurchaseFiles} from './purchase-files.js';
 import { stockView, roleOf, hasStockRole, fail } from './stock-model.js';
 import {createXhsStore,publicXhs} from './xhs-store.js';
+import {currentWholesaleProducts,catalogCostInfo} from './wholesale-catalog.js';
 import RecordOps from '../public/content-ops/ops-core.cjs';
 import {createGzip} from 'node:zlib';
 import {Readable} from 'node:stream';
-const BUILD_ID='20261123-shipping-private-v1';
+const BUILD_ID='20261123-cooperation-v1';
 const contentShape={titles:'rows',accounts:'rows',posts:'rows',products:'rows',inventorySettings:'map'};
 import { createServer } from "node:http";
 import { createHmac, timingSafeEqual, randomUUID, createHash } from "node:crypto";
@@ -617,17 +618,21 @@ async function loadWholesalePrivateData(baseUrl) {
   if (!wholesaleAdminUsername || !wholesaleAdminPassword) return { costSettings: {}, costSeeds: {}, customProducts: [], orders: [], connected: false, reason: "missing-credentials" };
   const loginResponse = await fetch(new URL("/api/login", baseUrl), {
     method: "POST",
+    signal: AbortSignal.timeout(7000),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username: wholesaleAdminUsername, password: wholesaleAdminPassword }),
   });
   if (!loginResponse.ok) return { costSettings: {}, costSeeds: {}, customProducts: [], orders: [], connected: false, reason: "login-failed" };
   const cookie = loginResponse.headers.getSetCookie?.().join("; ") || loginResponse.headers.get("set-cookie") || "";
   const bootstrapResponse = await fetch(new URL("/api/bootstrap", baseUrl), {
+    signal: AbortSignal.timeout(7000),
     headers: cookie ? { Cookie: cookie } : {},
   });
   if (!bootstrapResponse.ok) return { costSettings: {}, costSeeds: {}, customProducts: [], orders: [], connected: false, reason: "bootstrap-failed" };
   const payload = await bootstrapResponse.json();
   return {
+    productSettings: payload.state?.mtm_wholesale_product_settings_v1 || {},
+    inventory: payload.state?.mtm_wholesale_inventory_v1 || {},
     costSettings: payload.state?.mtm_wholesale_cost_settings_v1 || {},
     costSeeds: payload.costSeeds || {},
     customProducts: Array.isArray(payload.state?.mtm_wholesale_custom_products_v1) ? payload.state.mtm_wholesale_custom_products_v1 : [],
@@ -881,24 +886,25 @@ const server = createServer(async (request, response) => {
       const sourceUrl = url.searchParams.get("url") || "https://pupuhome-wholesale.onrender.com/admin.html";
       const baseUrl = new URL(sourceUrl).origin;
       if(baseUrl!=="https://pupuhome-wholesale.onrender.com")throw fail(400,"订货数据来源未获配置，请联系管理员");
-      const productResponse = await fetch(new URL("/data/products.js", baseUrl));
-      if (!productResponse.ok) throw new Error("Could not load wholesale products");
+      const [productResponse, privateData] = await Promise.all([
+        fetch(new URL("/data/products.js", baseUrl), {signal:AbortSignal.timeout(10000)}),
+        loadWholesalePrivateData(baseUrl).catch(()=>({connected:false,reason:'upstream-unavailable',customProducts:[]})),
+      ]);
+      if (!productResponse.ok) throw fail(502, "订货系统商品读取失败，请稍后重试");
       const script = await productResponse.text();
-      const privateData = request.contentOpsUser.role==='admin'?await loadWholesalePrivateData(baseUrl):{costSettings:{},costSeeds:{},customProducts:[],orders:[],connected:false,reason:"restricted"};
-      const costSettings = privateData.costSettings || {};
-      const costSeeds = privateData.costSeeds || {};
-      const rawProducts = mergeWholesaleProducts(parseProductsScript(script), privateData.customProducts);
-      const products = rawProducts.map((product) => normalizeWholesaleProduct(product, baseUrl, productCostInfo(product, costSettings, costSeeds)));
+      const rawProducts = currentWholesaleProducts(parseProductsScript(script), privateData);
+      const user=request.contentOpsUser, admin=user.role==='admin';
+      const products = rawProducts.map(product => normalizeWholesaleProduct(product, baseUrl, catalogCostInfo(user,product,privateData,productCostInfo)));
       send(response, 200, {
-        products,
-        sourceUrl,
-        syncedAt: new Date().toISOString(),
-        costConnected: privateData.connected,
-        costConnectionReason: privateData.reason,
-        customProductCount: privateData.customProducts.length,
-        costSettingsCount: Object.keys(costSettings).length,
-        costSeedCount: Object.keys(costSeeds).length,
-        orderCount: privateData.orders.length,
+        products, sourceUrl, syncedAt: new Date().toISOString(),
+        catalogConnected: Boolean(privateData.connected),
+        catalogConnectionReason: privateData.reason || '',
+        costConnected: admin && Boolean(privateData.connected),
+        costConnectionReason: admin ? privateData.reason : 'restricted',
+        customProductCount: (privateData.customProducts || []).length,
+        costSettingsCount: admin ? Object.keys(privateData.costSettings || {}).length : 0,
+        costSeedCount: admin ? Object.keys(privateData.costSeeds || {}).length : 0,
+        orderCount: admin ? (privateData.orders || []).length : 0,
       });
       return;
     }

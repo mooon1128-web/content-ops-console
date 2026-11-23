@@ -1371,3 +1371,18 @@ button:disabled { cursor:wait;opacity:.55; }
 .table-pagination button:disabled { cursor:default; }
 
 .dialog-sync-feedback:has([data-dialog-status]:empty) { display:none; }
+
+/* Cooperation entry: one task per group, with saved-catalog feedback beside the action. */
+.catalog-sync-row { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+.catalog-sync-row [role="status"] { flex:1; min-width:200px; font-size:14px; line-height:1.6; color:#28665f; }
+.catalog-sync-row .sync-warning { color:#ae433e; }
+.sync-products-button { width:auto; min-height:44px; white-space:nowrap; }
+.cooperation-options { margin:0; padding:16px 18px; border:1px solid #d9dfda; border-radius:14px; }
+.cooperation-options legend { padding:0 6px; font-weight:700; font-size:16px; color:#334d49; }
+.choice-row { display:flex; flex-wrap:wrap; gap:12px; }
+.form-grid .choice-row label { display:flex; flex-direction:row; align-items:center; gap:9px; padding:10px 14px; min-height:44px; border-radius:10px; background:#f0f5f2; cursor:pointer; }
+.form-grid .choice-row input { width:19px; height:19px; margin:0; padding:0; accent-color:#17665d; }
+.form-grid label small { color:#68756e; font-size:14px; font-weight:400; line-height:1.6; }
+.form-grid [readonly] { background:#f3f6f4; }
+.form-grid [data-admin-cost][hidden] { display:none; }
+.brief-fields dd { white-space:pre-wrap; }

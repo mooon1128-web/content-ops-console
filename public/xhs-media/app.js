@@ -23,7 +23,7 @@
   const WHOLESALE_PRODUCTS_API = "/api/content-ops/wholesale-products";
   const DEFAULT_WHOLESALE_ADMIN_URL = "https://pupuhome-wholesale.onrender.com/admin.html";
   const WHOLESALE_PRODUCTS_FALLBACK_URL = "../wholesale-portal/data/products.json";
-  const WHOLESALE_PORTAL_URL = "../wholesale-portal/partner.html";
+  const WHOLESALE_PORTAL_URL = "https://pupuhome-wholesale.onrender.com/partner.html";
   const WHOLESALE_KEYS = {
     inventory: "mtm_wholesale_inventory_v1",
     productSettings: "mtm_wholesale_product_settings_v1",
@@ -77,7 +77,7 @@
   };
   const daysSince = (value) => {
     if (!value) return NaN;
-    const date = new Date(`${String(value).slice(0, 10)}T00:00:00`);
+    const date = new Date(`${String(value).slice(0, 10)}T00:00:00Z`);
     if (Number.isNaN(date.getTime())) return NaN;
     const now = new Date(`${today()}T00:00:00`);
     return Math.floor((now - date) / 86400000);
@@ -246,6 +246,8 @@
   let customCreatorTypes = [];
   let monthlyBudgets = {};
   let productCatalog = [];
+  let currentUser = null;
+  let catalogLoad = null;
   let wholesaleCostStatus = { connected: false, orderCount: 0, costSettingsCount: 0, costSeedCount: 0, customProductCount: 0, reason: "" };
   let selectedProduct = "all";
   let classificationCreatorId = "";
@@ -714,52 +716,48 @@
     };
   }
 
+  function catalogStatus(message, failed = false) {
+    const el = $("#catalog-sync-status");
+    if (el) { el.textContent = message; el.classList.toggle('sync-warning', failed); }
+  }
+
   async function loadWholesaleProducts(options = {}) {
-    const syncButton = $("#sync-wholesale-products");
-    const previousButtonText = syncButton?.textContent || "";
-    if (options.manual && syncButton) {
-      syncButton.disabled = true;
-      syncButton.textContent = "同步中...";
-    }
-    try {
-      let baseProducts = [];
-      const response = await fetch(`${WHOLESALE_PRODUCTS_API}?url=${encodeURIComponent(DEFAULT_WHOLESALE_ADMIN_URL)}`, { cache: "no-store", signal:AbortSignal.timeout(20000) });
-      if (!response.ok) throw new Error("products unavailable");
-      const payload = await response.json();
-      baseProducts = Array.isArray(payload.products) ? payload.products : [];
-      wholesaleCostStatus = {
-        connected: Boolean(payload.costConnected),
-        orderCount: number(payload.orderCount),
-        costSettingsCount: number(payload.costSettingsCount),
-        costSeedCount: number(payload.costSeedCount),
-        customProductCount: number(payload.customProductCount),
-        reason: String(payload.costConnectionReason || ""),
-      };
-      productCatalog=Array.from(new Map(baseProducts.map(normalizeProduct).filter(p=>p.id&&p.name).map(p=>[p.id,p])).values());
-      if(!hasOpenEditorDialog()&&!document.activeElement?.matches("input,textarea,select")){hydrateControls();renderAll();}
-      if (options.manual) toast(`订货产品已同步：${productCatalog.length} 个${wholesaleCostStatus.customProductCount ? `，含后台新增 ${wholesaleCostStatus.customProductCount} 个` : ""}`);
-      return true;
-    } catch {
+    if (catalogLoad) return catalogLoad;
+    const button = $("#sync-wholesale-products");
+    if (button) { button.disabled = true; button.textContent = "同步中…"; }
+    catalogStatus("正在读取订货后台已保存的产品…");
+    catalogLoad = (async () => {
       try {
-        const response = await fetch(WHOLESALE_PRODUCTS_FALLBACK_URL, { cache: "no-store", signal:AbortSignal.timeout(20000) });
-        if (!response.ok) throw new Error("fallback products unavailable");
-        const baseProducts = await response.json();
-        wholesaleCostStatus = { connected: false, orderCount: 0, costSettingsCount: 0, costSeedCount: 0, customProductCount: 0, reason: "fallback" };
-        productCatalog = Array.from(new Map((Array.isArray(baseProducts) ? baseProducts : []).map(normalizeProduct).filter((item) => item.id && item.name).map((item) => [item.id, item])).values());
-        if(!hasOpenEditorDialog()&&!document.activeElement?.matches("input,textarea,select")){hydrateControls();renderAll();}
-        if (options.manual) toast(`订货后台暂未连接，已载入本地产品：${productCatalog.length} 个`);
+        const response = await fetch(`${WHOLESALE_PRODUCTS_API}?url=${encodeURIComponent(DEFAULT_WHOLESALE_ADMIN_URL)}`, {cache:"no-store", signal:AbortSignal.timeout(25000)});
+        const payload = await response.json();
+        if (!response.ok) throw Error(payload.error || "订货后台暂时无法连接");
+        if (!Array.isArray(payload.products)) throw Error("产品数据格式异常");
+        const next = Array.from(new Map(payload.products.map(normalizeProduct).filter(p=>p.id&&p.name).map(p=>[p.id,p])).values());
+        // A partial upstream response must never replace a previously complete live catalog.
+        const complete = payload.catalogConnected === true;
+        if (complete || !productCatalog.length) productCatalog = next;
+        wholesaleCostStatus = {connected:Boolean(payload.costConnected),orderCount:number(payload.orderCount),costSettingsCount:number(payload.costSettingsCount),costSeedCount:number(payload.costSeedCount),customProductCount:number(payload.customProductCount),reason:String(payload.costConnectionReason||'')};
+        renderProductPickerOptions(); updatePlacementProductCostDisplay();
+        if (!hasOpenEditorDialog()&&!document.activeElement?.matches("input,textarea,select")) {hydrateControls();renderAll();}
+        if (complete) {
+          catalogStatus(`已同步 ${productCatalog.length} 款产品 · ${new Date(payload.syncedAt).toLocaleTimeString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'})}`);
+          if (options.manual) toast(`订货产品已同步：${productCatalog.length} 款`);
+        } else {
+          const reason = payload.catalogConnectionReason === 'missing-credentials' ? '订货后台连接账号尚未配置' : '订货后台最新资料读取失败';
+          catalogStatus(`${reason}；暂显示 ${productCatalog.length} 款已有产品，新增产品和最新状态待同步。`, true);
+          if (options.manual) toast('尚未完成最新产品同步，请查看产品区提示');
+        }
+        return complete;
+      } catch (error) {
+        catalogStatus(`同步失败：${error.name==='TimeoutError'?'订货后台响应超时':error.message}。${productCatalog.length?'保留上次产品，请重试。':'请重试连接。'}`, true);
+        if (options.manual) toast('产品同步未完成，已有记录和已选产品已保留');
         return false;
-      } catch {
-        productCatalog = [];
-        if (options.manual) toast("订货产品同步失败，请稍后再试");
-        return false;
+      } finally {
+        catalogLoad = null;
+        if (button) {button.disabled=false;button.textContent='同步订货产品';}
       }
-    } finally {
-      if (options.manual && syncButton) {
-        syncButton.disabled = false;
-        syncButton.textContent = previousButtonText || "同步订货产品";
-      }
-    }
+    })();
+    return catalogLoad;
   }
 
   function productUrl(product) {
@@ -923,9 +921,9 @@
 
   function shiftDate(value, days) {
     if (!value) return "";
-    const date = new Date(`${String(value).slice(0, 10)}T00:00:00`);
+    const date = new Date(`${String(value).slice(0, 10)}T00:00:00Z`);
     if (Number.isNaN(date.getTime())) return "";
-    date.setDate(date.getDate() + days);
+    date.setUTCDate(date.getUTCDate() + days);
     return date.toISOString().slice(0, 10);
   }
 
@@ -941,12 +939,15 @@
     return {
       creator: item.creator || "待确认",
       product: placementProductName(item) || "待确认",
-      cooperation: String(item.notes || "").trim() || "请确认具体内容形式与拍摄要求",
+      publication: item.publicationFormat || "待确认",
+      cover: item.coverExposure === 'yes' ? '需要封面露出' : item.coverExposure === 'no' ? '不要求封面露出' : '待确认',
+      conversion: Array.isArray(item.conversionMethods) && item.conversionMethods.length ? item.conversionMethods.join('、') : '待确认',
+      cooperation: String(Object.hasOwn(item,'cooperationDetails') ? item.cooperationDetails : item.notes || '').trim() || '请确认具体内容与拍摄要求',
       publishAt: formatChineseDate(publishDate),
       review: reviewRequired ? "需要审核" : "无需审核",
-      reviewDeadline: reviewRequired ? formatChineseDate(shiftDate(publishDate, -1)) : "不适用",
+      reviewDeadline: reviewRequired ? formatChineseDate(item.draftDeadline || shiftDate(publishDate, -1)) : "不适用",
       changeNotice: publishDate
-        ? `如无法按约定时间发布，请最晚于${formatChineseDate(shiftDate(publishDate, -7))}告知。`
+        ? `如无法按约定时间发布，请最晚于${formatChineseDate(item.changeNoticeDeadline || shiftDate(publishDate, -7))}告知。`
         : "如无法按约定时间发布，请至少提前一周告知。",
     };
   }
@@ -957,7 +958,10 @@
       "合作要求确认",
       `博主账号：${brief.creator}`,
       `合作产品：${brief.product}`,
-      `合作形式：${brief.cooperation}`,
+      `发布内容：${brief.publication}`,
+      `封面露出：${brief.cover}`,
+      `转化方式：${brief.conversion}`,
+      `具体合作内容：${brief.cooperation}`,
       `约定发布时间：${brief.publishAt}`,
       `稿件审核：${brief.review}`,
       `最晚提交审核稿时间：${brief.reviewDeadline}`,
@@ -978,7 +982,10 @@
       </div>
       <dl class="brief-fields">
         <div><dt>合作产品</dt><dd>${escapeHtml(brief.product)}</dd></div>
-        <div><dt>合作形式</dt><dd>${escapeHtml(brief.cooperation)}</dd></div>
+        <div><dt>发布内容</dt><dd>${escapeHtml(brief.publication)}</dd></div>
+        <div><dt>封面露出</dt><dd>${escapeHtml(brief.cover)}</dd></div>
+        <div><dt>转化方式</dt><dd>${escapeHtml(brief.conversion)}</dd></div>
+        <div><dt>具体合作内容</dt><dd>${escapeHtml(brief.cooperation)}</dd></div>
         <div><dt>约定发布时间</dt><dd>${escapeHtml(brief.publishAt)}</dd></div>
         <div><dt>稿件审核</dt><dd>${escapeHtml(brief.review)}</dd></div>
         <div><dt>最晚提交审核稿</dt><dd>${escapeHtml(brief.reviewDeadline)}</dd></div>
@@ -1037,7 +1044,10 @@
     const fields = [
       ["博主账号", brief.creator],
       ["合作产品", brief.product],
-      ["合作形式", brief.cooperation],
+      ["发布内容", brief.publication],
+      ["封面露出", brief.cover],
+      ["转化方式", brief.conversion],
+      ["具体合作内容", brief.cooperation],
       ["约定发布时间", brief.publishAt],
       ["稿件审核", brief.review],
       ["最晚提交审核稿", brief.reviewDeadline],
@@ -2951,7 +2961,7 @@
     fillSelect("#creator-form [name='creatorType']", creatorTypeOptions());
     fillSelect("#creator-form [name='outreachStatus']", creatorOutreachStatuses);
     fillSelect("#creator-type-filter", creatorTypeOptions(), "全部类型");
-    fillSelect("[name='contentType'], #content-filter", contentTypes, "全部类型");
+    fillSelect("#content-filter", contentTypes, "全部类型");
     fillSelect("[name='platform']", platformOptions);
     fillWholesaleProductSelect();
     $("#creator-type-list").innerHTML = creatorTypeOptions().map((type) => `<option value="${escapeHtml(type)}"></option>`).join("");
@@ -3044,7 +3054,7 @@
           <span class="checkmark">${selected ? "✓" : ""}</span>
           <span>
             <strong>${escapeHtml(productOptionLabel(product))}</strong>
-            <small>${escapeHtml(product.category || "未分类")} · ${escapeHtml(product.status || "需确认")} · 成本 ${escapeHtml(productCostLabel(product))}</small>
+            <small>${escapeHtml(product.category || "未分类")} · ${escapeHtml(product.status || "需确认")}${currentUser?.role==='admin'?` · 成本 ${escapeHtml(productCostLabel(product))}`:''}</small>
           </span>
         </button>
       `;
@@ -3120,7 +3130,7 @@
     $("[data-delete]", form).style.visibility = item ? "visible" : "hidden";
     if (item) {
       Object.entries(item).forEach(([key, value]) => {
-        if (form.elements[key]) form.elements[key].value = value;
+        if (form.elements[key] && key !== "conversionMethods") form.elements[key].value = value;
       });
       form.elements.sampleTrackingNumber.value = sampleTrackingNumber(item);
       form.elements.requiresDraftReview.value = needsDraftReview(item) ? "yes" : "no";
@@ -3128,7 +3138,7 @@
       applyWholesaleProductsToForm(placementProducts(item));
     } else {
       form.elements.id.value = "";
-      form.elements.owner.value = "Chloe";
+      form.elements.owner.value = currentUser?.name || currentUser?.username || "";
       form.elements.status.value = "待建联";
       form.elements.platform.value = "小红书";
       form.elements.sampleStatus.value = "待寄样";
@@ -3140,6 +3150,7 @@
       form.elements.sampleQuantity.value = 1;
       applyWholesaleProductsToForm([]);
     }
+    form.querySelectorAll('[name="conversionMethods"]').forEach(el=>{el.checked=(item?.conversionMethods||[]).includes(el.value);});
     renderDuplicateCooperationWarning();
     dialog.showModal();
   }
@@ -3209,8 +3220,20 @@
   }
 
   function formToPlacement(form) {
-    const data = Object.fromEntries(new FormData(form).entries());
-    const current = placements.find((item) => item.id === data.id) || {};
+    const formData = new FormData(form);
+    const input = Object.fromEntries(formData.entries());
+    const current = placements.find((item) => item.id === input.id) || {};
+    const data = {...current, ...input};
+    data.conversionMethods = formData.getAll('conversionMethods');
+    if (!current.id) {
+      data.owner = currentUser?.name || currentUser?.username || '';
+      data.ownerId = currentUser?.id || '';
+      data.ownerUsername = currentUser?.username || '';
+    } else {
+      for (const key of ['owner','ownerId','ownerUsername']) {
+        if (Object.hasOwn(current,key)) data[key]=current[key]; else delete data[key];
+      }
+    }
     const selectedProducts = selectedWholesaleProductsFromForm();
     data.sampleStatus = data.sampleStatus || current.sampleStatus || "待寄样";
     data.sampleDeliveredAt = data.sampleDeliveredAt || current.sampleDeliveredAt || "";
@@ -3222,7 +3245,7 @@
     data.creatorResponse = data.creatorResponse || current.creatorResponse || "";
     data.plannedAt = data.agreedPublishAt || "";
     data.followUpCount = data.followUpCount || current.followUpCount || 0;
-    ["fee", "extraCost", "sampleQuantity", "exposure", "clicks", "likes", "saves", "comments", "shares", "leads", "orders", "gmv", "followUpCount"].forEach((key) => {
+    ["fee", "extraCost", "sampleQuantity", "followUpCount"].forEach((key) => {
       data[key] = number(data[key]);
     });
     data.sampleTrackingNumber = sampleTrackingNumber(data);
@@ -3238,10 +3261,20 @@
     data.productCategory = Array.from(new Set(selectedProducts.map((product) => product.category).filter(Boolean))).join(" / ");
     data.productStatus = Array.from(new Set(selectedProducts.map((product) => product.status).filter(Boolean))).join(" / ");
     data.productUrl = selectedProducts.length === 1 ? productUrl(selectedProducts[0]) : "";
+    const oldIds = Array.isArray(current.productIds) ? current.productIds : [current.productId].filter(Boolean);
+    if (current.id && !selectedProducts.length && input.product === current.product) {
+      for (const key of ['productId','productIds','productCode','productCodes','productCategory','productStatus','productUrl']) if (Object.hasOwn(current,key)) data[key]=current[key];
+    }
     const missingCost = selectedProducts.some((product) => !productUnitCost(product));
     data.productCostSnapshot = missingCost ? 0 : productsCostTotal(selectedProducts, data.sampleQuantity);
     data.productCostConnected = selectedProducts.length > 0 && !missingCost;
     data.productCostSource = data.productCostConnected ? "订货后台真实成本" : "";
+    const sameSelection = JSON.stringify([...(data.productIds||[])].sort()) === JSON.stringify([...oldIds].sort()) && data.sampleQuantity === sampleQuantity(current);
+    if (current.id && sameSelection && (!data.productCostConnected || currentUser?.role !== 'admin')) {
+      for (const key of ['productCostSnapshot','productCostConnected','productCostSource']) {
+        if (Object.hasOwn(current,key)) data[key]=current[key]; else delete data[key];
+      }
+    }
     data.product = productTextFromSelection(selectedProducts, manualProductSegmentsFromText(data.product, selectedProducts));
     data.creatorTier = form.elements.creatorTier.value || data.creatorTier || "";
     data.platform = placementPlatform(data);
@@ -3913,9 +3946,11 @@
     if(response.status===401){location.replace('/xhs-media/login');return;}
     if(!response.ok)throw Error('当前账号无法访问PR系统，请联系管理员');
     const session=await response.json();
+    currentUser=session.user;
+    $$("[data-admin-cost]").forEach(el=>{el.hidden=currentUser.role!=="admin";});
     const syncPanel=document.createElement('div');syncPanel.className='shared-status-panel';
     syncPanel.innerHTML='<strong id="shared-user"></strong><span id="shared-version"></span><a href="/stock-ops/">经营协作台</a><button id="shared-export-pending">导出待同步修改</button><button id="shared-recover" hidden>核对冲突</button><button id="legacy-export">导出旧设备缓存</button><button id="shared-logout">退出</button>';
-    document.body.prepend(syncPanel);$('#shared-user').textContent=session.user.name+' · PR系统 · 11/23 多选删除版';
+    document.body.prepend(syncPanel);$('#shared-user').textContent=session.user.name+' · PR系统 · 11/23 合作登记版';
     $$("dialog").forEach(dialog => {
       const panel = document.createElement("div");panel.className="dialog-sync-feedback";
       panel.innerHTML='<p data-dialog-status role="status" aria-live="polite"></p><button type="button" class="secondary-button small" data-dialog-export>导出待同步修改</button><a data-dialog-login href="/xhs-media/login" target="_blank" rel="noopener">重新登录</a>';
