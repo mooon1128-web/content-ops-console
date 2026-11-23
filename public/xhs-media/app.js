@@ -52,7 +52,8 @@
   const placementPlatform = (item) => platformOptions.includes(item?.platform) ? item.platform : "小红书";
   const today = () => new Date().toISOString().slice(0, 10);
   const creatorKey = (name) => String(name || "").replace(/\s+/g, "").toLowerCase();
-  const creatorId = (name) => `creator-${String(name || "unknown").replace(/[^\u4e00-\u9fffa-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "") || uid()}`;
+  // Nicknames are editable and may differ only by punctuation. They are not IDs.
+  const creatorId = () => `creator-${crypto.randomUUID()}`;
   const normalizeProfileLink = (value) => {
     const text = String(value || "").trim();
     const embeddedUrl = text.match(/https?:\/\/[^\s<>"'，。]+/i)?.[0];
@@ -1407,8 +1408,10 @@
     const placementIds = placementId && !alreadyCounted ? [...current.placementIds, placementId] : current.placementIds;
     const fanCount = Math.max(current.fanCount, normalized.fanCount);
     creators[index] = {
+      ...creators[index],
       ...current,
       ...normalized,
+      id: current.id,
       fanCount,
       fansText: normalized.fanCount >= current.fanCount ? normalized.fansText || current.fansText : current.fansText,
       tier: creatorTierByFans(fanCount),
@@ -1434,7 +1437,7 @@
   }
 
   function syncCreatorsFromPlacements(options = {}) {
-    placements.forEach((item) => {
+    (options.rows || placements).forEach((item) => {
       upsertCreator({
         name: item.creator,
         profileLink: item.creatorProfile || "",
@@ -3527,11 +3530,10 @@
       const index = placements.findIndex((item) => item.id === next.id);
       if (index >= 0) placements[index] = next;
       else placements.unshift(next);
-      savePlacements();
-      syncCreatorsFromPlacements();
+      syncCreatorsFromPlacements({rows: [next]});
       $("#placement-dialog").close();
       renderAll();
-      toast("投放记录已保存，正在同步云端");
+      toast("正在提交投放记录，等待服务器确认");
       syncServerInBackground();
     });
     $("[data-delete]").addEventListener("click", () => requestPlacementDeletion($("#placement-form").elements.id.value));
@@ -3989,12 +3991,42 @@
 
   function hasPendingLocalSync(){return Boolean(cloud?.pending||cloud?.conflict);}
   function downloadRecovery(value,name){const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+  // A separate read-only page can preserve an old tab's outbox before it is updated.
+  // Do not start SharedSync here: starting it would replay queued operations.
+  function readStoredPending(key) {
+    return new Promise((resolve,reject)=>{
+      const request=indexedDB.open('pupuhome-shared-outbox-v3');
+      let absent=false;
+      request.onupgradeneeded=()=>{absent=true;request.transaction.abort();};
+      request.onerror=()=>absent?resolve(null):reject(request.error);
+      request.onsuccess=()=>{
+        const db=request.result;
+        if(!db.objectStoreNames.contains('outbox')){db.close();resolve(null);return;}
+        const tx=db.transaction('outbox','readonly'),read=tx.objectStore('outbox').get(key);
+        tx.oncomplete=()=>{db.close();resolve(read.result||null);};
+        tx.onerror=tx.onabort=()=>{db.close();reject(tx.error||Error('无法读取待同步修改'));};
+      };
+    });
+  }
+  async function showDraftRecovery(user) {
+    const draft=await readStoredPending('xhs-v3:'+user.id);
+    const response=await fetch(API_URL,{cache:'no-store',signal:AbortSignal.timeout(20000)});
+    if(!response.ok)throw Error('暂时无法读取云端记录，请保留原页面后重试');
+    const cloudState=await response.json();
+    const backup={source:API_URL,account:user.username,at:new Date().toISOString(),draft,cloudState};
+    const panel=document.createElement('main');panel.className='recovery-page';
+    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261123-save-v4">备份完成后打开新版</a>';
+    document.body.replaceChildren(panel);
+    $('#recovery-count').textContent=`本机待同步更改 ${draft?.operations?.length||0} 项；云端投放 ${cloudState.placements?.length||0} 条。请保留原来卡住的页面，先下载备份核对。`;
+    $('#recovery-download').onclick=()=>{downloadRecovery(backup,'PR保存故障核对_'+today()+'.json');$('#recovery-feedback').textContent='已发起备份下载，请确认文件已保存。原页面和草稿仍保留。';};
+  }
   async function startSharedApp(){
     const response=await fetch('/api/xhs-media/session',{cache:'no-store',signal:AbortSignal.timeout(20000)});
     if(response.status===401){location.replace('/xhs-media/login');return;}
     if(!response.ok)throw Error('当前账号无法访问PR系统，请联系管理员');
     const session=await response.json();
     currentUser=session.user;
+    if(new URLSearchParams(location.search).get('recover')==='export'){await showDraftRecovery(currentUser);return;}
     $$("[data-admin-cost]").forEach(el=>{el.hidden=currentUser.role!=="admin";});
     const syncPanel=document.createElement('div');syncPanel.className='shared-status-panel';
     syncPanel.innerHTML='<strong id="shared-user"></strong><span id="shared-version"></span><a href="/stock-ops/">经营协作台</a><button id="shared-export-pending">导出待同步修改</button><button id="shared-recover" hidden>核对冲突</button><button id="legacy-export">导出旧设备缓存</button><button id="shared-logout">退出</button>';
@@ -4032,7 +4064,7 @@
     hydrateControls();bindEvents();renderAll();await cloud.start();loadWholesaleProducts();
     window.addEventListener('online',()=>cloud.refresh());window.addEventListener('focus',()=>cloud.refresh());
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloud.refresh()});
-    InterfaceUpdate.mount({current:'20261123-followups-v3',url:'/api/xhs-media/version',host:syncPanel,
+    InterfaceUpdate.mount({current:'20261123-save-v4',url:'/api/xhs-media/version',host:syncPanel,
       getBlockReason:()=>hasPendingLocalSync()||cloud?.saving?'有尚未确认的保存或同步冲突，请先完成同步；必要时导出待同步修改。':
         hasOpenEditorDialog()?'请先保存或取消正在编辑的表单，再更新界面。':
         !cloud?.ready||cloud?.stopped?'请先恢复登录和数据连接。':
