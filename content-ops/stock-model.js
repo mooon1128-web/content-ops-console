@@ -14,11 +14,11 @@ const permissions = {
   case: ['admin','operations','warehouse','customer_service'], caseAction: ['admin','warehouse'], issue: ['admin','operations','warehouse','customer_service'],
   specialCase: ['admin','operations','customer_service','warehouse'], specialPlan: ['admin','operations','customer_service'],
   specialAction: ['admin','warehouse'], specialClose: ['admin','operations','customer_service'],
-  reverse: ['admin'], import: ['admin'], costArchive: ['admin'],
+  reverse: ['admin'], import: ['admin'], costArchive: ['admin'], purchasePrivate:['admin'],
   collection: ['admin','operations'], collectionStatus: ['admin','operations'], collectionResult: ['admin','operations'], collectionAccept: ['admin','operations'],
   catalogImport: ['admin'],
   salesRecipe: ['admin','operations'],
-  purchase:['admin','operations'],purchaseConfirm:['admin','operations'],purchaseReceive:['admin','warehouse'],purchaseInspect:['admin','warehouse'],purchaseDecision:['admin','warehouse'],purchaseReturn:['admin','warehouse'],forecast:['admin','operations'],
+  purchase:['admin','operations'],purchaseSchedule:['admin','operations'],purchaseShip:['admin','operations','warehouse'],purchaseConfirm:['admin','operations'],purchaseReceive:['admin','warehouse'],purchaseInspect:['admin','warehouse'],purchaseDecision:['admin','warehouse'],purchaseReturn:['admin','warehouse'],forecast:['admin','operations'],
 };
 export function authorize(user, action) {
   if (!hasStockRole(user,...(permissions[action] || []))) throw fail(403,'当前账号没有此操作权限');
@@ -72,7 +72,7 @@ function appendEvent(s,p,user,now,internal=false) {
 }
 function apply(s,action,p,user,now,context={}) {
   authorize(user,action);
-  if(['purchase','purchaseConfirm','purchaseReceive','purchaseInspect','purchaseDecision','purchaseReturn','forecast'].includes(action))return applyProcurement(s,action,p,user,now,{fail,required,number,date,instant,stamp,skuExists,appendEvent});
+  if(['purchase','purchasePrivate','purchaseSchedule','purchaseShip','purchaseConfirm','purchaseReceive','purchaseInspect','purchaseDecision','purchaseReturn','forecast'].includes(action))return applyProcurement(s,action,p,user,now,{fail,required,number,date,instant,stamp,skuExists,appendEvent});
   if(action==='catalogImport')return importCatalog(s,p,user,now,{fail});
   if(action==='salesRecipe')return addSalesRecipe(s,p,user,now);
   if(action==='sku') {
@@ -209,15 +209,15 @@ export function transact(current,command,user,{now=new Date().toISOString(),plac
 }
 export function stockView(state,user,now=new Date()) {
   if(roleOf(user)==='none')throw fail(403,'请管理员为你的账号分配经营协作权限');
-  const {requests,costWorkbook,...visible}=state;
+  const {requests,costWorkbook,purchasePrivate,...visible}=state;
   const caseAccess=hasStockRole(user,'admin','warehouse','operations','customer_service');
   visible.specialCases=caseAccess?(state.specialCases||[]).map(c=>{
     const summary=specialSummary(c),k=state.skus.find(k=>k.id===c.replacementSkuId);
     const available=k?balance(state,k.id,k.warehouse)?.available??null:null;
     return {...c,summary:{...summary,available,stockReady:!c.closedAt&&c.replacementQty>summary.replaced&&available!==null&&available>=c.replacementQty-summary.replaced}};
   }):[];
-  if(user.role==='admin')visible.costWorkbook=costWorkbook;
+  if(user.role==='admin'){visible.costWorkbook=costWorkbook;visible.purchasePrivate=purchasePrivate||{};}
   const week=saturday(now);
-  const audit=state.audit.filter(a=>(caseAccess||!a.action.startsWith('special'))&&(user.role==='admin'||a.action!=='costArchive')).slice(-300).reverse().map(a=>user.role==='admin'||a.action!=='import'?a:{...a,result:Array.isArray(a.result)?a.result.filter(r=>r?.kind!=='costArchive'):null});
+  const audit=state.audit.filter(a=>(caseAccess||!a.action.startsWith('special'))&&(user.role==='admin'||!['costArchive','purchasePrivate'].includes(a.action))).slice(-300).reverse().map(a=>user.role==='admin'||a.action!=='import'?a:{...a,result:Array.isArray(a.result)?a.result.filter(r=>r?.kind!=='costArchive'):null});
   return {...visible,role:roleOf(user),week,balances:state.skus.map(k=>({skuId:k.id,warehouse:k.warehouse,...(balance(state,k.id,k.warehouse)||{}),reported:state.snapshots.some(s=>s.skuId===k.id&&s.warehouse===k.warehouse&&chinaDate(s.at)>=week)})),audit};
 }
