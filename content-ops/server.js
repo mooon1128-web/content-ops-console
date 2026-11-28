@@ -6,11 +6,12 @@ import {workspaceView} from './stock-archives.js';
 import { stockView, roleOf, hasStockRole, fail } from './stock-model.js';
 import {createXhsStore,publicXhs} from './xhs-store.js';
 import {currentWholesaleProducts,catalogCostInfo} from './wholesale-catalog.js';
+import {promotionView} from './promotion-view.js';
 import RecordOps from '../public/content-ops/ops-core.cjs';
 import {createGzip} from 'node:zlib';
 import {Readable} from 'node:stream';
-const BUILD_ID='20261128-reconciliation-v2';
-const XHS_UI_VERSION='20261123-save-v4';
+const BUILD_ID='20261128-promotion-costs-v1';
+const XHS_UI_VERSION='20261128-promotion-costs-v1';
 const contentShape={titles:'rows',accounts:'rows',posts:'rows',products:'rows',inventorySettings:'map'};
 import { createServer } from "node:http";
 import { createHmac, timingSafeEqual, randomUUID, createHash } from "node:crypto";
@@ -684,8 +685,8 @@ function normalizeWholesaleProduct(product, baseUrl, costInfo = {}) {
     selected: false,
     focusOrder: 0,
     price: product.price ?? "",
-    unitCost: costInfo.unitCost || "",
-    cost: costInfo.unitCost || "",
+    unitCost: costInfo.costConnected ? costInfo.unitCost : "",
+    cost: costInfo.costConnected ? costInfo.unitCost : "",
     costSource: costInfo.source || "",
     costConnected: Boolean(costInfo.costConnected),
     costComponents: costInfo.components || [],
@@ -797,22 +798,34 @@ const stockStore = createStockStore({file:process.env.STOCK_OPS_DATA || join(dir
 const costFilesDir=process.env.STOCK_OPS_FILES_DIR || join(dirname(process.env.STOCK_OPS_DATA || dataFile),'stock-ops-cost-files');
 const purchaseFiles=createPurchaseFiles({dir:join(costFilesDir,'purchase-contracts'),readState:()=>stockStore.read('workspace')});
 let stockOptimization={status:'pending'};
-let stockCatalogCache=null,stockCatalogRequest=null;
-async function readStockCatalog(force=false){
-  if(!force&&stockCatalogCache&&Date.now()-Date.parse(stockCatalogCache.syncedAt)<300000)return stockCatalogCache;
-  if(stockCatalogRequest)return stockCatalogRequest;
-  stockCatalogRequest=(async()=>{
+let stockCatalogCache=null,wholesaleCatalogCache=null,wholesaleCatalogRequest=null;
+async function readWholesaleCatalog(force=false){
+  if(!force&&wholesaleCatalogCache&&Date.now()-Date.parse(wholesaleCatalogCache.syncedAt)<60000)return wholesaleCatalogCache;
+  if(wholesaleCatalogRequest)return wholesaleCatalogRequest;
+  wholesaleCatalogRequest=(async()=>{
     const base='https://pupuhome-wholesale.onrender.com';
-    const [response,data]=await Promise.all([fetch(base+'/data/products.js',{signal:AbortSignal.timeout(10000)}),loadWholesalePrivateData(base).catch(()=>({connected:false}))]);
-    if(!response.ok)throw fail(502,'订货商品目录暂时无法读取，现有图片和业务记录保留');
+    const [response,data]=await Promise.all([fetch(base+'/data/products.js',{signal:AbortSignal.timeout(10000)}),loadWholesalePrivateData(base).catch(()=>({connected:false,reason:'upstream-unavailable'}))]);
+    if(!response.ok)throw fail(502,'订货商品与成本暂时无法读取，请稍后重试');
     const rows=currentWholesaleProducts(parseProductsScript(await response.text()),data);
-    // Explicit public-field projection: never expose contracts, costs or orders.
-    const products=rows.map(p=>({id:String(p.id),code:String(p.code||''),name:String(p.name||''),image:p.image?new URL(p.image,base+'/').href:''}));
-    const result={products,syncedAt:new Date().toISOString(),catalogConnected:Boolean(data.connected)};
-    if(data.connected)stockCatalogCache=result;
+    const result={rows,data,syncedAt:new Date().toISOString()};
+    if(data.connected)wholesaleCatalogCache=result;
     return result;
   })();
-  try{return await stockCatalogRequest;}finally{stockCatalogRequest=null;}
+  try{return await wholesaleCatalogRequest;}finally{wholesaleCatalogRequest=null;}
+}
+async function readStockCatalog(force=false){
+  const {rows,data,syncedAt}=await readWholesaleCatalog(force);
+  // Public catalog fields only. Cost data never enters the stock catalog response.
+  const products=rows.map(p=>({id:String(p.id),code:String(p.code||''),name:String(p.name||''),image:p.image?new URL(p.image,'https://pupuhome-wholesale.onrender.com/').href:''}));
+  const result={products,syncedAt,catalogConnected:Boolean(data.connected)};
+  if(data.connected)stockCatalogCache=result;
+  return result;
+}
+async function readPromotionCatalog(force=false){
+  try{
+    const {rows,data,syncedAt}=await readWholesaleCatalog(force);
+    return {products:rows.map(p=>normalizeWholesaleProduct(p,'https://pupuhome-wholesale.onrender.com',productCostInfo(p,data.costSettings,data.costSeeds))),syncedAt,catalogConnected:Boolean(data.connected),error:data.connected?'':'订货后台最新成本未连接，当前成本待核'};
+  }catch(error){return {products:[],catalogConnected:false,error:error.message};}
 }
 
 const stockLive=createStockLive({version:()=>stockStore.version(),authorize:async req=>{const user=await access.requireUser(req);if(roleOf(user)==='none')throw fail(403,'请重新登录');}});
@@ -861,6 +874,11 @@ const server = createServer(async (request, response) => {
       }
       if(url.pathname==='/api/stock-ops/command-status'&&request.method==='GET'){
         send(response,200,await stockStore.receipt(url.searchParams.get('requestId'),user));return;
+      }
+      if(url.pathname==='/api/stock-ops/promotions/version'&&request.method==='GET'){send(response,200,{updatedAt:await xhsStore.version()});return;}
+      if(url.pathname==='/api/stock-ops/promotions'&&request.method==='GET'){
+        const [source,catalog]=await Promise.all([xhsStore.placements(),readPromotionCatalog(url.searchParams.get('refresh')==='1')]);
+        send(response,200,promotionView(source,catalog,user));return;
       }
       if(url.pathname==='/api/stock-ops/samples'&&request.method==='GET'){
         const state=await xhsStore.read();
@@ -921,17 +939,11 @@ const server = createServer(async (request, response) => {
       const sourceUrl = url.searchParams.get("url") || "https://pupuhome-wholesale.onrender.com/admin.html";
       const baseUrl = new URL(sourceUrl).origin;
       if(baseUrl!=="https://pupuhome-wholesale.onrender.com")throw fail(400,"订货数据来源未获配置，请联系管理员");
-      const [productResponse, privateData] = await Promise.all([
-        fetch(new URL("/data/products.js", baseUrl), {signal:AbortSignal.timeout(10000)}),
-        loadWholesalePrivateData(baseUrl).catch(()=>({connected:false,reason:'upstream-unavailable',customProducts:[]})),
-      ]);
-      if (!productResponse.ok) throw fail(502, "订货系统商品读取失败，请稍后重试");
-      const script = await productResponse.text();
-      const rawProducts = currentWholesaleProducts(parseProductsScript(script), privateData);
+      const {rows:rawProducts,data:privateData,syncedAt}=await readWholesaleCatalog(url.searchParams.get('refresh')==='1');
       const user=request.contentOpsUser, admin=user.role==='admin';
       const products = rawProducts.map(product => normalizeWholesaleProduct(product, baseUrl, catalogCostInfo(user,product,privateData,productCostInfo)));
       send(response, 200, {
-        products, sourceUrl, syncedAt: new Date().toISOString(),
+        products, sourceUrl, syncedAt,
         catalogConnected: Boolean(privateData.connected),
         catalogConnectionReason: privateData.reason || '',
         costConnected: admin && Boolean(privateData.connected),

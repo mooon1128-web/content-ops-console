@@ -53,6 +53,12 @@ export function createXhsStore({file,remote,stateId}){
     }
     throw fail(409,'其他同事正在保存，请稍后重试；本次未覆盖数据');
   }
-  return {read:async()=>publicXhs((await load()).state),raw:async()=>(await load()).state,version,
+  async function placements(){
+    if(!remote){const {state}=await load();return {placements:state.placements||[],updatedAt:state.updatedAt};}
+    const rows=await remote(`/content_ops_state?id=eq.${encodeURIComponent(stateId)}&select=placements:state->placements,updated_at`);
+    if(!rows?.[0])throw fail(503,'推广记录暂时无法读取，保留上次数据');
+    return {placements:rows[0].placements||[],updatedAt:new Date(rows[0].updated_at).toISOString()};
+  }
+  return {placements,read:async()=>publicXhs((await load()).state),raw:async()=>(await load()).state,version,
     commit:(command,user)=>{const work=queue.then(()=>commitOnce(command,user));queue=work.catch(()=>{});return work;}};
 }
