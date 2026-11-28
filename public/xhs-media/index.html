@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>小红书媒介投放跟踪台</title>
-  <link rel="stylesheet" href="styles.css?v=20261128-pr-ledger-v3" />
+  <link rel="stylesheet" href="styles.css?v=20261128-pr-periods-v4" />
 </head>
 <body>
   <button type="button" id="sidebar-toggle" class="sidebar-toggle" aria-controls="app-sidebar" aria-expanded="true">‹ 收起菜单</button>
@@ -218,7 +218,8 @@
           <h1>达人投放台账</h1>
         </div>
         <div class="heading-actions">
-          <label class="period-control">PR 发布周期<select id="ledger-period"></select></label>
+          <label class="period-control"><span id="ledger-period-label">PR 发布周期</span><select id="ledger-period"></select></label>
+          <button type="button" id="ledger-month-toggle" class="secondary-button" aria-pressed="false">按月显示</button>
         </div>
       </div>
       <div class="toolbar">
@@ -508,6 +509,6 @@
   <datalist id="creator-type-list"></datalist>
   <datalist id="creator-name-list"></datalist>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="interface-update.js?v=20261128-pr-ledger-v3"></script><script src="/promotion-data.cjs?v=20261128-pr-ledger-v3"></script><script src="product-catalog-ui.js?v=20261128-pr-ledger-v3"></script><script src="app.js?v=20261128-pr-ledger-v3"></script>
+  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="interface-update.js?v=20261128-pr-periods-v4"></script><script src="/promotion-data.cjs?v=20261128-pr-periods-v4"></script><script src="product-catalog-ui.js?v=20261128-pr-periods-v4"></script><script src="app.js?v=20261128-pr-periods-v4"></script>
 </body>
 </html>

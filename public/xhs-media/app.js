@@ -277,6 +277,7 @@
   let hasCurrentSessionChanges = false;
   let overviewPeriod = today().slice(0, 7);
   let ledgerPeriod = "all";
+  let ledgerPeriodMode = "cycle";
 
   function loadPlacements() {
     try {
@@ -1551,6 +1552,39 @@
     return item.status === '已发布';
   }
 
+  function ledgerPeriodKey(item) {
+    return ledgerPeriodMode === 'month' ? prDate(item.publishedAt).slice(0, 7) : prReview(item).cycle;
+  }
+
+  function ledgerPeriodLabel(value) {
+    if (ledgerPeriodMode !== 'month') return prCycleLabel(value);
+    if (value === 'all') return '全部月份';
+    if (value === 'undated' || !/^\d{4}-\d{2}$/.test(value)) return '发布日期待核';
+    const [year, month] = value.split('-').map(Number);
+    const end = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+    return `${value}-01 至 ${end}`;
+  }
+
+  function ledgerPeriodOptions() {
+    const recorded = placements.filter(prPublished).map(ledgerPeriodKey).filter(Boolean);
+    const current = ledgerPeriodMode === 'month' ? prToday().slice(0, 7) : prCycle(prToday());
+    const selected = /^\d{4}-\d{2}$/.test(ledgerPeriod) ? [ledgerPeriod] : [];
+    const anchors = ['2026-01', '2028-12', current, ...recorded, ...selected].sort();
+    const [firstYear, firstMonth] = anchors[0].split('-').map(Number);
+    const [lastYear, lastMonth] = anchors.at(-1).split('-').map(Number);
+    const months = [];
+    for (let index = firstYear * 12 + firstMonth - 1; index <= lastYear * 12 + lastMonth - 1; index++) {
+      months.push(`${Math.floor(index / 12)}-${String(index % 12 + 1).padStart(2, '0')}`);
+    }
+    return [{value:'all',label:ledgerPeriodLabel('all')}, ...months.reverse().map(value=>({value,label:ledgerPeriodLabel(value)})), {value:'undated',label:ledgerPeriodLabel('undated')}];
+  }
+
+  function setLedgerPeriodMode(mode) {
+    ledgerPeriodMode = mode === 'month' ? 'month' : 'cycle';
+    renderPeriodControls();
+    renderTable();
+  }
+
   function prAge(item) {
     const date = prDate(item.publishedAt);
     return date ? Math.round((Date.parse(prToday()+'T00:00:00Z')-Date.parse(date+'T00:00:00Z'))/86400000) : NaN;
@@ -1643,7 +1677,7 @@
       const group = owners.get(key) || { name: item.owner || '负责人待补', total: 0, qualified: 0 };
       group.total++; if (prReview(item).qualifies) group.qualified++; owners.set(key, group);
     });
-    target.innerHTML = `<div class="pr-summary-heading"><strong>${escapeHtml(prCycleLabel(ledgerPeriod))}</strong><span>每月 17 日至次月 16 日；满200赞按达标日计任务，未满200赞按7天审核归属。</span></div>
+    target.innerHTML = `<div class="pr-summary-heading"><strong>${escapeHtml(ledgerPeriodLabel(ledgerPeriod))}</strong><span>${ledgerPeriodMode === 'month' ? '按实际发布日期查看自然月 1 日至月底；每条记录的 PR 达标周期保持不变。' : '每月 17 日至次月 16 日；满200赞按达标日计任务，未满200赞按7天审核归属。'}</span></div>
       <div class="pr-summary-cards">${[['已发布',unique.length],['已达标 ≥200赞',qualified],['7天数据未达标',reviews.filter(r=>r.key==='below').length],['未满7天',reviews.filter(r=>r.age>=0&&r.age<7).length],['7天数据待补',pending],['日期待核',check]].map(([label,count])=>`<div><span>${label}</span><strong>${count}</strong></div>`).join('')}</div>
       <div class="pr-owner-summary">${[...owners.values()].map(o=>`<span>${escapeHtml(o.name)}：${o.qualified} 条达标 / ${o.total} 条已发布</span>`).join('')}</div>
       <small>手动录入后自动统计：达到 200 赞立即达标；未达 200 赞以 7 天数据判断。16日截止前达标计本周期，否则转入下周期审核。提前达标仍须补填 7 天数据；“未满7天／待补”可与达标重叠，不重复计合作数。</small>`;
@@ -2086,10 +2120,12 @@
     if (overview) { overview.innerHTML = periodOptions(false).map(o=>`<option value="${o.value}">${o.label}</option>`).join(''); overview.value = overviewPeriod; }
     const ledger = $('#ledger-period');
     if (ledger) {
-      const cycles = new Set([prCycle(prToday()), ...placements.filter(prPublished).map(item=>prReview(item).cycle).filter(Boolean)]);
-      const options = [{value:'all',label:'全部发布周期'}, ...[...cycles].sort().reverse().map(value=>({value,label:prCycleLabel(value)})), {value:'undated',label:'统计日期待核'}];
+      const options = ledgerPeriodOptions();
       ledger.innerHTML = options.map(o=>`<option value="${o.value}">${o.label}</option>`).join(''); ledger.value = ledgerPeriod;
     }
+    const label = $('#ledger-period-label'), toggle = $('#ledger-month-toggle');
+    if (label) label.textContent = ledgerPeriodMode === 'month' ? '发布月份' : 'PR 发布周期';
+    if (toggle) { toggle.textContent = ledgerPeriodMode === 'month' ? '按发布周期显示' : '按月显示'; toggle.setAttribute('aria-pressed', String(ledgerPeriodMode === 'month')); }
   }
 
   function renderProductBoard() {
@@ -2779,7 +2815,7 @@
     const result = $('#result-filter')?.value || 'all';
     const dataEntry = $('#data-entry-filter')?.value || 'all';
     const published = prUniqueRows(placements.filter(prPublished));
-    const periodRows = ledgerPeriod === 'all' ? published : published.filter(item=>ledgerPeriod==='undated' ? !prReview(item).cycle : prReview(item).cycle===ledgerPeriod);
+    const periodRows = ledgerPeriod === 'all' ? published : published.filter(item=>ledgerPeriod==='undated' ? !ledgerPeriodKey(item) : ledgerPeriodKey(item)===ledgerPeriod);
     return filterSelectedProduct(periodRows).filter(item => {
       const haystack = [item.creator,item.product,placementProductName(item),item.noteTitle,item.owner,item.notes,placementPlatform(item)].join(' ').toLowerCase();
       if (query && !haystack.includes(query)) return false;
@@ -3588,6 +3624,7 @@
       boardRecordIds = null; selectedProduct = "all";
       renderAll();
     });
+    $('#ledger-month-toggle').addEventListener('click', () => setLedgerPeriodMode(ledgerPeriodMode === 'month' ? 'cycle' : 'month'));
     $("#budget-panel").addEventListener("change", (event) => {
       if (event.target.id !== "monthly-budget-input" || !/^\d{4}-\d{2}$/.test(overviewPeriod)) return;
       monthlyBudgets[overviewPeriod] = number(event.target.value);
@@ -4028,7 +4065,7 @@
     const cloudState=await response.json();
     const backup={source:API_URL,account:user.username,at:new Date().toISOString(),draft,cloudState};
     const panel=document.createElement('main');panel.className='recovery-page';
-    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261128-pr-ledger-v3">备份完成后打开新版</a>';
+    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261128-pr-periods-v4">备份完成后打开新版</a>';
     document.body.replaceChildren(panel);
     $('#recovery-count').textContent=`本机待同步更改 ${draft?.operations?.length||0} 项；云端投放 ${cloudState.placements?.length||0} 条。请保留原来卡住的页面，先下载备份核对。`;
     $('#recovery-download').onclick=()=>{downloadRecovery(backup,'PR保存故障核对_'+today()+'.json');$('#recovery-feedback').textContent='已发起备份下载，请确认文件已保存。原页面和草稿仍保留。';};
@@ -4086,7 +4123,7 @@
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloud.refresh()});
     let renderedPrDate=prToday();
     window.setInterval(()=>{const date=prToday();if(date!==renderedPrDate&&!hasOpenEditorDialog()&&!document.activeElement?.matches('input,textarea,select')){renderedPrDate=date;renderAll();}},60000);
-    InterfaceUpdate.mount({current:'20261128-pr-ledger-v3',url:'/api/xhs-media/version',host:syncPanel,
+    InterfaceUpdate.mount({current:'20261128-pr-periods-v4',url:'/api/xhs-media/version',host:syncPanel,
       getBlockReason:()=>hasPendingLocalSync()||cloud?.saving?'有尚未确认的保存或同步冲突，请先完成同步；必要时导出待同步修改。':
         hasOpenEditorDialog()?'请先保存或取消正在编辑的表单，再更新界面。':
         !cloud?.ready||cloud?.stopped?'请先恢复登录和数据连接。':
