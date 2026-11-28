@@ -19,6 +19,7 @@ export function purchaseRecordCard(state,kind,id){
   return {title:{order:'补货批次记录',receipt:'到货登记记录',return:'寄回登记记录'}[kind],reference:item.reference,fields};
 }
 export async function downloadRecordImage(card){
+  if(card.headers){for(const [i,canvas] of renderReconciliationCanvases(card).entries())await saveCanvas(canvas,card,i);return;}
   const width=1200,pad=64,lineHeight=42,canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');
   if(!ctx)throw Error('当前浏览器暂不支持图片下载');
   const font='28px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif';ctx.font=font;
@@ -31,4 +32,35 @@ export async function downloadRecordImage(card){
     const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw Error('图片生成失败');
     const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=(card.title+'_'+card.reference).replace(/[\\/:*?"<>|]/g,'_')+(pages.length>1?`_${n+1}`:'')+'.png';link.click();setTimeout(()=>URL.revokeObjectURL(url),60000);
   }
+}
+
+// Only factory reconciliation facts belong in this export; private prices and contracts do not.
+export function reconciliationCard(report){
+  const t=report.totals,name=report.product?.name||report.skuId;
+  return {title:'到货与瑕疵对账表',reference:report.reference,headers:['产品名','到货单／日期','寄来数量','验收入库','瑕疵数量','最终寄回'],
+    rows:[...report.rows.map(r=>[name,r.reference+'\n'+at(r.at),r.received,r.good,r.defect,r.returned]),['合计','全部到货',t.received,t.good,t.defect,t.returned]],
+    notes:[`仓库：${report.warehouse}    下单：${report.ordered} 件    少到：${t.shortfall} 件    超收：${t.over} 件`,
+      `瑕疵汇总：${t.defect} 件 = 寄回 ${t.returned} 件 + 留仓 ${t.defectInWarehouse} 件；待检 ${t.pending} 件。`,
+      ...report.rows.filter(r=>r.defect).map(r=>`${r.reference}：瑕疵 ${r.defect} 件，寄回 ${r.returned} 件，留仓 ${r.remainingDefect} 件；${r.remainingDefect?r.returnDecision:'已全部寄回'}。处理依据：${r.decisionNote||r.note||'未填写'}`),
+      ...report.rows.flatMap(r=>r.returns.map(x=>`${r.reference}／寄回单 ${x.reference}：${at(x.at)}，寄回 ${x.quantity} 件，物流 ${x.trackingNumber||'未填写'}；${x.note||''}`)),
+      ...(report.discrepancyNote?['差额处理：'+report.discrepancyNote]:[]),
+      report.sentAt?`第 ${report.version} 版 · ${report.status||'已处理完毕'} · 发送时间 ${at(report.sentAt)}`:'当前明细，尚未经本次处理完毕确认',
+      ...(report.processedBy?['仓管确认：'+(report.processedBy.name||report.processedBy.username||'仓管')]:[])]};
+}
+export function renderReconciliationCanvases(card,createCanvas=()=>document.createElement('canvas')){
+  const width=1600,pad=48,maxHeight=2400,line=36,font='26px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif',colWidths=[400,330,180,200,180,214];
+  const probe=createCanvas(),measure=probe.getContext('2d');if(!measure)throw Error('当前浏览器暂不支持图片下载');measure.font=font;
+  const wrap=(value,max)=>{const lines=[];for(const p of String(value??'—').split('\n')){let text='';for(const char of p){if(text&&measure.measureText(text+char).width>max){lines.push(text);text='';}text+=char;}lines.push(text);}return lines;};
+  const chunks=[];for(const row of card.rows){const cells=row.map((v,i)=>wrap(v,colWidths[i]-24)),length=Math.max(...cells.map(c=>c.length));for(let start=0;start<length;start+=40)chunks.push({cells:cells.map(c=>c.slice(start,start+40)),height:Math.min(40,length-start)*line+28});}
+  for(const note of card.notes){const lines=wrap(note,width-pad*2-24);for(let start=0;start<lines.length;start+=40)chunks.push({cells:[lines.slice(start,start+40)],height:Math.min(40,lines.length-start)*line+28,note:true});}
+  const pages=[];let page=[],height=230;for(const row of chunks){if(height+row.height>maxHeight-64&&page.length){pages.push(page);page=[];height=230;}page.push(row);height+=row.height;}if(page.length)pages.push(page);
+  return pages.map((rows,n)=>{
+    const canvas=createCanvas();canvas.width=width;canvas.height=230+rows.reduce((s,r)=>s+r.height,0)+64;const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,width,canvas.height);ctx.fillStyle='#243e35';ctx.font='bold 40px -apple-system, "PingFang SC", sans-serif';ctx.fillText(card.title,pad,66);ctx.font=font;ctx.fillText('批次：'+card.reference,pad,116);ctx.fillText(`第 ${n+1} / ${pages.length} 页`,width-240,66);
+    const draw=(cells,y,h,note=false,head=false)=>{let x=pad;ctx.font=font;for(let i=0;i<cells.length;i++){const w=note?width-pad*2:colWidths[i];ctx.fillStyle=head?'#e9f0e5':note?'#f8faf6':'#fff';ctx.fillRect(x,y,w,h);ctx.strokeStyle='#bbc9b6';ctx.lineWidth=1;ctx.strokeRect(x,y,w,h);ctx.fillStyle='#243e35';cells[i].forEach((s,j)=>ctx.fillText(s,x+12,y+36+j*line));x+=w;}};
+    draw(card.headers.map(s=>[s]),160,70,false,true);let y=230;for(const row of rows){draw(row.cells,y,row.height,row.note);y+=row.height;}return canvas;
+  });
+}
+async function saveCanvas(canvas,card,page){
+  const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw Error('图片生成失败');
+  const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=(card.title+'_'+card.reference).replace(/[\\/:*?"<>|]/g,'_')+'_'+(page+1)+'.png';link.click();setTimeout(()=>URL.revokeObjectURL(url),60000);
 }

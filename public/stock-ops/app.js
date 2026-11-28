@@ -1,6 +1,8 @@
 import {createCommandClient,acceptNewerState} from './reliable-save.js?v=20261123-purchase-reliable-v1';
 import {renderSalesRecipes,collectionInstructions as componentInstructions} from './sales-recipes-ui.js';
-import {renderPurchases,renderReplenishment} from './purchasing-ui.js?v=20261128-receipts-finance-v1';
+import {renderPurchases,renderReplenishment} from './purchasing-ui.js?v=20261128-reconciliation-v2';
+import {showHandoffInbox} from './purchase-handoff-ui.js';
+import {handoffInbox} from './purchase-reconciliation.js';
 import {renderSpecial} from './special-ui.js';
 import {renderCatalog} from './catalog-ui.js';
 import {renderMonthly,productCell,bindImageFallback,sampleMonthData,productPresentation,setProductCatalog} from './sales-ui.js';
@@ -38,11 +40,12 @@ async function syncProductCatalog(force=false){
   catch(error){catalogStatus='商品同步未完成，现有资料保留：'+error.message;}
   finally{catalogBusy=false;if(button)button.disabled=false;if(!editing())render();else if(label)label.textContent=catalogStatus;}
 }
-async function refresh(renderPage=true){const incoming=await request('/api/stock-ops/state?view=workspace');state=acceptNewerState(state,incoming);$('#sync-status').innerHTML=`<i class="live-dot"></i>已同步 · ${state.updatedAt?textDate(state.updatedAt):'尚未登记'}`;if(renderPage&&!editing())render();}
+function updateHandoffNotice(){const el=$('#handoff-inbox');el.hidden=!can('finance');if(el.hidden)return;const unread=handoffInbox(state,user?.id).filter(r=>!r.recipients.find(u=>u.id===user?.id)?.readAt).length;el.textContent='仓库对账资料'+(unread?` · ${unread} 未读`:'');el.classList.toggle('has-unread',unread>0);}
+async function refresh(renderPage=true){const incoming=await request('/api/stock-ops/state?view=workspace');state=acceptNewerState(state,incoming);$('#sync-status').innerHTML=`<i class="live-dot"></i>已同步 · ${state.updatedAt?textDate(state.updatedAt):'尚未登记'}`;updateHandoffNotice();if(renderPage&&!editing())render();}
 async function command(action,data,key){
   const result=await commandClient.send(action,data);
   $('#sync-status').textContent='服务器已确认保存';
-  try{await refresh(false);notice('服务器已确认保存，列表已更新。');}
+  try{await refresh(false);notice(action==='purchaseComplete'?'批次已处理完毕，对账资料已发送给管理员和 bonnie。':action==='purchaseHandoffRead'?'已标记为已阅。':'服务器已确认保存，列表已更新。');}
   catch(error){notice('记录已保存，但列表尚未刷新成功。请点刷新查看，不要重新登记。',true);}
   return result;
 }
@@ -50,6 +53,7 @@ async function activate(){const session=await request('/api/content-ops/session'
 $('#login-form').onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector('button');b.disabled=true;try{await request('/api/content-ops/login',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});e.target.reset();await activate();}catch(err){$('#login-message').textContent=err.message}finally{b.disabled=false}};
 $('#logout').onclick=async()=>{await request('/api/content-ops/logout',{method:'POST',body:'{}'});location.reload()};
 $('#refresh').onclick=()=>refresh().catch(e=>notice(e.message,true));
+$('#handoff-inbox').onclick=()=>showHandoffInbox(purchaseApi());
 $('#backup').onclick=async()=>{const b=$('#backup');b.disabled=true;try{const full=await request('/api/stock-ops/state');download(`经营协作备份_${today()}.json`,JSON.stringify(full,null,2),'application/json');}catch(e){notice('备份未完成：'+e.message,true);}finally{b.disabled=false;}};
 const closeEditor=()=>{if(editorBusy){$('#form-message').textContent='正在上传或确认保存结果，请稍候；填写内容保留中。';return;}$('#editor').close();render();};
 $('#close-editor').onclick=$('#cancel-editor').onclick=closeEditor;
@@ -62,7 +66,7 @@ $('#editor-form').onsubmit=async e=>{
  catch(err){$('#form-message').textContent=err.message;}
  finally{editorBusy=false;controls.forEach(([el,disabled])=>el.disabled=disabled);}
 };
-function showEditor(title,fields,handler,hint='') {if(editorBusy)return;$('#save-editor').textContent='保存记录';$('#editor-title').textContent=title;$('#editor-hint').textContent=hint;$('#editor-hint').hidden=!hint;$('#editor-fields').innerHTML=fields;$('#form-message').textContent='';editorHandler=handler;$('#editor').showModal();}
+function showEditor(title,fields,handler,hint='') {if(editorBusy)return;$('#save-editor').disabled=false;$('#editor').classList.remove('purchase-dialog');$('#save-editor').textContent='保存记录';$('#editor-title').textContent=title;$('#editor-hint').textContent=hint;$('#editor-hint').hidden=!hint;$('#editor-fields').innerHTML=fields;$('#form-message').textContent='';editorHandler=handler;$('#editor').showModal();$('#editor').scrollTop=0;}
 function field(name,label,value='',type='text',required=true,wide=false){return `<label class="${wide?'wide':''}">${escape(label)}<input name="${name}" type="${type}" value="${escape(value??'')}" ${required?'required':''} ${type==='number'?'step="any"':''}></label>`;}
 function area(name,label,value='',required=true){return `<label class="wide">${escape(label)}<textarea name="${name}" ${required?'required':''}>${escape(value)}</textarea></label>`;}
 function select(name,label,options,value=''){return `<label>${escape(label)}<select name="${name}" required>${options.map(o=>{const [v,l]=Array.isArray(o)?o:[o,o];return `<option value="${escape(v)}" ${String(value)===String(v)?'selected':''}>${escape(l)}</option>`}).join('')}</select></label>`;}
@@ -83,7 +87,7 @@ function render(){
   bindImageFallback();
   if(state.demo)$('#content').insertAdjacentHTML('afterbegin','<p class="hint"><strong>演示环境</strong> · 以下均为虚构的测试工单和库存，与真实业务数据隔离。</p>');
 }
-function purchaseApi(){return {state,$,can,heading,button,table,escape,num,pill,bind,bindAll,showEditor,field,area,select,skuSelect,command,localNow,iso,today,sku,render,syncProductCatalog,catalogStatus};}
+function purchaseApi(){return {state,userId:user?.id,productName:id=>productPresentation(sku(id)).fullName,$,can,heading,button,table,escape,num,pill,bind,bindAll,showEditor,field,area,select,skuSelect,command,localNow,iso,today,sku,render,syncProductCatalog,catalogStatus};}
 function purchases(){renderPurchases(purchaseApi());}
 function replenishment(){renderReplenishment(purchaseApi());}
 function special(){renderSpecial({state,can,$,escape,num,textDate,today,localNow,iso,skuLabel,sku,heading,button,table,pill,field,area,select,showEditor,command,bind,bindAll,csv,render});$('#content').insertAdjacentHTML('beforeend',button('ordinary-aftersales','普通退款／换货出入库'));bind('ordinary-aftersales',()=>{tab='aftersales';render()});}
