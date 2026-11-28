@@ -1,4 +1,5 @@
 (() => {
+  const PromotionData = globalThis.PromotionData;
   const STORAGE_KEY = "xhs_media_placements_v1";
   const PLACEMENTS_STATUS_BACKUP_KEY = "xhs_media_placements_before_status_migration_v1";
   const CREATORS_STORAGE_KEY = "xhs_media_creators_v1";
@@ -707,7 +708,7 @@
       price: number(product.price),
       unitCost,
       costSource: String(product.costSource || (unitCost ? "订货后台成本" : "")),
-      costConnected: Boolean(product.costConnected && unitCost),
+      costConnected: Boolean(product.costConnected && PromotionData.amount(product.unitCost ?? product.cost)!==null),
       costComponents: Array.isArray(product.costComponents) ? product.costComponents : [],
       unit: String(product.unit || "件"),
       image: String(product.image || product.imageUrl || ""),
@@ -722,6 +723,7 @@
     if (el) { el.textContent = message; el.classList.toggle('sync-warning', failed); }
   }
 
+  let catalogCheckedAt=0;
   async function loadWholesaleProducts(options = {}) {
     if (catalogLoad) return catalogLoad;
     const button = $("#sync-wholesale-products");
@@ -729,7 +731,7 @@
     catalogStatus("正在读取订货后台已保存的产品…");
     catalogLoad = (async () => {
       try {
-        const response = await fetch(`${WHOLESALE_PRODUCTS_API}?url=${encodeURIComponent(DEFAULT_WHOLESALE_ADMIN_URL)}`, {cache:"no-store", signal:AbortSignal.timeout(25000)});
+        const response = await fetch(`${WHOLESALE_PRODUCTS_API}?url=${encodeURIComponent(DEFAULT_WHOLESALE_ADMIN_URL)}${options.manual?'&refresh=1':''}`, {cache:"no-store", signal:AbortSignal.timeout(25000)});
         const payload = await response.json();
         if (!response.ok) throw Error(payload.error || "订货后台暂时无法连接");
         if (!Array.isArray(payload.products)) throw Error("产品数据格式异常");
@@ -737,6 +739,7 @@
         // A partial upstream response must never replace a previously complete live catalog.
         const complete = payload.catalogConnected === true;
         if (complete || !productCatalog.length) productCatalog = next;
+        catalogCheckedAt=Date.now();
         wholesaleCostStatus = {connected:Boolean(payload.costConnected),orderCount:number(payload.orderCount),costSettingsCount:number(payload.costSettingsCount),costSeedCount:number(payload.costSeedCount),customProductCount:number(payload.customProductCount),reason:String(payload.costConnectionReason||'')};
         renderProductPickerOptions(); updatePlacementProductCostDisplay();
         if (!hasOpenEditorDialog()&&!document.activeElement?.matches("input,textarea,select")) {hydrateControls();renderAll();}
@@ -768,40 +771,21 @@
   }
 
   function findCatalogProduct(value) {
-    const key = String(value || "").trim();
-    if (!key) return null;
-    const direct = productCatalog.find((item) => item.id === key || item.code === key || item.name === key);
-    if (direct) return direct;
-    const lookupKey = productLookupKey(key);
-    return productCatalog.find((item) => (
-      productLookupKey(item.id) === lookupKey ||
-      productLookupKey(item.code) === lookupKey ||
-      productLookupKey(item.name) === lookupKey ||
-      productLookupKey(productOptionLabel(item)) === lookupKey
-    )) || null;
+    return PromotionData.findProduct(value,productCatalog);
   }
 
   function productForPlacement(item) {
     return findCatalogProduct(item.productId) || findCatalogProduct(item.productCode) || findCatalogProduct(item.product);
   }
 
-  function placementProducts(item) {
-    const ids = Array.isArray(item.productIds) ? item.productIds : String(item.productIds || item.productId || "").split(",");
-    const codes = Array.isArray(item.productCodes) ? item.productCodes : String(item.productCodes || item.productCode || "").split(",");
-    const products = [...ids, ...codes].map(findCatalogProduct).filter(Boolean);
-    if (products.length) return Array.from(new Map(products.map((product) => [product.id, product])).values());
-    return productsFromProductText(item.product);
-  }
+  function placementProducts(item) {return PromotionData.resolvePlacement(item,productCatalog).products;}
 
-  function placementProductName(item) {
-    return productNamesForPlacement(item).join("、") || "未填产品";
-  }
+  function placementProductName(item) {return productNamesForPlacement(item).join('、') || '未填产品';}
 
   function placementProductDisplay(item) {
-    const products = placementProducts(item);
-    const manualProducts = manualProductSegmentsFromText(item.product, products);
-    const linkedProducts = products.map((product) => `<a href="${escapeHtml(productUrl(product))}" target="_blank" rel="noreferrer">${escapeHtml(product.name)}</a>`);
-    return [...linkedProducts, ...manualProducts.map(escapeHtml)].join("、") || escapeHtml(item.product || "未填产品");
+    const resolved=PromotionData.resolvePlacement(item,productCatalog);
+    return [...resolved.products.map(product=>`<a href="${escapeHtml(productUrl(product))}" target="_blank" rel="noreferrer">${escapeHtml(product.name)}</a>`),
+      ...resolved.unresolved.map(text=>`<span title="商品对应待确认">${escapeHtml(text)}（待核）</span>`)].join('、') || '未填产品';
   }
 
   function productKeysForPlacement(item) {
@@ -897,18 +881,15 @@
   }
 
   function placementProductCost(item) {
-    const products = placementProducts(item);
-    const liveCost = productsCostTotal(products, sampleQuantity(item));
-    if (liveCost) return liveCost;
-    return item.productCostConnected ? number(item.productCostSnapshot) : 0;
+    return PromotionData.costs(item,PromotionData.resolvePlacement(item,productCatalog)).sample ?? 0;
   }
 
   function placementCostStatus(item) {
-    const products = placementProducts(item);
-    if (!products.length) return { linked: false, complete: false, missing: true, label: "未关联产品" };
-    const missing = products.filter((product) => !productUnitCost(product)).length;
-    if (missing) return { linked: true, complete: false, missing: true, label: `${missing} 个产品缺成本` };
-    return { linked: true, complete: true, missing: false, label: "已关联成本" };
+    const resolved=PromotionData.resolvePlacement(item,productCatalog),cost=PromotionData.costs(item,resolved);
+    if(cost.basis==='snapshot')return {linked:true,complete:!resolved.unresolved.length,missing:!!resolved.unresolved.length,label:'历史已记录成本'};
+    if(resolved.unresolved.length)return {linked:!!resolved.products.length,complete:false,missing:true,label:resolved.unresolved.length+' 项商品对应待核'};
+    if(cost.sample===null)return {linked:!!resolved.products.length,complete:false,missing:true,label:'订货成本或数量待核'};
+    return {linked:true,complete:true,missing:false,label:cost.basis==='none'?'无需寄样':'按订货现成本估算'};
   }
 
   function placementDate(item) {
@@ -1741,9 +1722,8 @@
   }
 
   function productNamesForPlacement(item) {
-    const products = placementProducts(item);
-    const manualProducts = manualProductSegmentsFromText(item?.product, products);
-    return productTextFromSelection(products, manualProducts).split("、").filter(Boolean);
+    const resolved=PromotionData.resolvePlacement(item,productCatalog);
+    return [...resolved.products.map(p=>p.name),...resolved.unresolved];
   }
 
   function creatorTagList(value) {
@@ -3034,26 +3014,7 @@
   }
 
   function productsFromProductText(value) {
-    const segments = productSegments(value);
-    const segmentMatches = segments.map((segment) => {
-      const direct = findCatalogProduct(segment);
-      if (direct) return direct;
-      const segmentKey = productLookupKey(segment);
-      return productCatalog.find((product) => {
-        const nameKey = productLookupKey(product.name);
-        const codeKey = productLookupKey(product.code);
-        return (nameKey && (segmentKey.includes(nameKey) || nameKey.includes(segmentKey))) ||
-          (codeKey && (segmentKey.includes(codeKey) || codeKey.includes(segmentKey)));
-      });
-    }).filter(Boolean);
-    if (segmentMatches.length) return uniqueProducts(segmentMatches);
-    const textKey = productLookupKey(value);
-    if (!textKey) return [];
-    return uniqueProducts(productCatalog.filter((product) => {
-      const nameKey = productLookupKey(product.name);
-      const codeKey = productLookupKey(product.code);
-      return (nameKey && textKey.includes(nameKey)) || (codeKey && textKey.includes(codeKey));
-    }));
+    return PromotionData.resolvePlacement({product:value},productCatalog).products;
   }
 
   function uniqueProducts(products) {
@@ -3314,12 +3275,12 @@
     if (current.id && !selectedProducts.length && input.product === current.product) {
       for (const key of ['productId','productIds','productCode','productCodes','productCategory','productStatus','productUrl']) if (Object.hasOwn(current,key)) data[key]=current[key];
     }
-    const missingCost = selectedProducts.some((product) => !productUnitCost(product));
+    const missingCost = selectedProducts.some(product => !product.costConnected || PromotionData.amount(product.unitCost)===null) || manualProductSegmentsFromText(data.product,selectedProducts).length>0;
     data.productCostSnapshot = missingCost ? 0 : productsCostTotal(selectedProducts, data.sampleQuantity);
     data.productCostConnected = selectedProducts.length > 0 && !missingCost;
     data.productCostSource = data.productCostConnected ? "订货后台真实成本" : "";
     const sameSelection = JSON.stringify([...(data.productIds||[])].sort()) === JSON.stringify([...oldIds].sort()) && data.sampleQuantity === sampleQuantity(current);
-    if (current.id && sameSelection && (!data.productCostConnected || currentUser?.role !== 'admin')) {
+    if (current.id && sameSelection && (current.productCostConnected || !data.productCostConnected || currentUser?.role !== 'admin')) {
       for (const key of ['productCostSnapshot','productCostConnected','productCostSource']) {
         if (Object.hasOwn(current,key)) data[key]=current[key]; else delete data[key];
       }
@@ -4015,7 +3976,7 @@
     const cloudState=await response.json();
     const backup={source:API_URL,account:user.username,at:new Date().toISOString(),draft,cloudState};
     const panel=document.createElement('main');panel.className='recovery-page';
-    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261123-save-v4">备份完成后打开新版</a>';
+    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261128-promotion-costs-v1">备份完成后打开新版</a>';
     document.body.replaceChildren(panel);
     $('#recovery-count').textContent=`本机待同步更改 ${draft?.operations?.length||0} 项；云端投放 ${cloudState.placements?.length||0} 条。请保留原来卡住的页面，先下载备份核对。`;
     $('#recovery-download').onclick=()=>{downloadRecovery(backup,'PR保存故障核对_'+today()+'.json');$('#recovery-feedback').textContent='已发起备份下载，请确认文件已保存。原页面和草稿仍保留。';};
@@ -4030,7 +3991,7 @@
     $$("[data-admin-cost]").forEach(el=>{el.hidden=currentUser.role!=="admin";});
     const syncPanel=document.createElement('div');syncPanel.className='shared-status-panel';
     syncPanel.innerHTML='<strong id="shared-user"></strong><span id="shared-version"></span><a href="/stock-ops/">经营协作台</a><button id="shared-export-pending">导出待同步修改</button><button id="shared-recover" hidden>核对冲突</button><button id="legacy-export">导出旧设备缓存</button><button id="shared-logout">退出</button>';
-    document.body.prepend(syncPanel);$('#shared-user').textContent=session.user.name+' · PR系统 · 11/23 合作登记版';
+    document.body.prepend(syncPanel);$('#shared-user').textContent=session.user.name+' · PR系统 · 推广花销联动版';
     $$("dialog").forEach(dialog => {
       const panel = document.createElement("div");panel.className="dialog-sync-feedback";
       panel.innerHTML='<p data-dialog-status role="status" aria-live="polite"></p><button type="button" class="secondary-button small" data-dialog-export>导出待同步修改</button><a data-dialog-login href="/xhs-media/login" target="_blank" rel="noopener">重新登录</a>';
@@ -4061,10 +4022,15 @@
     for(const type of ['click','submit','input','change','keydown'])document.addEventListener(type,event=>{
       if(!allowSyncInteraction(event)){event.preventDefault();event.stopImmediatePropagation();if(event.type==='click')toast(syncMessage||'当前无法提交，请先导出修改并关闭窗口处理登录或同步冲突');}
     },true);
-    hydrateControls();bindEvents();renderAll();await cloud.start();loadWholesaleProducts();
+    hydrateControls();bindEvents();renderAll();await cloud.start();
+    const targetPlacement=new URLSearchParams(location.search).get('placement');
+    const loadedProducts=loadWholesaleProducts();
+    if(targetPlacement){await loadedProducts;const target=placements.find(p=>p.id===targetPlacement);if(target)openForm(target);else toast('此合作记录已不存在，请在台账核对');}
+    const refreshCatalog=()=>{if(!document.hidden&&!hasOpenEditorDialog()&&!document.activeElement?.matches('input,textarea,select')&&Date.now()-catalogCheckedAt>=60000)void loadWholesaleProducts();};
+    window.setInterval(refreshCatalog,60000);window.addEventListener('focus',refreshCatalog);
     window.addEventListener('online',()=>cloud.refresh());window.addEventListener('focus',()=>cloud.refresh());
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloud.refresh()});
-    InterfaceUpdate.mount({current:'20261123-save-v4',url:'/api/xhs-media/version',host:syncPanel,
+    InterfaceUpdate.mount({current:'20261128-promotion-costs-v1',url:'/api/xhs-media/version',host:syncPanel,
       getBlockReason:()=>hasPendingLocalSync()||cloud?.saving?'有尚未确认的保存或同步冲突，请先完成同步；必要时导出待同步修改。':
         hasOpenEditorDialog()?'请先保存或取消正在编辑的表单，再更新界面。':
         !cloud?.ready||cloud?.stopped?'请先恢复登录和数据连接。':
