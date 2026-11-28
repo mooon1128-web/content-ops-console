@@ -8,7 +8,7 @@ import {currentWholesaleProducts,catalogCostInfo} from './wholesale-catalog.js';
 import RecordOps from '../public/content-ops/ops-core.cjs';
 import {createGzip} from 'node:zlib';
 import {Readable} from 'node:stream';
-const BUILD_ID='20261123-save-v1';
+const BUILD_ID='20261127-purchase-edit-v1';
 const XHS_UI_VERSION='20261123-save-v4';
 const contentShape={titles:'rows',accounts:'rows',posts:'rows',products:'rows',inventorySettings:'map'};
 import { createServer } from "node:http";
@@ -796,6 +796,23 @@ const stockStore = createStockStore({file:process.env.STOCK_OPS_DATA || join(dir
 const costFilesDir=process.env.STOCK_OPS_FILES_DIR || join(dirname(process.env.STOCK_OPS_DATA || dataFile),'stock-ops-cost-files');
 const purchaseFiles=createPurchaseFiles({dir:join(costFilesDir,'purchase-contracts'),readState:()=>stockStore.read('workspace')});
 let stockOptimization={status:'pending'};
+let stockCatalogCache=null,stockCatalogRequest=null;
+async function readStockCatalog(force=false){
+  if(!force&&stockCatalogCache&&Date.now()-Date.parse(stockCatalogCache.syncedAt)<300000)return stockCatalogCache;
+  if(stockCatalogRequest)return stockCatalogRequest;
+  stockCatalogRequest=(async()=>{
+    const base='https://pupuhome-wholesale.onrender.com';
+    const [response,data]=await Promise.all([fetch(base+'/data/products.js',{signal:AbortSignal.timeout(10000)}),loadWholesalePrivateData(base).catch(()=>({connected:false}))]);
+    if(!response.ok)throw fail(502,'订货商品目录暂时无法读取，现有图片和业务记录保留');
+    const rows=currentWholesaleProducts(parseProductsScript(await response.text()),data);
+    // Explicit public-field projection: never expose contracts, costs or orders.
+    const products=rows.map(p=>({id:String(p.id),code:String(p.code||''),name:String(p.name||''),image:p.image?new URL(p.image,base+'/').href:''}));
+    const result={products,syncedAt:new Date().toISOString(),catalogConnected:Boolean(data.connected)};
+    if(data.connected)stockCatalogCache=result;
+    return result;
+  })();
+  try{return await stockCatalogRequest;}finally{stockCatalogRequest=null;}
+}
 
 const server = createServer(async (request, response) => {
   try {
@@ -806,6 +823,7 @@ const server = createServer(async (request, response) => {
       if (request.headers.origin && new URL(request.headers.origin).host !== request.headers.host || request.headers['sec-fetch-site']==='cross-site') throw fail(403,'不允许跨网站访问');
       const user=await access.requireUser(request);
       if(roleOf(user)==='none')throw fail(403,'请管理员分配经营协作权限');
+      if(url.pathname==='/api/stock-ops/product-catalog'&&request.method==='GET'){send(response,200,await readStockCatalog(url.searchParams.get('refresh')==='1'));return;}
       if(url.pathname==='/api/stock-ops/purchase-contract'){await purchaseFiles.handle(request,response,url,user,send);return;}
       if(url.pathname==='/api/stock-ops/storage'&&request.method==='GET'){
         if(user.role!=='admin')throw fail(403,'仅管理员可查看存储信息');
