@@ -129,3 +129,35 @@ test('invalid observation never changes saved metrics; late entry of pre-7-day d
  await f.s.savePerformanceReview(reviewForm('valid','2026-11-14',200));assert.equal(JSON.stringify(item),before);
  await f.s.savePerformanceReview(reviewForm('valid','2026-11-16',200));assert.equal(f.s.isDay7ReviewDue(item),true);assert.equal(f.s.prReview(item).cycle,'2026-10');
 });
+
+
+test('confirmed scripts have their own bucket and remain separate from waiting and invalid records',()=>{
+ const confirmed=row('script',{status:'脚本已确认',agreedPublishAt:'2026-11-25'});
+ const f=setup([confirmed,row('waiting',{status:'等待发布',agreedPublishAt:'2026-11-26'})]);
+ const before=JSON.stringify(f.s.rows());
+ assert.equal(f.s.followupTask(confirmed).kind,'script-confirmed');
+ assert.ok(!f.s.followupTask(confirmed).warnings.some(w=>w.includes('稿件申请仍未完成')));
+ f.s.renderFollowups();const html=f.node('#followup-list').innerHTML;
+ assert.match(f.node('#followup-summary').innerHTML,/脚本已确认/);
+ assert.doesNotMatch(f.node('#followup-summary').innerHTML,/信息待核对/);
+ assert.match(html,/<section class="followup-bucket" id="followup-script-confirmed">[\s\S]*?Creator script/);
+ assert.equal((html.match(/data-edit="script"/g)||[]).length,1);
+ assert.doesNotMatch(html,/id="followup-information-check"/);
+ assert.equal(JSON.stringify(f.s.rows()),before);
+});
+test('confirmed scripts still move into overdue and published followups, and date issues stay visible',()=>{
+ const f=setup([row('invalid',{status:'已发布'})]);
+ assert.equal(f.s.followupTask(row('undated-script',{status:'脚本已确认'})).kind,'script-confirmed');
+ assert.equal(f.s.followupTask(row('due-script',{status:'脚本已确认',agreedPublishAt:'2026-11-23'})).kind,'publish-overdue');
+ assert.equal(f.s.followupTask(row('published-script',{status:'已发布',publishedAt:'2026-11-22'})).kind,'published-waiting');
+ assert.equal(f.s.followupTask(row('invalid-script',{status:'脚本已确认',publishedAt:'bad-date'})).kind,'information-check');
+ f.s.renderFollowups();assert.match(f.node('#followup-list').innerHTML,/日期或状态异常/);
+ assert.match(f.node('#followup-list').innerHTML,/Creator invalid/);
+});
+
+test('script deadlines enter publication reminders at Shanghai midnight',()=>{
+ const f=setup([]),r=row('midnight',{status:'脚本已确认',agreedPublishAt:'2026-11-24'});
+ f.clock('2026-11-23T15:59:59Z');assert.equal(f.s.followupTask(r).kind,'script-confirmed');
+ f.clock('2026-11-23T16:00:00Z');assert.equal(f.s.followupTask(r).kind,'publish-overdue');
+ assert.equal(f.s.followupTask(r).delayDays,0);
+});
