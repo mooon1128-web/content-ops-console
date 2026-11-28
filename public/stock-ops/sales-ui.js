@@ -15,6 +15,11 @@ export function matchedProduct(k={}){
     const colour=k.erpSpec||String(k.spec||'').replace(/^颜色\s*[／/]\s*/,''),wanted=normalize('肥士顿痛包系列-'+colour);
     if(colour)candidates=catalog.filter(p=>normalize(p.name)===wanted);
   }
+  if(!candidates.length){
+    const verified={'场景贴纸甜品屋':'NEW-361615','场景贴纸巧克力屋':'NEW-466774','场景贴纸面包工坊':'NEW-512919','山竹迷你挂件':'NEW-911819','迷你挂件山竹':'NEW-911819'};
+    const codes=new Set([k.name,k.erpName,[k.erpName,k.erpSpec].filter(Boolean).join('-')].map(n=>verified[normalize(n)]).filter(Boolean));
+    candidates=catalog.filter(p=>codes.has(p.code));
+  }
   return candidates.length===1?candidates[0]:null;
 }
 export function productPresentation(k={}){
