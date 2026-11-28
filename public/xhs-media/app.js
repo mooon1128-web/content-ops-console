@@ -4168,7 +4168,7 @@
     const cloudState=await response.json();
     const backup={source:API_URL,account:user.username,at:new Date().toISOString(),draft,cloudState};
     const panel=document.createElement('main');panel.className='recovery-page';
-    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261128-pr-conversion-v5">备份完成后打开新版</a>';
+    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261128-pr-day7-red-v6">备份完成后打开新版</a>';
     document.body.replaceChildren(panel);
     $('#recovery-count').textContent=`本机待同步更改 ${draft?.operations?.length||0} 项；云端投放 ${cloudState.placements?.length||0} 条。请保留原来卡住的页面，先下载备份核对。`;
     $('#recovery-download').onclick=()=>{downloadRecovery(backup,'PR保存故障核对_'+today()+'.json');$('#recovery-feedback').textContent='已发起备份下载，请确认文件已保存。原页面和草稿仍保留。';};
@@ -4226,7 +4226,7 @@
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloud.refresh()});
     let renderedPrDate=prToday();
     window.setInterval(()=>{const date=prToday();if(date!==renderedPrDate&&!hasOpenEditorDialog()&&!document.activeElement?.matches('input,textarea,select')){renderedPrDate=date;renderAll();}},60000);
-    InterfaceUpdate.mount({current:'20261128-pr-conversion-v5',url:'/api/xhs-media/version',host:syncPanel,
+    InterfaceUpdate.mount({current:'20261128-pr-day7-red-v6',url:'/api/xhs-media/version',host:syncPanel,
       getBlockReason:()=>hasPendingLocalSync()||cloud?.saving?'有尚未确认的保存或同步冲突，请先完成同步；必要时导出待同步修改。':
         hasOpenEditorDialog()?'请先保存或取消正在编辑的表单，再更新界面。':
         !cloud?.ready||cloud?.stopped?'请先恢复登录和数据连接。':

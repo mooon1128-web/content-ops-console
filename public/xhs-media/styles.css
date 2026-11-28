@@ -1580,6 +1580,7 @@ body .monthly-started-card small { font-size: 11px; color: var(--muted); }
 #followup-summary .summary-label { display: block; color: #817b73; font-size: 12px; font-weight: 450; }
 #followup-summary .summary-value-line { display: flex; align-items: center; gap: 10px; margin-top: 9px; }
 #followup-summary .summary-value-line strong { flex: none; }
+#followup-summary [data-jump-target='followup-day7-review'] .summary-value-line strong { color: #c9362b; font-weight: 800; }
 #followup-summary small { display: flex; align-items: center; gap: 5px; font-size: 10px; color: #6d655b; }
 #followup-summary small::before { display: none; }
 .status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--status-color,#b3ada4); flex: none; }
