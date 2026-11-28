@@ -2367,23 +2367,15 @@
         ],
       },
     ];
-    $("#followup-summary").innerHTML = summaryGroups.map((group) => `
-      <section class="followup-summary-group">
-        <div class="followup-summary-head">
-          <h2>${escapeHtml(group.title)}</h2>
-          <span>${escapeHtml(group.note)}</span>
-        </div>
-        <div class="followup-summary-cards">
-          ${group.cards.map(([label, value, note, cls, target]) => `
-            <button class="metric-card followup-jump-card ${cls}" type="button" data-jump-target="${target}">
-              <span>${label}</span>
-              <strong>${value}</strong>
-              <small>${note}</small>
-            </button>
-          `).join("")}
-        </div>
-      </section>
-    `).join("");
+    $('#followup-summary').innerHTML = summaryGroups.map(group=>`
+      <section class="followup-summary-group" aria-label="${escapeHtml(group.title)}">
+        <div class="followup-summary-head"><h2>${escapeHtml(group.title)}</h2><span>${escapeHtml(group.note)}</span></div>
+        <div class="followup-summary-cards">${group.cards.map(([label,value,note,cls,target])=>`
+          <button class="metric-card followup-jump-card ${cls}" type="button" data-jump-target="${target}" aria-label="${escapeHtml(label)}，${value}条，${escapeHtml(note)}">
+            <span class="summary-label">${escapeHtml(label)}</span>
+            <div class="summary-value-line"><strong>${value}</strong><small><i class="status-dot" aria-hidden="true"></i>${escapeHtml(note)}</small></div>
+          </button>`).join('')}</div>
+      </section>`).join('');
     const groups = [
       {
         title: "合作推进",
@@ -4051,7 +4043,7 @@
     $$("[data-admin-cost]").forEach(el=>{el.hidden=currentUser.role!=="admin";});
     const syncPanel=document.createElement('div');syncPanel.className='shared-status-panel';
     syncPanel.innerHTML='<strong id="shared-user"></strong><span id="shared-version"></span><a href="/stock-ops/">经营协作台</a><button id="shared-export-pending">导出待同步修改</button><button id="shared-recover" hidden>核对冲突</button><button id="legacy-export">导出旧设备缓存</button><button id="shared-logout">退出</button>';
-    document.body.prepend(syncPanel);$('#shared-user').textContent=session.user.name+' · PR系统 · 发布台账与 PR 周期版';
+    document.body.prepend(syncPanel);$('#shared-user').textContent=session.user.name+' · PR系统 · 简约界面 · PR 周期版';
     $$("dialog").forEach(dialog => {
       const panel = document.createElement("div");panel.className="dialog-sync-feedback";
       panel.innerHTML='<p data-dialog-status role="status" aria-live="polite"></p><button type="button" class="secondary-button small" data-dialog-export>导出待同步修改</button><a data-dialog-login href="/xhs-media/login" target="_blank" rel="noopener">重新登录</a>';
