@@ -21,7 +21,7 @@ export function createPurchaseFiles({dir,readState}){
     }
   }
   async function handle(request,response,url,user,send){
-    admin(user);
+    if(request.method==='GET'){if(user?.role!=='admin'&&user?.stockRole!=='finance')throw fail(403,'合同图片仅管理员及财务可查看');}else admin(user);
     if(request.method==='POST'){
       await mkdir(dir,{recursive:true});const capacity=await statfs(dir);
       if(capacity.bavail*capacity.bsize<30*1024*1024)throw fail(507,'合同附件空间不足，请扩容后上传');
@@ -45,7 +45,7 @@ export function createPurchaseFiles({dir,readState}){
       const state=await readState();const file=Object.values(state.purchasePrivate||{}).flatMap(p=>p.contracts||[]).find(f=>f.id===id);
       if(!file)throw fail(404,'合同图片未关联到补货批次');
       const data=await readFile(join(dir,id));const mime=imageMime(data);
-      response.writeHead(200,{'Content-Type':mime,'Content-Length':data.length,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; sandbox",'Content-Disposition':`inline; filename="contract.${mime==='image/png'?'png':mime==='image/webp'?'webp':'jpg'}"`});response.end(data);return;
+      response.writeHead(200,{'Content-Type':mime,'Content-Length':data.length,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; sandbox",'Content-Disposition':`${url.searchParams.get('download')==='1'?'attachment':'inline'}; filename="contract.${mime==='image/png'?'png':mime==='image/webp'?'webp':'jpg'}"`});response.end(data);return;
     }
     throw fail(405,'Method not allowed');
   }

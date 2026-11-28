@@ -100,7 +100,7 @@ export function applyProcurement(s,action,p,user,now,h){
   if(action==='purchaseReceive'){
     if(order.status!=='已下单')throw fail(400,'请先确认该批次已经下单');
     const ref=required(p.reference,'本次收货单号');if(s.purchaseReceipts.some(r=>r.purchaseId===order.id&&r.reference===ref))throw fail(409,'这次收货已经登记');
-    const row={...stamp({},user,now),purchaseId:order.id,reference:ref,at:instant(p.at),good:number(p.good,'合格品'),defect:number(p.defect,'瑕疵品'),pending:number(p.pending,'待检品'),returnDecision:['需寄回','留仓处理'].includes(p.returnDecision)?p.returnDecision:'待确认',note:required(p.note,'验收说明',2000)};
+    const row={...stamp({},user,now),purchaseId:order.id,reference:ref,trackingNumber:String(p.trackingNumber||'').trim().slice(0,200),at:instant(p.at),good:number(p.good,'合格品'),defect:number(p.defect,'瑕疵品'),pending:number(p.pending,'待检品'),returnDecision:['需寄回','留仓处理'].includes(p.returnDecision)?p.returnDecision:'待确认',note:required(p.note,'验收说明',2000)};
     if(row.at>now)throw fail(400,'尚未到货不能提前入库');if(chinaDay(row.at)<order.orderDate)throw fail(400,'收货日不能早于下单日');if(!row.good&&!row.defect&&!row.pending)throw fail(400,'请填写实收数量');
     const current=purchaseSummary(order,s.purchaseReceipts,s.purchaseInspections,s.purchaseReturns);
     if(current.received+row.good+row.defect+row.pending>order.quantity&&!p.overReceiptReason?.trim())throw fail(400,'实收超过下单量，请填写超收原因');row.overReceiptReason=p.overReceiptReason||'';
@@ -126,7 +126,7 @@ export function applyProcurement(s,action,p,user,now,h){
     if(s.purchaseReturns.some(r=>r.receiptId===receipt.id&&r.reference===ref))throw fail(409,'此次退厂已经登记');
     const quantity=number(p.quantity,'实际寄回数量'),remaining=receipt.defect+inspections.reduce((n,r)=>n+r.defect,0)-returned;if(quantity<=0||quantity>remaining)throw fail(400,'寄回数量超过尚在仓库的瑕疵品');
     appendEvent(s,{skuId:order.skuId,warehouse:order.warehouse,at,type:'factory_return',quantity,ref:`purchase-return:${receipt.id}:${ref}`,note,source},user,now,true);
-    const row={...stamp({},user,now),receiptId:receipt.id,reference:ref,quantity,at,note};s.purchaseReturns.push(row);return row;
+    const row={...stamp({},user,now),receiptId:receipt.id,reference:ref,trackingNumber:String(p.trackingNumber||'').trim().slice(0,200),quantity,at,note};s.purchaseReturns.push(row);return row;
   }
   throw fail(400,'不支持的补货操作');
 }

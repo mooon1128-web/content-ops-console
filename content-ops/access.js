@@ -6,7 +6,7 @@ const fail = (status, message) => Object.assign(new Error(message), { status });
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value==='object' ? Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])])) : value;
 const same = (a,b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 const safe = value => String(value || '').trim().slice(0,100);
-const stockRoles = new Set(['none','viewer','warehouse','operations','marketing','customer_service','pr','content','pr_service']);
+const stockRoles = new Set(['none','viewer','warehouse','operations','marketing','customer_service','pr','content','pr_service','finance']);
 const stockRole = value => stockRoles.has(value) ? value : 'none';
 export function publicUser(user) {
   const { id, username, name, role, accountIds, disabled } = user;
