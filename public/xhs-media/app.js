@@ -1138,7 +1138,23 @@
   }
 
   function creatorCreatedDate(item) {
-    return String(item?.createdAt || "").slice(0, 10);
+    const value = String(item?.createdAt || item?.addedAt || "").trim();
+    const date = prDate(value);
+    if (!date) return "";
+    if (/T.*(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)) {
+      const timestamp = Date.parse(value);
+      return Number.isFinite(timestamp)
+        ? new Date(timestamp).toLocaleDateString('en-CA', {timeZone: 'Asia/Shanghai'}) : "";
+    }
+    return date;
+  }
+
+  function creatorCreatedOrder(item) {
+    const date = creatorCreatedDate(item);
+    if (!date) return 0;
+    const value = String(item.createdAt || item.addedAt || "");
+    return /T.*(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)
+      ? Date.parse(value) : Date.parse(date + 'T00:00:00+08:00');
   }
 
   function creatorEmailSentDate(item) {
@@ -1154,10 +1170,10 @@
     if (filter === "all") return true;
     if (filter === "no-date") return !createdAt;
     if (!createdAt) return false;
-    const age = daysSince(createdAt);
+    const age = Math.round((Date.parse(prToday() + 'T00:00:00Z') - Date.parse(createdAt + 'T00:00:00Z')) / 86400000);
     if (filter === "today") return age === 0;
     if (filter === "yesterday") return age === 1;
-    if (filter === "7days") return Number.isFinite(age) && age >= 0 && age <= 7;
+    if (filter === "7days") return Number.isFinite(age) && age >= 0 && age < 7;
     return true;
   }
 
@@ -2662,7 +2678,7 @@
     return rows.sort((a, b) => {
       if (sort === "count") return number(b.cooperationCount) - number(a.cooperationCount) || number(b.fanCount) - number(a.fanCount);
       if (sort === "recent") return String(b.lastCooperationAt || "").localeCompare(String(a.lastCooperationAt || "")) || number(b.fanCount) - number(a.fanCount);
-      if (sort === "created") return String(creatorCreatedDate(b)).localeCompare(String(creatorCreatedDate(a))) || number(b.fanCount) - number(a.fanCount);
+      if (sort === "created") return creatorCreatedOrder(b) - creatorCreatedOrder(a) || number(b.fanCount) - number(a.fanCount);
       return number(b.fanCount) - number(a.fanCount);
     });
   }
@@ -2715,6 +2731,7 @@
           ${item.isBlacklisted?`<span class="blacklist-reason">${escapeHtml(item.blacklistReason || '原因待补')}</span>`:''}
           ${delayTag?`<span class="pill ${delayTag.tone}">${escapeHtml(delayTag.label)}</span>`:''}
           ${item.profileLink?`<a href="${escapeHtml(item.profileLink)}" target="_blank" rel="noreferrer">打开主页</a>`:''}
+          <small class="muted">新增：${escapeHtml(creatorCreatedDate(item) || '未记录')}</small>
           ${tags.length?`<div class="creator-tags-inline">${tags.map(t=>`<span class="pill blue">${escapeHtml(t)}</span>`).join('')}</div>`:''}
         </div></td>
         <td data-label="类型／量级"><div class="cell-title"><span>${escapeHtml(item.creatorType || '未分类')}</span><span class="pill ${item.tier==='头部'?'coral':item.tier==='中部'?'amber':item.tier==='尾部'?'blue':'gray'}">${escapeHtml(item.tier || '待补')}</span></div></td>
@@ -3395,8 +3412,8 @@
       contactAddress: String(data.contactAddress || "").trim(),
       isBlacklisted: form.elements.isBlacklisted.checked,
       blacklistReason: String(data.blacklistReason || "").trim(),
-      createdAt: current.createdAt || (current.id ? "" : today()),
-      updatedAt: today(),
+      createdAt: current.createdAt || current.addedAt || (current.id ? "" : new Date().toISOString()),
+      updatedAt: new Date().toISOString(),
     };
   }
 
@@ -3754,6 +3771,7 @@
     ["creator-search", "creator-type-filter", "creator-tier-filter", "creator-outreach-filter", "creator-added-filter", "creator-contact-filter", "creator-sort"].forEach((id) => {
       $(`#${id}`).addEventListener("input", () => {
         creatorPage = 1; clearTimeout(creatorSearchTimer);
+        if (id === "creator-added-filter" && ['today', 'yesterday', '7days'].includes($('#creator-added-filter').value)) $('#creator-sort').value = 'created';
         if (id === "creator-search") creatorSearchTimer = setTimeout(renderCreators, 150);
         else renderCreators();
       });
@@ -4181,7 +4199,7 @@
     const cloudState=await response.json();
     const backup={source:API_URL,account:user.username,at:new Date().toISOString(),draft,cloudState};
     const panel=document.createElement('main');panel.className='recovery-page';
-    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261128-pr-script-confirmed-v7">备份完成后打开新版</a>';
+    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261128-creator-added-date-v8">备份完成后打开新版</a>';
     document.body.replaceChildren(panel);
     $('#recovery-count').textContent=`本机待同步更改 ${draft?.operations?.length||0} 项；云端投放 ${cloudState.placements?.length||0} 条。请保留原来卡住的页面，先下载备份核对。`;
     $('#recovery-download').onclick=()=>{downloadRecovery(backup,'PR保存故障核对_'+today()+'.json');$('#recovery-feedback').textContent='已发起备份下载，请确认文件已保存。原页面和草稿仍保留。';};
@@ -4239,7 +4257,7 @@
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloud.refresh()});
     let renderedPrDate=prToday();
     window.setInterval(()=>{const date=prToday();if(date!==renderedPrDate&&!hasOpenEditorDialog()&&!document.activeElement?.matches('input,textarea,select')){renderedPrDate=date;renderAll();}},60000);
-    InterfaceUpdate.mount({current:'20261128-pr-script-confirmed-v7',url:'/api/xhs-media/version',host:syncPanel,
+    InterfaceUpdate.mount({current:'20261128-creator-added-date-v8',url:'/api/xhs-media/version',host:syncPanel,
       getBlockReason:()=>hasPendingLocalSync()||cloud?.saving?'有尚未确认的保存或同步冲突，请先完成同步；必要时导出待同步修改。':
         hasOpenEditorDialog()?'请先保存或取消正在编辑的表单，再更新界面。':
         !cloud?.ready||cloud?.stopped?'请先恢复登录和数据连接。':
