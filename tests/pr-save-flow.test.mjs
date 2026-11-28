@@ -20,9 +20,9 @@ const plain=v=>JSON.parse(JSON.stringify(v));
 async function fixture(){
  const dir=await mkdtemp(join(tmpdir(),'pr-save-flow-')),file=join(dir,'state.json');await writeFile(file,JSON.stringify(seed));const store=createXhsStore({file});
  const nodes=new Map(),events=new Map(),reports=[];const memory={};let renders=0;
- function node(s){if(!nodes.has(s))nodes.set(s,{value:'',textContent:'',innerHTML:'',dataset:{},classList:{add(){},remove(){},toggle(){}},elements:{creatorTier:{value:''}},open:false,close(){this.open=false},addEventListener:(type,fn)=>events.set(s+':'+type,fn),querySelector:node,querySelectorAll:()=>[]});return nodes.get(s)}
+ function node(s){if(!nodes.has(s))nodes.set(s,{value:'',textContent:'',innerHTML:'',dataset:{},classList:{add(){},remove(){},toggle(){}},setAttribute(){},elements:{creatorTier:{value:''}},open:false,close(){this.open=false},addEventListener:(type,fn)=>events.set(s+':'+type,fn),querySelector:node,querySelectorAll:()=>[]});return nodes.get(s)}
  class FD{constructor(f){this.values=f.values}entries(){return this.values[Symbol.iterator]()}getAll(k){return this.values.filter(x=>x[0]===k).map(x=>x[1])}}
- const ctx=vm.createContext({PromotionData,structuredClone,RecordOps,crypto:{randomUUID},AbortSignal,FormData:FD,console,setTimeout:()=>1,clearTimeout(){},document:{querySelector:node,querySelectorAll:()=>[],addEventListener(){},activeElement:null},window:{addEventListener(){}}});
+ const ctx=vm.createContext({PromotionData,structuredClone,RecordOps,crypto:{randomUUID},AbortSignal,FormData:FD,console,setTimeout:()=>1,clearTimeout(){},document:{body:node('body'),querySelector:node,querySelectorAll:()=>[],addEventListener(){},activeElement:null},window:{addEventListener(){}}});
  vm.runInContext(syncSource,ctx);
  vm.runInContext(app.slice(0,app.lastIndexOf('  startSharedApp().catch('))+`globalThis.subject={syncCreatorsFromPlacements,allowSyncInteraction,creatorId,
  setup:(c,u)=>{cloud=c;currentUser=u;selectedWholesaleProductsFromForm=()=>[];renderAll=()=>{};bindEvents()},
