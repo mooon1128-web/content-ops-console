@@ -52,14 +52,14 @@ test('arrival entry appends two deliveries and finance can read receipts without
   const id=s.purchases[0].id;
   for(const [reference,good]of [['R1',200],['R2',300]]){
    a.render();assert.match(els.get('#content').innerHTML,/data-receive-purchase/);
-   bindings.get('[data-receive-purchase]')({dataset:{receivePurchase:id}});assert.match(editor.html,/trackingNumber/);
+   bindings.get('[data-receive-purchase]')({dataset:{receivePurchase:id}});if(reference==='R2'){assert.match(editor.html,/R1/);assert.doesNotMatch(editor.html,/下载/);bindings.get('add-arrival')();}assert.match(editor.html,/trackingNumber/);
    await editor.handler({reference,good,defect:0,pending:0,at:now,returnDecision:'待确认',note:'测试分批收货'});
   }
   assert.equal(s.purchases.length,1);assert.equal(s.purchaseReceipts.length,2);
   s.purchasePrivate={[id]:{balanceDue:100,contracts:[]}};acting=finance;a.state=stockView(s,acting);a.render();
   const html=els.get('#content').innerHTML;assert.match(html,/查看尾款情况|到货记录/);assert.doesNotMatch(html,/data-receive-purchase=|data-return-purchase=|data-edit-purchase=/);
-  bindings.get('view-receipts')();assert.match(editor.html,/R1/);assert.match(editor.html,/R2/);assert.match(editor.html,/下载图片/);
-  bindings.get('[data-record-receipt]')({dataset:{recordReceipt:s.purchaseReceipts[0].id}});assert.doesNotMatch(editor.html,/decision-purchase|return-purchase|inspect-purchase/);
+  bindings.get('[data-purchase]')({dataset:{purchase:id}});assert.match(editor.html,/R1/);assert.match(editor.html,/R2/);assert.match(editor.html,/下载工厂对账表/);
+  assert.doesNotMatch(editor.html,/decision-purchase|return-purchase|inspect-purchase/);
   renderPurchaseBalances({...a,onBack:()=>{}});assert.match(els.get('#content').innerHTML,/¥100\.00/);assert.match(els.get('#content').innerHTML,/2026-12-07/);assert.doesNotMatch(els.get('#content').innerHTML,/data-settle-balance=|data-reopen-balance=/);
  }finally{globalThis.document=before;}
 });
