@@ -248,6 +248,9 @@
   let customCreatorTypes = [];
   let monthlyBudgets = {};
   let productCatalog = [];
+  let orderingCatalog = [], promotionSkus = {};
+  const boardFilters={search:"",category:"all",stage:"all"};
+  let boardRecordIds=null;
   let currentUser = null;
   let catalogLoad = null;
   let wholesaleCostStatus = { connected: false, orderCount: 0, costSettingsCount: 0, costSeedCount: 0, customProductCount: 0, reason: "" };
@@ -703,7 +706,8 @@
       id: String(product.id || product.code || product.name || ""),
       code: String(product.code || product.sku || product.productCode || ""),
       name: String(product.name || ""),
-      category: String(product.category || ""),
+      category: String(product.sourceCategory || product.category || ""),
+      sourceCategory:String(product.sourceCategory || product.category || ""),
       status: String(product.status || product.stockStatus || "需确认"),
       price: number(product.price),
       unitCost,
@@ -738,13 +742,14 @@
         const next = Array.from(new Map(payload.products.map(normalizeProduct).filter(p=>p.id&&p.name).map(p=>[p.id,p])).values());
         // A partial upstream response must never replace a previously complete live catalog.
         const complete = payload.catalogConnected === true;
-        if (complete || !productCatalog.length) productCatalog = next;
+        if (complete || !orderingCatalog.length) orderingCatalog = next;
+        rebuildPromotionCatalog();
         catalogCheckedAt=Date.now();
         wholesaleCostStatus = {connected:Boolean(payload.costConnected),orderCount:number(payload.orderCount),costSettingsCount:number(payload.costSettingsCount),costSeedCount:number(payload.costSeedCount),customProductCount:number(payload.customProductCount),reason:String(payload.costConnectionReason||'')};
         renderProductPickerOptions(); updatePlacementProductCostDisplay();
         if (!hasOpenEditorDialog()&&!document.activeElement?.matches("input,textarea,select")) {hydrateControls();renderAll();}
         if (complete) {
-          catalogStatus(`已同步 ${productCatalog.length} 款产品 · ${new Date(payload.syncedAt).toLocaleTimeString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'})}`);
+          catalogStatus(`已同步 ${orderingCatalog.length} 款订货商品 · 推广专用 ${productCatalog.length-orderingCatalog.length} 款 · ${new Date(payload.syncedAt).toLocaleTimeString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'})}`);
           if (options.manual) toast(`订货产品已同步：${productCatalog.length} 款`);
         } else {
           const reason = payload.catalogConnectionReason === 'missing-credentials' ? '订货后台连接账号尚未配置' : '订货后台最新资料读取失败';
@@ -764,7 +769,16 @@
     return catalogLoad;
   }
 
+  function rebuildPromotionCatalog(){
+    productCatalog=PromotionData.extendCatalog(orderingCatalog,promotionSkus,placements);
+  }
+  function openPromotionCatalog(productId=''){
+    globalThis.PromotionCatalogUI.open({catalog:()=>productCatalog,notify:toast,save:async value=>{
+      promotionSkus={...promotionSkus,[value.id]:value};rebuildPromotionCatalog();renderAll();cloud.changed();return await cloud.flush();
+    }},productId);
+  }
   function productUrl(product) {
+    if (product?.promotionOnly) return `/xhs-media/?catalog=${encodeURIComponent(product.id)}`;
     if (product?.backendUrl) return product.backendUrl;
     const query = encodeURIComponent(product?.code || product?.name || "");
     return `${WHOLESALE_PORTAL_URL}${query ? `?product=${query}` : ""}`;
@@ -1764,6 +1778,7 @@
   }
 
   function scopedPlacements() {
+    if (boardRecordIds) return placements.filter(item=>boardRecordIds.has(item.id));
     if (selectedProduct === "all") return placements;
     return placements.filter((item) => placementHasProduct(item, selectedProduct));
   }
@@ -1858,6 +1873,7 @@
   }
 
   function filterSelectedProduct(rows) {
+    if(boardRecordIds)return rows.filter(row=>boardRecordIds.has(row.id));
     if (selectedProduct === "all") return rows;
     return rows.filter((item) => placementHasProduct(item, selectedProduct));
   }
@@ -1946,37 +1962,16 @@
   }
 
   function renderProductBoard() {
-    const periodRows = placementsForCooperationPeriod(overviewPeriod);
-    const startedRows = filterSelectedProduct(monthlyStartedPlacements(overviewPeriod));
-    const products = productBoardGroups(periodRows);
-    if (selectedProduct !== "all" && !products.some((item) => item.product === selectedProduct)) selectedProduct = "all";
-    const totalSpend = periodRows.reduce((sum, item) => sum + calc(item).spend + placementProductCost(item), 0);
-    const totalGmv = periodRows.reduce((sum, item) => sum + number(item.gmv), 0);
-    const startedPeriodLabel = periodLabel(overviewPeriod);
-    const productCount = products.reduce((sum, item) => sum + item.count, 0);
-    $("#product-board-title").textContent = `${startedPeriodLabel} 全部合作产品`;
-    $("#monthly-started-card").innerHTML = `
-      <span>${escapeHtml(startedPeriodLabel)}已发起合作</span>
-      <strong>${startedRows.length}</strong>
-      <small>${productCount} 个产品合作项；一条合作含多个产品会分别计数</small>
-    `;
-    $("#product-board").innerHTML = `
-      <div class="product-chip ${selectedProduct === "all" ? "active" : ""}" data-product="all" role="button" tabindex="0">
-        <strong>${escapeHtml(startedPeriodLabel)} 全部合作产品</strong>
-        <b class="product-count">${productCount}</b>
-        <span>${periodRows.length} 条新增合作 · 已发布ROAS ${totalSpend ? ratio(totalGmv / totalSpend) : "无"}</span>
-        <button type="button" class="text-button" data-cooperation-records="all">查看这 ${periodRows.length} 条记录</button>
-      </div>
-      ${products.map((item) => `
-        <div class="product-chip ${selectedProduct === item.product ? "active" : ""}" data-product="${escapeHtml(item.product)}" role="button" tabindex="0">
-          <strong>${escapeHtml(item.product)}</strong>
-          <b class="product-count">${item.count}</b>
-          <span>${item.count} 次合作 · 最新 ${escapeHtml(item.latest || "未记录")}</span>
-          <button type="button" class="text-button" data-cooperation-records="${escapeHtml(item.product)}">查看记录</button>
-          ${item.catalog ? `<a href="${escapeHtml(productUrl(item.catalog))}" target="_blank" rel="noreferrer" class="product-stock-link">库存</a>` : ""}
-        </div>
-      `).join("")}
-    `;
+    const rows=placementsForCooperationPeriod(overviewPeriod);
+    const groups=PromotionData.rankedProducts(rows,productCatalog,boardFilters);
+    const recordIds=new Set(groups.flatMap(g=>g.recordIds));
+    const categories=[...new Set(productCatalog.flatMap(PromotionData.productCategories))].sort();
+    const category=$('#ranking-category');
+    if(category){category.innerHTML='<option value="all">全部类目</option>'+categories.map(c=>`<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');category.value=boardFilters.category;}
+    $('#product-board-title').textContent=periodLabel(overviewPeriod)+' · 商品合作排行';
+    $('#monthly-started-card').innerHTML=`<strong>${recordIds.size}</strong><span>条合作 · ${groups.length} 个 SKU</span><small>已寄样起归待发布；不计待建联、待寄样。每款合作去重。</small>`;
+    $('#product-board').innerHTML=`<div class="ranking-summary"><button type="button" class="text-button" data-cooperation-records="all">查看这 ${recordIds.size} 条记录</button><span>按合作数量从高到低 · 包含该类目商品的套餐也会列出</span></div><div class="ranking-scroll" tabindex="0" aria-label="商品合作数量排行，可滚动"><table><thead><tr><th>排名</th><th>商品／套餐</th><th>合作数</th><th>待发布</th><th>已发布</th><th>操作</th></tr></thead><tbody>${groups.map((g,i)=>`<tr><td>${i+1}</td><td><strong>${escapeHtml(g.product.name)}</strong><small>${escapeHtml(PromotionData.productCategories(g.product).join(' / ')||'类目待补')}${g.product.promotionOnly?' · 推广专用 SKU':''}</small></td><td><b>${g.count}</b></td><td>${g.pending}</td><td>${g.published}</td><td><button type="button" data-cooperation-records="${escapeHtml(g.product.id)}">查看合作</button>${g.product.promotionOnly?`<button type="button" data-edit-promo-sku="${escapeHtml(g.product.id)}">编辑 SKU</button>`:''}</td></tr>`).join('')||'<tr><td colspan="6">此范围暂无待发布或已发布合作，可调整月份、类目或搜索条件。</td></tr>'}</tbody></table></div>`;
+    const clear=$('#clear-ranking-filter');if(clear)clear.hidden=!boardRecordIds;
   }
 
   function renderBudgetPanel() {
@@ -2190,7 +2185,7 @@
         <div class="rank-item">
           <div>
             <strong>${escapeHtml(item.creator)}</strong>
-            <div class="muted">${escapeHtml(item.product)} · ${compact(item.likes)}赞 · ${compact(item.saves)}收藏 · ${compact(item.comments)}评论</div>
+            <div class="muted">${escapeHtml(placementProductName(item))} · ${compact(item.likes)}赞 · ${compact(item.saves)}收藏 · ${compact(item.comments)}评论</div>
           </div>
           <span class="rank-score">${compact(item.likes)} 赞</span>
         </div>
@@ -2330,7 +2325,7 @@
     return `
       <article class="task-card ${task.kind === "publish-overdue" ? "publish-overdue-card" : ""} ${task.kind === "sample-shipping" ? "sample-shipping-card" : ""} ${task.kind === "day7-review" ? "day7-review-card" : ""}">
         <div>
-          <h3>${escapeHtml(item.creator)} · ${escapeHtml(item.product)}</h3>
+          <h3>${escapeHtml(item.creator)} · ${escapeHtml(placementProductName(item))}</h3>
           <p>${escapeHtml(task.reason)}</p>
           <p>${escapeHtml(task.action)}</p>
           <div class="task-meta">
@@ -2345,7 +2340,7 @@
           ${task.warnings.length ? `<p><strong>风险提醒：</strong>${task.warnings.map(escapeHtml).join("；")}。</p>` : ""}
         </div>
         <div class="task-action">
-          <label class="followup-select"><input type="checkbox" data-followup-select="${escapeHtml(item.id)}" aria-label="选择 ${escapeHtml(item.creator)} · ${escapeHtml(item.product)}" />选择</label>
+          <label class="followup-select"><input type="checkbox" data-followup-select="${escapeHtml(item.id)}" aria-label="选择 ${escapeHtml(item.creator)} · ${escapeHtml(placementProductName(item))}" />选择</label>
           ${task.kind === "day7-review" && normalizeProfileLink(item.url) ? `<a class="secondary-button small" href="${escapeHtml(normalizeProfileLink(item.url))}" target="_blank" rel="noreferrer">打开笔记</a>` : ""}
           <button class="secondary-button small" data-edit="${item.id}">${task.kind === "day7-review" ? "编辑全部" : "编辑记录"}</button>
           <span class="muted">${escapeHtml(item.contactMethod || "未填联系方式")}</span>
@@ -2693,7 +2688,7 @@
     const dataEntry = $("#data-entry-filter")?.value || "all";
     const periodRows = ledgerPeriod === "all" ? placements : ledgerPeriod === "unpublished" ? placements.filter(item => !String(item.publishedAt || "").trim()) : placements.filter(item => dateMatchesPeriod(cooperationRecordDate(item), ledgerPeriod));
     return filterSelectedProduct(periodRows).filter((item) => {
-      const haystack = [item.creator, item.product, item.noteTitle, item.owner, item.contactMethod, item.creatorResponse, item.notes, placementPlatform(item)].join(" ").toLowerCase();
+      const haystack = [item.creator, item.product, placementProductName(item), item.noteTitle, item.owner, item.contactMethod, item.creatorResponse, item.notes, placementPlatform(item)].join(" ").toLowerCase();
       if (query && !haystack.includes(query)) return false;
       if (status !== "all" && item.status !== status) return false;
       if (content !== "all" && item.contentType !== content) return false;
@@ -2792,7 +2787,7 @@
     const isPoorPerformance = hasPlacementPerformanceData(item) && Boolean(item.publishedAt) && number(item.likes) < 200;
     const productCost = placementProductCost(item);
     const costStatus = placementCostStatus(item);
-    const link = item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.noteTitle || item.product)}</a>` : `<strong>${escapeHtml(item.noteTitle || item.product)}</strong>`;
+    const link = item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.noteTitle || placementProductName(item))}</a>` : `<strong>${escapeHtml(item.noteTitle || placementProductName(item))}</strong>`;
     return `
       <tr class="${isPoorPerformance ? "poor-performance-row" : ""} ${isDay7Due ? "day7-due-row" : ""}">
         <td><span class="pill ${statusClass(item.status)}">${escapeHtml(item.status)}</span>${informationIssue ? `<div class="pill coral">信息待核对</div>` : ""}</td>
@@ -2860,12 +2855,12 @@
   }
 
   function openCooperationRecords(product) {
-    selectedProduct = product;
-    ledgerPeriod = overviewPeriod;
-    $("#search-input").value = "";
-    for (const selector of ["#status-filter", "#content-filter", "#result-filter", "#data-entry-filter"]) $(selector).value = "all";
-    switchView("placements");
-    $("#placements-view").scrollIntoView({ block: "start" });
+    const groups=PromotionData.rankedProducts(placementsForCooperationPeriod(overviewPeriod),productCatalog,boardFilters);
+    boardRecordIds=new Set(groups.filter(g=>product==='all'||g.product.id===product||g.product.name===product).flatMap(g=>g.recordIds));
+    selectedProduct='all';ledgerPeriod=overviewPeriod;
+    $('#search-input').value='';
+    for(const selector of ['#status-filter','#content-filter','#result-filter','#data-entry-filter'])$(selector).value='all';
+    switchView('placements');$('#placements-view').scrollIntoView({block:'start'});
   }
 
   function ledgerMetricsDisplay(item) {
@@ -3280,12 +3275,13 @@
     data.productCostConnected = selectedProducts.length > 0 && !missingCost;
     data.productCostSource = data.productCostConnected ? "订货后台真实成本" : "";
     const sameSelection = JSON.stringify([...(data.productIds||[])].sort()) === JSON.stringify([...oldIds].sort()) && data.sampleQuantity === sampleQuantity(current);
-    if (current.id && sameSelection && (current.productCostConnected || !data.productCostConnected || currentUser?.role !== 'admin')) {
+    if (current.id && (current.productCostConnected || sameSelection && (!data.productCostConnected || currentUser?.role !== 'admin'))) {
       for (const key of ['productCostSnapshot','productCostConnected','productCostSource']) {
         if (Object.hasOwn(current,key)) data[key]=current[key]; else delete data[key];
       }
     }
     data.product = productTextFromSelection(selectedProducts, manualProductSegmentsFromText(data.product, selectedProducts));
+    if(current.id&&current.product!==data.product&&!current.productOriginal)data.productOriginal=current.product;
     data.creatorTier = form.elements.creatorTier.value || data.creatorTier || "";
     data.platform = placementPlatform(data);
     data.status = normalizePlacementStatus(data.status, data);
@@ -3571,8 +3567,19 @@
       if (!button || button.disabled) return;
       creatorPage += Number(button.dataset.creatorPage);renderCreators();
     });
+    $('#ranking-search').addEventListener('input',event=>{boardFilters.search=event.target.value;renderProductBoard();});
+    $('#ranking-category').addEventListener('change',event=>{boardFilters.category=event.target.value;renderProductBoard();});
+    $('#ranking-stage').addEventListener('change',event=>{boardFilters.stage=event.target.value;renderProductBoard();});
+    $('#manage-promotion-skus').onclick=()=>openPromotionCatalog();
+    $('#clear-ranking-filter').onclick=()=>{boardRecordIds=null;selectedProduct='all';renderAll();};
+    const toggle=$('#sidebar-toggle');
+    let collapsed=window.innerWidth<760;try{const saved=localStorage.getItem('xhs-sidebar-collapsed');if(saved!==null)collapsed=saved==='1';}catch{}
+    const applySidebar=()=>{document.body.classList.toggle('sidebar-collapsed',collapsed);toggle.setAttribute('aria-expanded',String(!collapsed));toggle.textContent=collapsed?'☰ 展开菜单':'‹ 收起菜单';};
+    toggle.onclick=()=>{collapsed=!collapsed;try{localStorage.setItem('xhs-sidebar-collapsed',collapsed?'1':'0');}catch{}applySidebar();};applySidebar();
     $("#product-board").addEventListener("click", (event) => {
       if (event.target.closest("a")) return;
+      const skuButton=event.target.closest("[data-edit-promo-sku]");
+      if(skuButton){openPromotionCatalog(skuButton.dataset.editPromoSku);return;}
       const recordsButton = event.target.closest("[data-cooperation-records]");
       if (recordsButton) { openCooperationRecords(recordsButton.dataset.cooperationRecords); return; }
       const chip = event.target.closest("[data-product]");
@@ -3761,7 +3768,7 @@
       downloadText(`xhs-media-template-${today()}.csv`, buildCsvTemplate(), "text/csv;charset=utf-8");
     });
     $("#export-data").addEventListener("click", () => {
-      downloadText(`xhs-media-${today()}.json`, JSON.stringify({ placements, creators, customCreatorTypes, monthlyBudgets }, null, 2), "application/json");
+      downloadText(`xhs-media-${today()}.json`, JSON.stringify({ placements, creators, customCreatorTypes, monthlyBudgets, promotionSkus }, null, 2), "application/json");
     });
     $("#import-data").addEventListener("change", async (event) => {
       const file = event.target.files?.[0];
@@ -3772,6 +3779,8 @@
         if (!Array.isArray(placements)) throw new Error("invalid data");
         if (Array.isArray(data.creators)) creators = data.creators.map(normalizeCreator);
         if (Array.isArray(data.customCreatorTypes)) customCreatorTypes = data.customCreatorTypes;
+        if(data.promotionSkus&&typeof data.promotionSkus==='object'&&!Array.isArray(data.promotionSkus))promotionSkus={...promotionSkus,...data.promotionSkus};
+        rebuildPromotionCatalog();
         if (data.monthlyBudgets && typeof data.monthlyBudgets === "object" && !Array.isArray(data.monthlyBudgets)) monthlyBudgets = data.monthlyBudgets;
         savePlacements();
         saveCreators();
@@ -3976,7 +3985,7 @@
     const cloudState=await response.json();
     const backup={source:API_URL,account:user.username,at:new Date().toISOString(),draft,cloudState};
     const panel=document.createElement('main');panel.className='recovery-page';
-    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261128-promotion-costs-v1">备份完成后打开新版</a>';
+    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261128-promotion-catalog-v2">备份完成后打开新版</a>';
     document.body.replaceChildren(panel);
     $('#recovery-count').textContent=`本机待同步更改 ${draft?.operations?.length||0} 项；云端投放 ${cloudState.placements?.length||0} 条。请保留原来卡住的页面，先下载备份核对。`;
     $('#recovery-download').onclick=()=>{downloadRecovery(backup,'PR保存故障核对_'+today()+'.json');$('#recovery-feedback').textContent='已发起备份下载，请确认文件已保存。原页面和草稿仍保留。';};
@@ -3991,7 +4000,7 @@
     $$("[data-admin-cost]").forEach(el=>{el.hidden=currentUser.role!=="admin";});
     const syncPanel=document.createElement('div');syncPanel.className='shared-status-panel';
     syncPanel.innerHTML='<strong id="shared-user"></strong><span id="shared-version"></span><a href="/stock-ops/">经营协作台</a><button id="shared-export-pending">导出待同步修改</button><button id="shared-recover" hidden>核对冲突</button><button id="legacy-export">导出旧设备缓存</button><button id="shared-logout">退出</button>';
-    document.body.prepend(syncPanel);$('#shared-user').textContent=session.user.name+' · PR系统 · 推广花销联动版';
+    document.body.prepend(syncPanel);$('#shared-user').textContent=session.user.name+' · PR系统 · 商品排行与套餐版';
     $$("dialog").forEach(dialog => {
       const panel = document.createElement("div");panel.className="dialog-sync-feedback";
       panel.innerHTML='<p data-dialog-status role="status" aria-live="polite"></p><button type="button" class="secondary-button small" data-dialog-export>导出待同步修改</button><a data-dialog-login href="/xhs-media/login" target="_blank" rel="noopener">重新登录</a>';
@@ -3999,9 +4008,9 @@
       panel.querySelector("[data-dialog-export]").onclick=()=>downloadRecovery(cloud.exportPending(),'PR待同步更改_'+today()+'.json');
     });
     cloud=new SharedSync({url:API_URL,versionUrl:'/api/xhs-media/version',key:'xhs-v3:'+session.user.id,
-      shape:{creators:'rows',placements:'rows',customCreatorTypes:'value',monthlyBudgets:'map'},
-      read:()=>({creators,placements,customCreatorTypes,monthlyBudgets}),
-      write:s=>{creators=s.creators||[];placements=s.placements||[];customCreatorTypes=s.customCreatorTypes||[];monthlyBudgets=s.monthlyBudgets||{};},
+      shape:{creators:'rows',placements:'rows',customCreatorTypes:'value',monthlyBudgets:'map',promotionSkus:'map'},
+      read:()=>({creators,placements,customCreatorTypes,monthlyBudgets,promotionSkus}),
+      write:s=>{creators=s.creators||[];placements=s.placements||[];customCreatorTypes=s.customCreatorTypes||[];monthlyBudgets=s.monthlyBudgets||{};promotionSkus=s.promotionSkus||{};rebuildPromotionCatalog();},
       render:()=>{hydrateControls();renderAll();},busy:()=>hasOpenEditorDialog()||document.activeElement?.matches('input,textarea,select'),
       authExpired:()=>{if(cloud?.pending||cloud?.conflict){toast('登录已失效，请先导出待同步修改，再重新登录');document.body.classList.add('shared-unavailable');}else location.replace('/xhs-media/login')},
       status:s=>{apiOnline=s.online;hasCurrentSessionChanges=s.pending;syncMessage=s.message||'';
@@ -4025,12 +4034,14 @@
     hydrateControls();bindEvents();renderAll();await cloud.start();
     const targetPlacement=new URLSearchParams(location.search).get('placement');
     const loadedProducts=loadWholesaleProducts();
+    const targetCatalog=new URLSearchParams(location.search).get('catalog');
+    if(targetCatalog!==null){await loadedProducts;openPromotionCatalog(targetCatalog);}
     if(targetPlacement){await loadedProducts;const target=placements.find(p=>p.id===targetPlacement);if(target)openForm(target);else toast('此合作记录已不存在，请在台账核对');}
     const refreshCatalog=()=>{if(!document.hidden&&!hasOpenEditorDialog()&&!document.activeElement?.matches('input,textarea,select')&&Date.now()-catalogCheckedAt>=60000)void loadWholesaleProducts();};
     window.setInterval(refreshCatalog,60000);window.addEventListener('focus',refreshCatalog);
     window.addEventListener('online',()=>cloud.refresh());window.addEventListener('focus',()=>cloud.refresh());
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloud.refresh()});
-    InterfaceUpdate.mount({current:'20261128-promotion-costs-v1',url:'/api/xhs-media/version',host:syncPanel,
+    InterfaceUpdate.mount({current:'20261128-promotion-catalog-v2',url:'/api/xhs-media/version',host:syncPanel,
       getBlockReason:()=>hasPendingLocalSync()||cloud?.saving?'有尚未确认的保存或同步冲突，请先完成同步；必要时导出待同步修改。':
         hasOpenEditorDialog()?'请先保存或取消正在编辑的表单，再更新界面。':
         !cloud?.ready||cloud?.stopped?'请先恢复登录和数据连接。':

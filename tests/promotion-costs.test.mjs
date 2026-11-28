@@ -5,7 +5,7 @@ import {promotionView} from '../content-ops/promotion-view.js';
 import {createXhsStore} from '../content-ops/xhs-store.js';
 import {renderPromotions,showPromotion} from '../public/stock-ops/promotion-ui.js';
 const products=[{id:'wholesale-a',sku:'A',name:'产品系列-新名字',unitCost:20,costConnected:true},{id:'wholesale-b',sku:'B',name:'产品系列-第二款',unitCost:0,costConnected:true},{id:'wholesale-c',sku:'C',name:'产品系列-第三款',costConnected:false}];
-const raw={id:'p',creator:'测试博主',productIds:['wholesale-a','wholesale-b'],productCodes:['A','B'],product:'旧名字、第二款',sampleQuantity:2,fee:100,extraCost:10,createdAt:'2026-11-28'};
+const raw={id:'p',status:'等待发布',creator:'测试博主',productIds:['wholesale-a','wholesale-b'],productCodes:['A','B'],product:'旧名字、第二款',sampleQuantity:2,fee:100,extraCost:10,createdAt:'2026-11-28'};
 test('owner-confirmed aliases resolve to ordering SKUs while mixed or unspecified bundles remain pending',()=>{
  const catalog=[{id:'pink',sku:'NEW-349559',name:'法棍包系列-蜜桃粉',unitCost:100.93,costConnected:true},{id:'bag',sku:'BG0008',name:'挎包系列-法棍手提包（可斜挎）',unitCost:20,costConnected:true}];
  for(const name of ['粉色法棍痛','法棍粉牛仔','法棍牛仔粉'])assert.equal(PD.findProduct(name,catalog).id,'pink');
@@ -53,7 +53,7 @@ test('all-month and undated views include legacy rows; actual shipments use unre
 });
 test('promotion read uses latest server placements without exposing or loading creator/contact records',async()=>{
  let query;const store=createXhsStore({remote:async url=>{query=url;return [{placements:[raw],updated_at:'2026-11-28T01:00:00Z'}]},stateId:'test'});
- const state=await store.placements();assert.equal(state.placements[0].id,'p');assert.equal(state.updatedAt,'2026-11-28T01:00:00.000Z');assert.match(query,/select=placements:state->placements,updated_at/);assert.equal(state.creators,undefined);
+ const state=await store.placements();assert.equal(state.placements[0].id,'p');assert.equal(state.updatedAt,'2026-11-28T01:00:00.000Z');assert.match(query,/select=placements:state->placements,promotionSkus:state->promotionSkus,updated_at/);assert.equal(state.creators,undefined);
 });
 test('promotion screen retains pending rows, shows unique totals, filters and opens full detail without write controls',()=>{
  const original=globalThis.PromotionData;globalThis.PromotionData=PD;

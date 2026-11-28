@@ -10,7 +10,7 @@ function setup(rows){
  const RealDate=Date;class FixedDate extends RealDate{constructor(...a){super(...(a.length?a:['2026-11-23T09:00:00Z']))}static now(){return new RealDate('2026-11-23T09:00:00Z').getTime()}}
  const ctx=vm.createContext({PromotionData,document:{querySelector:node,querySelectorAll:()=>[],activeElement:null},Date:FixedDate,console,structuredClone,setTimeout:()=>1,clearTimeout(){},URL});
  vm.runInContext(app.slice(0,app.lastIndexOf('  startSharedApp().catch('))+`globalThis.s={followupTask,placementInformationIssue,renderFollowups,renderTable,renderProductBoard,filteredPlacements,openCooperationRecords,
- setup:rows=>{placements=rows;creators=[];currentUser={role:'admin'};},rows:()=>placements,
+ setup:rows=>{placements=rows;creators=[];currentUser={role:'admin'};rebuildPromotionCatalog();},rows:()=>placements,
  period:p=>ledgerPeriod=p,overview:p=>overviewPeriod=p,product:p=>selectedProduct=p,
  filtered:()=>filteredPlacements().map(x=>x.id),renderStub:()=>{switchView=n=>globalThis.opened=n}};})();`,ctx);
  ctx.s.setup(structuredClone(rows));return{ctx,s:ctx.s,node};
@@ -36,8 +36,8 @@ test('monthly ledger matches registration month even if publication is absent or
 });
 test('cooperation count links clear stale filters and open the exact registration-month records',()=>{
  const f=setup([...cases,row('other-product',{product:'Product B'}),row('older',{createdAt:'2026-10-01'})]);f.s.overview('2026-11');f.node('#search-input').value='not matching';f.node('#data-entry-filter').value='filled';f.s.renderStub();f.s.openCooperationRecords('Product A');
- assert.equal(f.ctx.opened,'placements');assert.equal(f.node('#search-input').value,'');assert.equal(f.node('#data-entry-filter').value,'all');assert.deepEqual(Array.from(f.s.filtered()),cases.map(x=>x.id));
- f.s.renderProductBoard();assert.match(f.node('#product-board').innerHTML,/data-cooperation-records="all"/);assert.match(f.node('#product-board').innerHTML,/查看这 11 条记录/);
+ assert.equal(f.ctx.opened,'placements');assert.equal(f.node('#search-input').value,'');assert.equal(f.node('#data-entry-filter').value,'all');assert.deepEqual(Array.from(f.s.filtered()),cases.filter(x=>PromotionData.publicationStage(x)).map(x=>x.id));
+ f.s.renderProductBoard();assert.match(f.node('#product-board').innerHTML,/data-cooperation-records="all"/);assert.match(f.node('#product-board').innerHTML,/查看这 7 条记录/);
 });
 test('ledger search and state filters remain effective with full record visibility',()=>{
  const f=setup(cases);f.node('#search-input').value='Creator future';f.s.renderTable();assert.match(f.node('#placement-table').innerHTML,/data-edit="future"/);assert.doesNotMatch(f.node('#placement-table').innerHTML,/data-edit="contact"/);

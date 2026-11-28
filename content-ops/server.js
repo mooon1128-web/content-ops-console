@@ -5,13 +5,13 @@ import {createPurchaseFiles} from './purchase-files.js';
 import {workspaceView} from './stock-archives.js';
 import { stockView, roleOf, hasStockRole, fail } from './stock-model.js';
 import {createXhsStore,publicXhs} from './xhs-store.js';
-import {currentWholesaleProducts,catalogCostInfo} from './wholesale-catalog.js';
+import {currentWholesaleProducts,catalogCostInfo,createCatalogReader} from './wholesale-catalog.js';
 import {promotionView} from './promotion-view.js';
 import RecordOps from '../public/content-ops/ops-core.cjs';
 import {createGzip} from 'node:zlib';
 import {Readable} from 'node:stream';
-const BUILD_ID='20261128-promotion-costs-v1';
-const XHS_UI_VERSION='20261128-promotion-costs-v1';
+const BUILD_ID='20261128-promotion-catalog-v2';
+const XHS_UI_VERSION='20261128-promotion-catalog-v2';
 const contentShape={titles:'rows',accounts:'rows',posts:'rows',products:'rows',inventorySettings:'map'};
 import { createServer } from "node:http";
 import { createHmac, timingSafeEqual, randomUUID, createHash } from "node:crypto";
@@ -798,34 +798,31 @@ const stockStore = createStockStore({file:process.env.STOCK_OPS_DATA || join(dir
 const costFilesDir=process.env.STOCK_OPS_FILES_DIR || join(dirname(process.env.STOCK_OPS_DATA || dataFile),'stock-ops-cost-files');
 const purchaseFiles=createPurchaseFiles({dir:join(costFilesDir,'purchase-contracts'),readState:()=>stockStore.read('workspace')});
 let stockOptimization={status:'pending'};
-let stockCatalogCache=null,wholesaleCatalogCache=null,wholesaleCatalogRequest=null;
-async function readWholesaleCatalog(force=false){
-  if(!force&&wholesaleCatalogCache&&Date.now()-Date.parse(wholesaleCatalogCache.syncedAt)<60000)return wholesaleCatalogCache;
-  if(wholesaleCatalogRequest)return wholesaleCatalogRequest;
-  wholesaleCatalogRequest=(async()=>{
+let stockCatalogCache=null;
+const catalogFile=join(dirname(dataFile),'wholesale-catalog-cache.json');
+const readWholesaleCatalog=createCatalogReader({
+  restore:async()=>JSON.parse(await readFile(catalogFile,'utf8')),
+  persist:async value=>{await mkdir(dirname(catalogFile),{recursive:true});const temp=catalogFile+'.tmp';await writeFile(temp,JSON.stringify(value),{mode:0o600});await rename(temp,catalogFile);},
+  load:async()=>{
     const base='https://pupuhome-wholesale.onrender.com';
-    const [response,data]=await Promise.all([fetch(base+'/data/products.js',{signal:AbortSignal.timeout(10000)}),loadWholesalePrivateData(base).catch(()=>({connected:false,reason:'upstream-unavailable'}))]);
-    if(!response.ok)throw fail(502,'订货商品与成本暂时无法读取，请稍后重试');
-    const rows=currentWholesaleProducts(parseProductsScript(await response.text()),data);
-    const result={rows,data,syncedAt:new Date().toISOString()};
-    if(data.connected)wholesaleCatalogCache=result;
-    return result;
-  })();
-  try{return await wholesaleCatalogRequest;}finally{wholesaleCatalogRequest=null;}
-}
+    const [response,data]=await Promise.all([fetch(base+'/data/products.js',{signal:AbortSignal.timeout(10000)}),loadWholesalePrivateData(base)]);
+    if(!response.ok||!data.connected)throw fail(503,'订货完整目录暂时无法读取，已保留原有记录，请稍后同步');
+    return {rows:currentWholesaleProducts(parseProductsScript(await response.text()),data),data};
+  }
+});
 async function readStockCatalog(force=false){
-  const {rows,data,syncedAt}=await readWholesaleCatalog(force);
+  const {rows,data,syncedAt,stale,error}=await readWholesaleCatalog(force);
   // Public catalog fields only. Cost data never enters the stock catalog response.
   const products=rows.map(p=>({id:String(p.id),code:String(p.code||''),name:String(p.name||''),image:p.image?new URL(p.image,'https://pupuhome-wholesale.onrender.com/').href:''}));
-  const result={products,syncedAt,catalogConnected:Boolean(data.connected)};
+  const result={products,syncedAt,catalogConnected:Boolean(data.connected&&!stale),catalogError:error||''};
   if(data.connected)stockCatalogCache=result;
   return result;
 }
 async function readPromotionCatalog(force=false){
   try{
-    const {rows,data,syncedAt}=await readWholesaleCatalog(force);
-    return {products:rows.map(p=>normalizeWholesaleProduct(p,'https://pupuhome-wholesale.onrender.com',productCostInfo(p,data.costSettings,data.costSeeds))),syncedAt,catalogConnected:Boolean(data.connected),error:data.connected?'':'订货后台最新成本未连接，当前成本待核'};
-  }catch(error){return {products:[],catalogConnected:false,error:error.message};}
+    const {rows,data,syncedAt,stale,error}=await readWholesaleCatalog(force);
+    return {products:rows.map(p=>normalizeWholesaleProduct(p,'https://pupuhome-wholesale.onrender.com',{...productCostInfo(p,data.costSettings,data.costSeeds),...(stale?{costConnected:false}:{})})),syncedAt,catalogConnected:Boolean(data.connected&&!stale),error:error||''};
+  }catch(error){throw fail(503,error.message);}
 }
 
 const stockLive=createStockLive({version:()=>stockStore.version(),authorize:async req=>{const user=await access.requireUser(req);if(roleOf(user)==='none')throw fail(403,'请重新登录');}});
@@ -939,14 +936,14 @@ const server = createServer(async (request, response) => {
       const sourceUrl = url.searchParams.get("url") || "https://pupuhome-wholesale.onrender.com/admin.html";
       const baseUrl = new URL(sourceUrl).origin;
       if(baseUrl!=="https://pupuhome-wholesale.onrender.com")throw fail(400,"订货数据来源未获配置，请联系管理员");
-      const {rows:rawProducts,data:privateData,syncedAt}=await readWholesaleCatalog(url.searchParams.get('refresh')==='1');
+      const {rows:rawProducts,data:privateData,syncedAt,stale}=await readWholesaleCatalog(url.searchParams.get('refresh')==='1');
       const user=request.contentOpsUser, admin=user.role==='admin';
-      const products = rawProducts.map(product => normalizeWholesaleProduct(product, baseUrl, catalogCostInfo(user,product,privateData,productCostInfo)));
+      const products = rawProducts.map(product => normalizeWholesaleProduct(product, baseUrl, {...catalogCostInfo(user,product,privateData,productCostInfo),...(stale?{costConnected:false}:{})}));
       send(response, 200, {
         products, sourceUrl, syncedAt,
-        catalogConnected: Boolean(privateData.connected),
-        catalogConnectionReason: privateData.reason || '',
-        costConnected: admin && Boolean(privateData.connected),
+        catalogConnected: Boolean(privateData.connected&&!stale),
+        catalogConnectionReason: stale ? 'stale-cache' : privateData.reason || '',
+        costConnected: admin && Boolean(privateData.connected&&!stale),
         costConnectionReason: admin ? privateData.reason : 'restricted',
         customProductCount: (privateData.customProducts || []).length,
         costSettingsCount: admin ? Object.keys(privateData.costSettings || {}).length : 0,
