@@ -1480,10 +1480,11 @@
     return { spend, interactions, interactionRate, clickRate, cpm, cpe, cpl, roas, roiLabel };
   }
 
-  function feedbackType(item, values = calc(item)) {
+  function feedbackType(item) {
     if (item.status !== "已发布") return "optimize";
-    if (!hasPlacementPerformanceData(item)) return "pending-data";
-    if (number(item.likes) < 200) return "pause";
+    const review = prReview(item);
+    if (!review.qualifies && review.key !== "below") return "pending-data";
+    if (review.key === "below") return "pause";
     if (number(item.likes) >= 500 || number(item.saves) >= 200 || number(item.comments) >= 50) return "scale";
     return "optimize";
   }
@@ -1504,8 +1505,9 @@
 
   function feedbackReason(item) {
     if (item.status !== "已发布") return "还未进入完整数据期，先盯排期、脚本卖点和发布时间。";
-    if (!hasPlacementPerformanceData(item)) return `${publishedAgeText(item) || "已发布"}，先补录点赞、收藏、评论后再判断反馈。`;
-    if (number(item.likes) < 200) return `点赞 ${compact(item.likes)}，数据较差，优先复查选人和内容方向。`;
+    const review = prReview(item);
+    if (!review.qualifies && review.key !== "below") return prDay7Label(item);
+    if (review.key === "below") return `7天数据 ${compact(review.day7.likes)} 赞，未达200赞，复查选人和内容方向。`;
     if (number(item.likes) >= 500 || number(item.saves) >= 200 || number(item.comments) >= 50) {
       return `${compact(item.likes)}赞 · ${compact(item.saves)}收藏 · ${compact(item.comments)}评论，互动表现较好。`;
     }
@@ -1516,14 +1518,144 @@
     return Boolean(item.performanceReviewedAt) || [item.likes, item.saves, item.comments].some((value) => number(value) > 0);
   }
 
+  function prToday() {
+    const parts = new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());
+    const field = name => parts.find(p=>p.type===name).value;
+    return `${field('year')}-${field('month')}-${field('day')}`;
+  }
+
+  function prDate(value) {
+    const text = String(value || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return '';
+    const date = new Date(text + 'T00:00:00Z');
+    return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === text ? text : '';
+  }
+
+  function prCycle(value) {
+    const date = prDate(value);
+    if (!date) return '';
+    const [year, month, day] = date.split('-').map(Number);
+    return new Date(Date.UTC(year, month - (day < 17 ? 2 : 1), 17)).toISOString().slice(0, 7);
+  }
+
+  function prCycleLabel(cycle) {
+    if (cycle === 'all') return '全部发布周期';
+    if (cycle === 'undated') return '统计日期待核';
+    if (!/^\d{4}-\d{2}$/.test(cycle)) return '周期待核';
+    const [year, month] = cycle.split('-').map(Number);
+    const end = new Date(Date.UTC(year, month, 16)).toISOString().slice(0, 10);
+    return `${cycle}-17 至 ${end}`;
+  }
+
+  function prPublished(item) {
+    return item.status === '已发布';
+  }
+
+  function prAge(item) {
+    const date = prDate(item.publishedAt);
+    return date ? Math.round((Date.parse(prToday()+'T00:00:00Z')-Date.parse(date+'T00:00:00Z'))/86400000) : NaN;
+  }
+
+  function prMetric(value) {
+    return (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') && Number.isSafeInteger(Number(value)) && Number(value) >= 0;
+  }
+
+  function prReviewDate(value) {
+    if (!value) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return prDate(value);
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return '';
+    const parts = new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(date);
+    const field = name => parts.find(p=>p.type===name).value;
+    return `${field('year')}-${field('month')}-${field('day')}`;
+  }
+
+  function prDay7Data(item) {
+    const publishedAt=prDate(item.publishedAt);
+    if (!publishedAt) return null;
+    const snapshot=item.prDay7Review;
+    if (snapshot && snapshot.publishedAt !== publishedAt) return null;
+    const recordedAt=prReviewDate(snapshot?.recordedAt || item.performanceReviewedAt);
+    if (!recordedAt || recordedAt>prToday() || (Date.parse(recordedAt)-Date.parse(publishedAt))/86400000<7) return null;
+    const values=snapshot || item;
+    if (![values.likes,values.saves,values.comments].every(prMetric)) return null;
+    return {likes:Number(values.likes),saves:Number(values.saves),comments:Number(values.comments),recordedAt};
+  }
+
+  function prQualification(item) {
+    const publishedAt=prDate(item.publishedAt), snapshot=item.prQualifiedReview;
+    if (!publishedAt || snapshot && snapshot.publishedAt !== publishedAt) return null;
+    const values=snapshot || item;
+    const recordedAt=prReviewDate(snapshot?.recordedAt || item.performanceReviewedAt);
+    if (!prMetric(values.likes) || Number(values.likes)<200 || !recordedAt || recordedAt<publishedAt || recordedAt>prToday()) return null;
+    return {publishedAt,recordedAt,likes:Number(values.likes)};
+  }
+
+  function prReview(item) {
+    const date=prDate(item.publishedAt),age=prAge(item),day7=prDay7Data(item),qualification=prQualification(item);
+    if (!date || age<0) return {key:'check',label:'日期待核',cycle:'',qualifies:false,age,day7:null};
+    const qualifies=Boolean(qualification)||(prMetric(item.likes)&&Number(item.likes)>=200)||Boolean(day7&&day7.likes>=200);
+    // Keep the first qualifying observation in its cycle. Later day-7 follow-up is not a second task.
+    const qualifiedDate=qualification?.recordedAt || (day7?.likes>=200 ? day7.recordedAt : '');
+    const day7DueAt=new Date(Date.parse(date+'T00:00:00Z')+7*86400000).toISOString().slice(0,10);
+    const cycle=prCycle(qualifies ? qualifiedDate : day7?.recordedAt || day7DueAt);
+    const key=qualifies?'qualified':age<7?'watching':day7?'below':'missing';
+    const label={qualified:'达标 · ≥200 赞',watching:'观察中 · 未满7天',below:'7天数据未达标',missing:'7天数据待补'}[key];
+    return {key,label,cycle,qualifies,age,day7,qualifiedDate,day7DueAt};
+  }
+
+  function prCycleNote(item) {
+    const review=prReview(item);
+    if (!review.cycle) return review.qualifies?'达标日期待核，请补录数据日期':'请补齐正确的发布日期';
+    if (review.qualifies) return `${review.qualifiedDate} 达标，7天补录不重复计任务`;
+    if (review.day7) return `${review.day7.recordedAt} 的7天数据`;
+    return `${review.day7DueAt} 满7天；提前满200赞按达标日计入`;
+  }
+
+  function prDay7Label(item) {
+    const review=prReview(item);
+    if(review.key==='check')return '请先补齐正确的发布日期';
+    if(review.age<7)return `未满7天 · 还差${7-review.age}天，届时仍需补填`;
+    return review.day7?`7天数据已填 · ${review.day7.recordedAt}`:'已满7天 · 必须补填7天数据';
+  }
+
+  function prUniqueRows(rows) {
+    const seen = new Set();
+    return rows.filter(item => {
+      // A cooperation containing multiple products is still one published record.
+      const key = item.id;
+      if (!key) return true;
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
+    });
+  }
+
+  function renderPrSummary(rows) {
+    const target = $('#pr-summary');
+    if (!target) return;
+    const unique = prUniqueRows(rows), reviews = unique.map(prReview);
+    const qualified = reviews.filter(r => r.qualifies).length;
+    const pending = reviews.filter(r => r.age>=7 && !r.day7).length;
+    const check = reviews.filter(r => !r.cycle).length;
+    const owners = new Map();
+    unique.forEach(item => {
+      const key = item.ownerUserId || item.owner || '负责人待补';
+      const group = owners.get(key) || { name: item.owner || '负责人待补', total: 0, qualified: 0 };
+      group.total++; if (prReview(item).qualifies) group.qualified++; owners.set(key, group);
+    });
+    target.innerHTML = `<div class="pr-summary-heading"><strong>${escapeHtml(prCycleLabel(ledgerPeriod))}</strong><span>每月 17 日至次月 16 日；满200赞按达标日计任务，未满200赞按7天审核归属。</span></div>
+      <div class="pr-summary-cards">${[['已发布',unique.length],['已达标 ≥200赞',qualified],['7天数据未达标',reviews.filter(r=>r.key==='below').length],['未满7天',reviews.filter(r=>r.age>=0&&r.age<7).length],['7天数据待补',pending],['日期待核',check]].map(([label,count])=>`<div><span>${label}</span><strong>${count}</strong></div>`).join('')}</div>
+      <div class="pr-owner-summary">${[...owners.values()].map(o=>`<span>${escapeHtml(o.name)}：${o.qualified} 条达标 / ${o.total} 条已发布</span>`).join('')}</div>
+      <small>手动录入后自动统计：达到 200 赞立即达标；未达 200 赞以 7 天数据判断。16日截止前达标计本周期，否则转入下周期审核。提前达标仍须补填 7 天数据；“未满7天／待补”可与达标重叠，不重复计合作数。</small>`;
+  }
+
   function isDay7ReviewDue(item) {
-    const publishedDays = daysSince(item.publishedAt);
-    return item.status === "已发布" && Number.isFinite(publishedDays) && publishedDays >= 7 && !hasPlacementPerformanceData(item);
+    return prPublished(item) && prAge(item)>=7 && !prDay7Data(item);
   }
 
   function isPublishedWaitingForDay7(item) {
-    const publishedDays = daysSince(item.publishedAt);
-    return item.status === "已发布" && Number.isFinite(publishedDays) && publishedDays >= 0 && publishedDays < 7 && !hasPlacementPerformanceData(item);
+    const age=prAge(item);
+    return prPublished(item) && age>=0 && age<7;
   }
 
   function publishDueDate(item) {
@@ -1584,7 +1716,7 @@
     const draftDone = Boolean(item.draftSubmittedAt) || ["已申请", "已通过", "无需申请"].includes(item.draftStatus);
     const draftDueMissed = Number.isFinite(daysToPublish) && daysToPublish <= 2 && daysToPublish >= 0 && !draftDone;
     const notes = [item.notes, item.creatorResponse].join(" ");
-    const publishedDays = daysSince(item.publishedAt);
+    const publishedDays = prAge(item);
     const day7ReviewDue = isDay7ReviewDue(item);
     const delayedDays = publishDelayDays(item);
     const delayLevel = publishDelayLevel(delayedDays);
@@ -1594,7 +1726,7 @@
     if (delayLevel) warnings.push(`${delayLevel.label}：${delayLevel.note}`);
     if (draftDueMissed) warnings.push("距约定发布日期不足2天，稿件申请仍未完成");
     if (number(item.followUpCount) >= 2 && itemProgress.done < itemProgress.required && !String(item.creatorResponse || "").includes("已确认")) warnings.push("已跟进2次以上仍未完成");
-    if (itemProgress.done > 0 && itemProgress.done < itemProgress.required && daysSince(item.publishedAt) >= 5) warnings.push("首篇发布超过5天仍缺剩余内容");
+    if (itemProgress.done > 0 && itemProgress.done < itemProgress.required && prAge(item) >= 5) warnings.push("首篇发布超过5天仍缺剩余内容");
     if (/失联|不回复|无回复|不愿|不配合|拒绝|拖/i.test(notes)) warnings.push("备注中出现长期无回复或配合风险");
 
     if (needsSampleShipment(item)) {
@@ -1647,7 +1779,7 @@
         priority: "最高",
         rank: priorityRank["最高"],
         kind: "day7-review",
-        reason: `已发布${publishedDays}天，点赞、收藏、评论仍未录入。`,
+        reason: `已发布${publishedDays}天，7天数据仍需补填${prReview(item).qualifies ? "（已提前达标）" : ""}。`,
         action: item.url ? "打开笔记，填写点赞、收藏、评论。" : "先补充笔记链接，再填写点赞、收藏、评论。",
         warnings,
       };
@@ -1950,15 +2082,14 @@
   }
 
   function renderPeriodControls() {
-    [
-      ["#overview-period", overviewPeriod, false],
-      ["#ledger-period", ledgerPeriod, true],
-    ].forEach(([selector, current, includeUnpublished]) => {
-      const select = $(selector);
-      if (!select) return;
-      select.innerHTML = periodOptions(includeUnpublished).map((option) => `<option value="${option.value}">${option.label}</option>`).join("");
-      select.value = current;
-    });
+    const overview = $('#overview-period');
+    if (overview) { overview.innerHTML = periodOptions(false).map(o=>`<option value="${o.value}">${o.label}</option>`).join(''); overview.value = overviewPeriod; }
+    const ledger = $('#ledger-period');
+    if (ledger) {
+      const cycles = new Set([prCycle(prToday()), ...placements.filter(prPublished).map(item=>prReview(item).cycle).filter(Boolean)]);
+      const options = [{value:'all',label:'全部发布周期'}, ...[...cycles].sort().reverse().map(value=>({value,label:prCycleLabel(value)})), {value:'undated',label:'统计日期待核'}];
+      ledger.innerHTML = options.map(o=>`<option value="${o.value}">${o.label}</option>`).join(''); ledger.value = ledgerPeriod;
+    }
   }
 
   function renderProductBoard() {
@@ -2023,7 +2154,7 @@
     const likes = rows.reduce((sum, item) => sum + number(item.likes), 0);
     const saves = rows.reduce((sum, item) => sum + number(item.saves), 0);
     const comments = rows.reduce((sum, item) => sum + number(item.comments), 0);
-    const poor = rows.filter((item) => hasPlacementPerformanceData(item) && number(item.likes) < 200).length;
+    const poor = rows.filter(item=>prReview(item).key==='below').length;
     const metrics = [
       ["已发布投放", compact(rows.length), periodLabel(overviewPeriod), "accent-teal"],
       ["点赞", compact(likes), `平均 ${rows.length ? compact(Math.round(likes / rows.length)) : 0}`, "accent-blue"],
@@ -2231,7 +2362,7 @@
         title: "填数据",
         note: "发布后的7天数据补录",
         cards: [
-          ["已发布未满7天", buckets.publishedWaiting.length, "先观察，到7天再填", "accent-teal", "followup-published-waiting"],
+          ["已发布未满7天", buckets.publishedWaiting.length, "满200赞即达标，7天仍须填", "accent-teal", "followup-published-waiting"],
           ["已发布达7天待填", buckets.day7Review.length, "录入点赞、收藏、评论", "accent-violet", "followup-day7-review"],
         ],
       },
@@ -2277,11 +2408,16 @@
         title: "填数据",
         note: "发布后按7天统计周期管理数据补录。",
         sections: [
-          ["followup-published-waiting", "已发布未满7天", "先观察，不急着填最终数据。", buckets.publishedWaiting],
-          ["followup-day7-review", "已发布达7天等待填写数据", "到期后直接在这里填点赞、收藏、评论。", buckets.day7Review],
+          ["followup-published-waiting", "已发布未满7天", "可提前填当前数据；达到200赞即达标，满7天仍须再填。", buckets.publishedWaiting],
+          ["followup-day7-review", "已发布达7天等待填写数据", "包括提前达标的记录：满7天后仍须补填点赞、收藏、评论。", buckets.day7Review],
         ],
       },
     ];
+    if (boardRecordIds) {
+      const listed = new Set(groups.flatMap(g=>g.sections.flatMap(section=>section[3].map(item=>item.id))));
+      const remaining = tasks.filter(item=>!listed.has(item.id));
+      if (remaining.length) groups.push({title:'其他合作记录',note:'当前商品筛选内的已完成记录',sections:[['followup-completed','已完成／其他记录','原合作记录保留，可继续查看或编辑。',remaining]]});
+    }
     followupGroups = new Map(groups.flatMap(group => group.sections.map(([id, title, note, items]) => [id, items.map(item => item.id)])));
     const visibleIds = new Set([...followupGroups.values()].flat());
     selectedFollowupIds = new Set([...selectedFollowupIds].filter(id => visibleIds.has(id)));
@@ -2351,10 +2487,11 @@
 
   function performanceReviewForm(item) {
     return `
-      <form class="review-quick-form" data-review-form="${escapeHtml(item.id)}">
-        <label>点赞<input data-review-field="likes" type="number" min="0" step="1" inputmode="numeric" value="${number(item.likes)}" /></label>
-        <label>收藏<input data-review-field="saves" type="number" min="0" step="1" inputmode="numeric" value="${number(item.saves)}" /></label>
-        <label>评论<input data-review-field="comments" type="number" min="0" step="1" inputmode="numeric" value="${number(item.comments)}" /></label>
+      <form class="review-quick-form" data-review-form="${escapeHtml(item.id)}"><small class="review-form-note">${prAge(item)>=7?'填写满7天后的数据，已达标任务保留原周期。':'当前数据：满200赞立即达标，第7天仍需再次填写。'}</small>
+        <label>数据日期<input data-review-field="recordedAt" type="date" required min="${escapeHtml(prDate(item.publishedAt))}" max="${prToday()}" value="${prToday()}" /></label>
+        <label>点赞<input data-review-field="likes" type="number" required min="0" step="1" inputmode="numeric" value="${number(item.likes)}" /></label>
+        <label>收藏<input data-review-field="saves" type="number" required min="0" step="1" inputmode="numeric" value="${number(item.saves)}" /></label>
+        <label>评论<input data-review-field="comments" type="number" required min="0" step="1" inputmode="numeric" value="${number(item.comments)}" /></label>
         <button class="primary-button small" type="submit">保存数据</button>
       </form>
     `;
@@ -2435,57 +2572,21 @@
     const rows = allRows.slice((creatorPage - 1) * creatorPageSize, creatorPage * creatorPageSize);
     $("#creator-pagination").innerHTML = `<span>共 ${allRows.length} 位 · 第 ${creatorPage} / ${pageCount} 页 · 每页 ${creatorPageSize} 位</span><button type="button" data-creator-page="-1" ${creatorPage === 1 ? "disabled" : ""}>上一页</button><button type="button" data-creator-page="1" ${creatorPage === pageCount ? "disabled" : ""}>下一页</button>`;
     $("#creator-table").innerHTML = rows.length ? rows.map((item) => {
-      const delayTag = creatorDelayTag(item);
-      const cooperatedProducts = creatorCooperatedProducts(item);
-      const creatorTags = creatorTagList(item.creatorTags);
-      return `
-        <tr>
-          <td>
-            <input type="checkbox" data-select-creator="${escapeHtml(item.id)}" ${selectedCreatorIds.has(item.id) ? "checked" : ""} ${canSelectCreator(item) ? "" : "disabled"} aria-label="选择${escapeHtml(item.name)}建联" />
-          </td>
-          <td>
-            <div class="cell-title">
-              <strong>${escapeHtml(item.name)}</strong>
-              ${delayTag ? `<span class="pill ${delayTag.tone}">${escapeHtml(delayTag.label)}</span>` : ""}
-              ${item.profileLink ? `<a href="${escapeHtml(item.profileLink)}" target="_blank" rel="noreferrer">打开主页</a>` : ""}
-              <span class="muted">${escapeHtml(item.source || "达人库")} · ${escapeHtml(item.id)}</span>
-              <span class="muted">新增：${escapeHtml(creatorCreatedDate(item) || "未记录")}</span>
-              ${creatorTags.length ? `<div class="creator-tags-inline">${creatorTags.map((tag) => `<span class="pill blue">${escapeHtml(tag)}</span>`).join("")}</div>` : ""}
-            </div>
-          </td>
-          <td><span class="pill gray">${escapeHtml(item.creatorType || "未分类")}</span></td>
-          <td><span class="pill ${item.tier === "头部" ? "coral" : item.tier === "中部" ? "amber" : item.tier === "尾部" ? "blue" : "gray"}">${escapeHtml(item.tier)}</span></td>
-          <td>
-            <strong>${escapeHtml(item.fansText || compact(item.fanCount))}</strong>
-            <div class="muted">${compact(item.fanCount)}</div>
-          </td>
-          <td>${compact(item.cooperationCount)}</td>
-          <td>
-            <div class="creator-products-inline">
-              ${cooperatedProducts.slice(0, 5).map((product) => `<span class="pill gray">${escapeHtml(product)}</span>`).join("") || `<span class="muted">未记录</span>`}
-            </div>
-            <div class="muted">${escapeHtml(item.lastCooperationAt || "暂无日期")}</div>
-          </td>
-          <td>
-            <div class="muted">邮箱：${escapeHtml(creatorEmail(item) || "未填")}</div>
-            <div class="muted">微信：${escapeHtml(item.wechat || "未填")}</div>
-            <div class="muted">地址：${escapeHtml(item.contactAddress || "未填")}</div>
-          </td>
-          <td>
-            <span class="pill ${outreachStatusClass(creatorOutreachStatus(item))}">${escapeHtml(creatorOutreachStatus(item))}</span>
-            <div class="muted">邮件：${creatorEmailSentDate(item) ? `已发 ${escapeHtml(creatorEmailSentDate(item))}` : "未发"}</div>
-            <div class="muted">最近建联：${escapeHtml(item.lastOutreachAt || "未记录")}</div>
-          </td>
-          <td>
-            ${item.isBlacklisted ? `<span class="pill coral">黑名单</span><div class="muted">${escapeHtml(item.blacklistReason || "未填写原因")}</div>` : `<span class="pill gray">正常</span>`}
-          </td>
-          <td>
-            ${canOutreachTarget(item) ? `<button class="secondary-button small" data-creator-outreach="${escapeHtml(item.id)}">建联</button>` : ""}
-            <button class="secondary-button small" data-edit-creator="${escapeHtml(item.id)}">编辑</button>
-          </td>
-        </tr>
-      `;
-    }).join("") : `<tr><td colspan="11"><div class="empty-state">暂无匹配达人。</div></td></tr>`;
+      const delayTag = creatorDelayTag(item), products = creatorCooperatedProducts(item), tags = creatorTagList(item.creatorTags);
+      return `<tr>
+        <td data-label="操作"><div class="compact-row-actions"><button class="secondary-button small" data-edit-creator="${escapeHtml(item.id)}">编辑</button><input type="checkbox" data-select-creator="${escapeHtml(item.id)}" ${selectedCreatorIds.has(item.id)?'checked':''} ${canSelectCreator(item)?'':'disabled'} aria-label="选择${escapeHtml(item.name)}建联" /></div></td>
+        <td data-label="达人"><div class="cell-title"><div class="creator-name-line">${item.isBlacklisted?'<span class="blacklist-badge">黑名单</span>':''}<strong>${escapeHtml(item.name)}</strong></div>
+          ${item.isBlacklisted?`<span class="blacklist-reason">${escapeHtml(item.blacklistReason || '原因待补')}</span>`:''}
+          ${delayTag?`<span class="pill ${delayTag.tone}">${escapeHtml(delayTag.label)}</span>`:''}
+          ${item.profileLink?`<a href="${escapeHtml(item.profileLink)}" target="_blank" rel="noreferrer">打开主页</a>`:''}
+          ${tags.length?`<div class="creator-tags-inline">${tags.map(t=>`<span class="pill blue">${escapeHtml(t)}</span>`).join('')}</div>`:''}
+        </div></td>
+        <td data-label="类型／量级"><div class="cell-title"><span>${escapeHtml(item.creatorType || '未分类')}</span><span class="pill ${item.tier==='头部'?'coral':item.tier==='中部'?'amber':item.tier==='尾部'?'blue':'gray'}">${escapeHtml(item.tier || '待补')}</span></div></td>
+        <td data-label="粉丝数"><strong>${escapeHtml(item.fansText || compact(item.fanCount))}</strong></td>
+        <td data-label="合作"><div class="cell-title"><strong>${compact(item.cooperationCount)} 次合作</strong><div class="creator-products-inline">${products.slice(0,5).map(product=>`<span class="pill gray">${escapeHtml(product)}</span>`).join('') || '<span class="muted">产品未记录</span>'}</div><span class="muted">${escapeHtml(item.lastCooperationAt || '暂无日期')}</span></div></td>
+        <td data-label="建联"><span class="pill ${outreachStatusClass(creatorOutreachStatus(item))}">${escapeHtml(creatorOutreachStatus(item))}</span>${canOutreachTarget(item)?`<button class="text-button" data-creator-outreach="${escapeHtml(item.id)}">建联</button>`:''}</td>
+      </tr>`;
+    }).join('') : '<tr><td colspan="6"><div class="empty-state">暂无匹配达人。</div></td></tr>';
     const selectableRows = allRows.filter(canSelectCreator);
     const selectAll = $("#select-all-outreach");
     if (selectAll) {
@@ -2681,22 +2782,18 @@
   }
 
   function filteredPlacements() {
-    const query = $("#search-input")?.value.trim().toLowerCase() || "";
-    const status = $("#status-filter")?.value || "all";
-    const content = $("#content-filter")?.value || "all";
-    const result = $("#result-filter")?.value || "all";
-    const dataEntry = $("#data-entry-filter")?.value || "all";
-    const periodRows = ledgerPeriod === "all" ? placements : ledgerPeriod === "unpublished" ? placements.filter(item => !String(item.publishedAt || "").trim()) : placements.filter(item => dateMatchesPeriod(cooperationRecordDate(item), ledgerPeriod));
-    return filterSelectedProduct(periodRows).filter((item) => {
-      const haystack = [item.creator, item.product, placementProductName(item), item.noteTitle, item.owner, item.contactMethod, item.creatorResponse, item.notes, placementPlatform(item)].join(" ").toLowerCase();
+    const query = $('#search-input')?.value.trim().toLowerCase() || '';
+    const content = $('#content-filter')?.value || 'all';
+    const result = $('#result-filter')?.value || 'all';
+    const dataEntry = $('#data-entry-filter')?.value || 'all';
+    const published = prUniqueRows(placements.filter(prPublished));
+    const periodRows = ledgerPeriod === 'all' ? published : published.filter(item=>ledgerPeriod==='undated' ? !prReview(item).cycle : prReview(item).cycle===ledgerPeriod);
+    return filterSelectedProduct(periodRows).filter(item => {
+      const haystack = [item.creator,item.product,placementProductName(item),item.noteTitle,item.owner,item.notes,placementPlatform(item)].join(' ').toLowerCase();
       if (query && !haystack.includes(query)) return false;
-      if (status !== "all" && item.status !== status) return false;
-      if (content !== "all" && item.contentType !== content) return false;
-      if (result !== "all" && feedbackType(item) !== result) return false;
-      if (dataEntry === "missing" && !ledgerNoProgressRecord(item)) return false;
-      if (dataEntry === "filled" && !ledgerCompletedRecord(item)) return false;
-      if (dataEntry === "active" && (ledgerNoProgressRecord(item) || ledgerCompletedRecord(item) || placementInformationIssue(item))) return false;
-      if (dataEntry === "check" && !placementInformationIssue(item)) return false;
+      if (content !== 'all' && item.contentType !== content) return false;
+      if (result !== 'all' && feedbackType(item) !== result) return false;
+      if (dataEntry === 'day7due' ? !isDay7ReviewDue(item) : dataEntry === 'young' ? !isPublishedWaitingForDay7(item) : dataEntry === 'check' ? Boolean(prReview(item).cycle) : dataEntry !== 'all' && prReview(item).key !== dataEntry) return false;
       return true;
     });
   }
@@ -2715,12 +2812,12 @@
   }
 
   function ledgerVisibleRecord(item) {
-    return ledgerNoProgressRecord(item) || ledgerCompletedRecord(item);
+    return prPublished(item);
   }
 
   function publishedAge(item) {
     if (item.status !== "已发布" || !item.publishedAt) return NaN;
-    return daysSince(item.publishedAt);
+    return prAge(item);
   }
 
   function publishedAgeText(item) {
@@ -2767,114 +2864,57 @@
   }
 
   function placementRow(item) {
-    const values = calc(item);
-    const type = feedbackType(item, values);
-    const task = followupTask(item);
-    const productText = placementProductDisplay(item);
-    const creatorRecord = creators.find((creator) => creatorKey(creator.name) === creatorKey(item.creator));
-    const creatorProfile = normalizeProfileLink(creatorRecord?.profileLink || item.creatorProfile);
-    const creatorName = creatorProfile
-      ? `<a class="creator-profile-link" href="${escapeHtml(creatorProfile)}" target="_blank" rel="noreferrer">${escapeHtml(item.creator)}</a>`
-      : `<span>${escapeHtml(item.creator)}</span>`;
-    const agreedPublishAt = item.agreedPublishAt || "未填写";
-    const publishedAt = item.publishedAt || "未填写";
-    const ageText = publishedAgeText(item);
-    const informationIssue = placementInformationIssue(item);
-    const placementNotes = String(item.notes || "").trim() || "未填写";
-    const platform = placementPlatform(item);
-    const missingMetrics = !hasPlacementPerformanceData(item);
-    const isDay7Due = isDay7ReviewDue(item);
-    const isPoorPerformance = hasPlacementPerformanceData(item) && Boolean(item.publishedAt) && number(item.likes) < 200;
-    const productCost = placementProductCost(item);
-    const costStatus = placementCostStatus(item);
-    const link = item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.noteTitle || placementProductName(item))}</a>` : `<strong>${escapeHtml(item.noteTitle || placementProductName(item))}</strong>`;
-    return `
-      <tr class="${isPoorPerformance ? "poor-performance-row" : ""} ${isDay7Due ? "day7-due-row" : ""}">
-        <td><span class="pill ${statusClass(item.status)}">${escapeHtml(item.status)}</span>${informationIssue ? `<div class="pill coral">信息待核对</div>` : ""}</td>
-        <td>
-          <div class="cell-title">
-            <div class="placement-title-line">${link}${isPoorPerformance ? `<span class="pill coral">数据较差</span>` : ""}${isDay7Due ? `<span class="pill coral">发布7天待填</span>` : ""}</div>
-            <span class="muted">${creatorName} · ${escapeHtml(item.creatorTier)} · ${productText}</span>
-            <span class="placement-detail-line">
-              <span>约定发布：${escapeHtml(agreedPublishAt)}</span>
-              <span>实际发布：${escapeHtml(publishedAt)}</span>
-              ${informationIssue ? `<strong class="publish-age-warning">${escapeHtml(informationIssue)}</strong>` : ""}
-              <span>快递单号：${escapeHtml(sampleTrackingNumber(item) || "未填写")}</span>
-              ${ageText ? `<span class="${missingMetrics && item.status === "已发布" ? "publish-age-warning" : ""}">${escapeHtml(ageText)}</span>` : ""}
-              <span>备注：${escapeHtml(placementNotes)}</span>
-            </span>
-            <span class="platform-badge ${platform === "抖音" ? "douyin" : "xhs"}">${escapeHtml(platform)}</span>
-          </div>
-        </td>
-        <td>${money(values.spend)}<div class="muted">合作 ${money(item.fee)} / 其他 ${money(item.extraCost)}</div><div class="muted">产品 ${money(productCost)} · ${escapeHtml(costStatus.label)}</div></td>
-        <td>
-          ${ledgerMetricsDisplay(item)}
-        </td>
-        <td>${compact(item.leads)} 线索<div class="muted">${compact(item.orders)} 单 · ${money(item.gmv)}</div></td>
-        <td><span class="pill ${task.priority === "最高" ? "coral" : task.priority === "高" ? "amber" : task.priority === "中" ? "blue" : "gray"}">${task.priority}</span><div class="muted">${escapeHtml(task.action)}</div></td>
-        <td><span class="pill ${feedbackClass(type)}">${feedbackLabel(type)}</span><div class="muted">${feedbackReason(item)}</div></td>
-        <td>
-          <button class="text-button" data-edit="${item.id}">编辑</button>
-          <button class="text-button danger-text" data-remove="${item.id}">删除</button>
-        </td>
-      </tr>
-    `;
+    const values=calc(item), review=prReview(item), creator=creators.find(c=>creatorKey(c.name)===creatorKey(item.creator));
+    const costStatus=placementCostStatus(item), cost=placementProductCost(item);
+    const tone=review.qualifies?'teal':review.key==='check'?'coral':['missing','watching'].includes(review.key)?'amber':'gray';
+    const title=escapeHtml(item.noteTitle || placementProductName(item));
+    return `<tr>
+      <td data-label="操作"><button class="secondary-button small" data-edit="${escapeHtml(item.id)}">编辑</button></td>
+      <td data-label="达人与内容"><div class="cell-title"><div class="creator-name-line">${creator?.isBlacklisted?'<span class="blacklist-badge">黑名单</span>':''}<strong>${escapeHtml(item.creator)}</strong><span class="muted">${escapeHtml(item.owner || '负责人待补')}</span></div>
+        <div>${item.url?`<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${title}</a>`:title}</div>
+        <span class="muted">${placementProductDisplay(item)}</span>
+        <span class="muted">${escapeHtml(placementPlatform(item))} · 已发布 ${escapeHtml(item.publishedAt || '日期待补')}</span>
+        <details class="row-details"><summary>查看明细</summary><div>约定发布：${escapeHtml(item.agreedPublishAt || '未填')}</div><div>快递：${escapeHtml(sampleTrackingNumber(item) || '未填')}</div><div>备注：${escapeHtml(item.notes || '未填')}</div><div>转化：${compact(item.leads)} 线索 / ${compact(item.orders)} 单 / ${money(item.gmv)}</div><div>${escapeHtml(feedbackReason(item))}</div><button class="text-button danger-text" data-remove="${escapeHtml(item.id)}">删除记录</button></details>
+      </div></td>
+      <td data-label="互动数据">${ledgerMetricsDisplay(item)}<details class="row-details"><summary>${prAge(item)>=7?'填写／更新7天数据':'填写当前数据'}</summary>${performanceReviewForm(item)}</details></td>
+      <td data-label="PR 统计"><div class="cell-title"><span class="pill ${tone}">${review.label}</span><small class="${isDay7ReviewDue(item)?'danger-text':'muted'}">${escapeHtml(prDay7Label(item))}</small><small>${escapeHtml(prCycleLabel(review.cycle))}</small><small class="muted">${escapeHtml(prCycleNote(item))}</small>${review.key==='check'?`<small class="danger-text">${escapeHtml(placementInformationIssue(item) || '请核对实际发布日期')}</small>`:''}</div></td>
+      <td data-label="费用"><strong>${money(values.spend + cost)}</strong>${costStatus.missing?'<small class="danger-text">含待核成本</small>':''}<details class="row-details"><summary>费用明细</summary><div>合作 ${money(item.fee)} / 其他 ${money(item.extraCost)}</div><div>产品 ${money(cost)}</div><small>${escapeHtml(costStatus.label)}</small></details></td>
+    </tr>`;
   }
 
   function renderTable() {
-    const rows = filteredPlacements();
-    if (!rows.length) {
-      $("#placement-table").innerHTML = `<tr><td colspan="8"><div class="empty-state">当前筛选下没有记录。可选择全部时间、全部台账记录并清空搜索查看。</div></td></tr>`;
-      return;
-    }
-    const newest = (a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")) || String(b.id || "").localeCompare(String(a.id || ""));
-    const checkRows = rows.filter(placementInformationIssue).sort(newest);
-    const validRows = rows.filter(item => !placementInformationIssue(item));
-    const idleRows = validRows.filter(ledgerNoProgressRecord).sort(newest);
-    const completedRows = validRows.filter(ledgerCompletedRecord).sort(filledMetricSort);
-    const activeRows = validRows.filter(item => !ledgerNoProgressRecord(item) && !ledgerCompletedRecord(item)).sort(newest);
-    const sections = [];
-    if (checkRows.length) {
-      sections.push(ledgerGroupHeader("信息待核对", checkRows.length, "原日期和状态已保留，请核实后修改", "coral"));
-      sections.push(...checkRows.map(placementRow));
-    }
-    if (idleRows.length) {
-      sections.push(ledgerGroupHeader("待建联 / 未启动", idleRows.length, "尚待联系并确认合作", "gray"));
-      sections.push(...idleRows.map(placementRow));
-    }
-    if (activeRows.length) {
-      sections.push(ledgerGroupHeader("合作进行中", activeRows.length, "寄样、排期、发布和待补录记录均保留", "blue"));
-      sections.push(...activeRows.map(placementRow));
-    }
-    if (completedRows.length) {
-      const sortLabel = ($("#metric-sort")?.value || "time") === "likes" ? "按点赞从高到低" : "按发布时间从新到旧";
-      sections.push(ledgerGroupHeader("已发布并已填写数据", completedRows.length, sortLabel, "teal"));
-      sections.push(...completedRows.map(placementRow));
-    }
-    $("#placement-table").innerHTML = sections.join("");
+    const rows=filteredPlacements().sort(filledMetricSort);
+    renderPrSummary(rows);
+    $('#placement-table').innerHTML=rows.length?rows.map(placementRow).join(''):'<tr><td colspan="5"><div class="empty-state">当前筛选下没有已发布记录。待发布合作请在“跟进任务”查看。</div></td></tr>';
   }
 
   function openCooperationRecords(product) {
     const groups=PromotionData.rankedProducts(placementsForCooperationPeriod(overviewPeriod),productCatalog,boardFilters);
     boardRecordIds=new Set(groups.filter(g=>product==='all'||g.product.id===product||g.product.name===product).flatMap(g=>g.recordIds));
-    selectedProduct='all';ledgerPeriod=overviewPeriod;
+    selectedProduct='all';ledgerPeriod='all';
     $('#search-input').value='';
-    for(const selector of ['#status-filter','#content-filter','#result-filter','#data-entry-filter'])$(selector).value='all';
-    switchView('placements');$('#placements-view').scrollIntoView({block:'start'});
+    for(const selector of ['#content-filter','#result-filter','#data-entry-filter'])$(selector).value='all';
+    switchView('followups');$('#followups-view').scrollIntoView({block:'start'});
+  }
+
+  function ledgerMetricValue(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return '—';
+    return n >= 10000 ? `${Math.round(n / 1000) / 10}万` : compact(n);
   }
 
   function ledgerMetricsDisplay(item) {
     const reviewed = hasPlacementPerformanceData(item);
     const due = isDay7ReviewDue(item);
-    const publishedDays = daysSince(item.publishedAt);
+    const publishedDays = prAge(item);
     const note = reviewed
       ? item.performanceReviewedAt ? `已补录 ${String(item.performanceReviewedAt).slice(0, 10)}` : "已录入"
       : due ? "跟进任务待填" : Number.isFinite(publishedDays) ? `发布${publishedDays}天` : "未发布";
     return `
       <div class="ledger-metrics ${reviewed ? "" : "pending"}">
-        <div class="ledger-metric"><span>赞</span><strong>${compact(item.likes)}</strong></div>
-        <div class="ledger-metric"><span>收藏</span><strong>${compact(item.saves)}</strong></div>
-        <div class="ledger-metric"><span>评论</span><strong>${compact(item.comments)}</strong></div>
+        <div class="ledger-metric"><span>赞</span><strong title="${escapeHtml(item.likes ?? '未填')}">${reviewed ? ledgerMetricValue(item.likes) : "—"}</strong></div>
+        <div class="ledger-metric"><span>收藏</span><strong title="${escapeHtml(item.saves ?? '未填')}">${reviewed ? ledgerMetricValue(item.saves) : "—"}</strong></div>
+        <div class="ledger-metric"><span>评论</span><strong title="${escapeHtml(item.comments ?? '未填')}">${reviewed ? ledgerMetricValue(item.comments) : "—"}</strong></div>
         <div class="metric-note">${escapeHtml(note)}</div>
       </div>
     `;
@@ -2891,20 +2931,28 @@
   }
 
   async function savePerformanceReview(form) {
+    if (!form.reportValidity()) return;
     const id = form.dataset.reviewForm;
     const item = placements.find((placement) => placement.id === id);
     if (!item) return;
-    ["likes", "saves", "comments"].forEach((field) => {
-      const input = form.querySelector(`[data-review-field="${field}"]`);
-      item[field] = number(input?.value);
-    });
-    item.performanceReviewedAt = new Date().toISOString();
-    item.updatedAt = item.performanceReviewedAt;
+    const recordedAt=prDate(form.querySelector('[data-review-field="recordedAt"]')?.value), publishedAt=prDate(item.publishedAt);
+    const values=Object.fromEntries(["likes","saves","comments"].map(field=>[field,form.querySelector(`[data-review-field="${field}"]`)?.value]));
+    if (!publishedAt || !recordedAt || recordedAt<publishedAt || recordedAt>prToday() || !Object.values(values).every(prMetric)) {toast("请填写有效的发布日期、数据日期和非负整数数据");return;}
+    // Preserve an existing verified milestone before replacing the current observation.
+    const previousQualification=prQualification(item), previousDay7=prDay7Data(item);
+    if (previousQualification) item.prQualifiedReview={...previousQualification};
+    if (!item.prDay7Review && previousDay7) item.prDay7Review={publishedAt,...previousDay7};
+    Object.entries(values).forEach(([field,value])=>item[field]=Number(value));
+    item.performanceReviewedAt = recordedAt;
+    if (item.likes>=200 && (!previousQualification || recordedAt<previousQualification.recordedAt)) item.prQualifiedReview={publishedAt,recordedAt,likes:item.likes};
+    const isDay7=(Date.parse(recordedAt)-Date.parse(publishedAt))/86400000>=7;
+    if (isDay7) item.prDay7Review={publishedAt,recordedAt,likes:item.likes,saves:item.saves,comments:item.comments};
+    item.updatedAt = new Date().toISOString();
     savePlacements();
     syncCreatorsFromPlacements();
     if(!await flushServerSave()){toast("修改尚未获服务器确认，请查看顶部同步状态");return;}
     renderAll();
-    toast("互动数据已保存，跟进任务已归档");
+    toast(isDay7?"7天数据已保存，PR统计已更新":"当前数据已保存；满7天仍需补填7天数据");
   }
 
   async function saveSampleShipment(form) {
@@ -2979,7 +3027,7 @@
   }
 
   function hydrateControls() {
-    fillSelect("[name='status'], #status-filter", statuses, "全部状态");
+    fillSelect("[name='status']", statuses, "全部状态");
     fillSelect("[name='sampleStatus']", sampleStatuses);
     fillSelect("[name='draftStatus']", draftStatuses);
     fillSelect("#creator-form [name='creatorType']", creatorTypeOptions());
@@ -3535,14 +3583,17 @@
       if (form) await savePerformanceReview(form);
       if (shipmentForm) await saveSampleShipment(shipmentForm);
     });
+    $('#placement-table').addEventListener('submit', async event => {
+      const form = event.target.closest('[data-review-form]');
+      if (!form) return; event.preventDefault(); await savePerformanceReview(form);
+    });
     $("#overview-period").addEventListener("change", (event) => {
       overviewPeriod = event.target.value;
-      ledgerPeriod = overviewPeriod;
       renderAll();
     });
     $("#ledger-period").addEventListener("change", (event) => {
       ledgerPeriod = event.target.value;
-      if (!["unpublished", "all"].includes(ledgerPeriod)) overviewPeriod = ledgerPeriod;
+      boardRecordIds = null; selectedProduct = "all";
       renderAll();
     });
     $("#budget-panel").addEventListener("change", (event) => {
@@ -3551,7 +3602,7 @@
       saveMonthlyBudgets();
       renderBudgetPanel();
     });
-    ["search-input", "status-filter", "content-filter", "result-filter", "data-entry-filter", "metric-sort"].forEach((id) => {
+    ["search-input", "content-filter", "result-filter", "data-entry-filter", "metric-sort"].forEach((id) => {
       $(`#${id}`).addEventListener("input", renderTable);
     });
     let creatorSearchTimer;
@@ -3985,7 +4036,7 @@
     const cloudState=await response.json();
     const backup={source:API_URL,account:user.username,at:new Date().toISOString(),draft,cloudState};
     const panel=document.createElement('main');panel.className='recovery-page';
-    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261128-promotion-catalog-v2">备份完成后打开新版</a>';
+    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261128-pr-ledger-v3">备份完成后打开新版</a>';
     document.body.replaceChildren(panel);
     $('#recovery-count').textContent=`本机待同步更改 ${draft?.operations?.length||0} 项；云端投放 ${cloudState.placements?.length||0} 条。请保留原来卡住的页面，先下载备份核对。`;
     $('#recovery-download').onclick=()=>{downloadRecovery(backup,'PR保存故障核对_'+today()+'.json');$('#recovery-feedback').textContent='已发起备份下载，请确认文件已保存。原页面和草稿仍保留。';};
@@ -4000,7 +4051,7 @@
     $$("[data-admin-cost]").forEach(el=>{el.hidden=currentUser.role!=="admin";});
     const syncPanel=document.createElement('div');syncPanel.className='shared-status-panel';
     syncPanel.innerHTML='<strong id="shared-user"></strong><span id="shared-version"></span><a href="/stock-ops/">经营协作台</a><button id="shared-export-pending">导出待同步修改</button><button id="shared-recover" hidden>核对冲突</button><button id="legacy-export">导出旧设备缓存</button><button id="shared-logout">退出</button>';
-    document.body.prepend(syncPanel);$('#shared-user').textContent=session.user.name+' · PR系统 · 商品排行与套餐版';
+    document.body.prepend(syncPanel);$('#shared-user').textContent=session.user.name+' · PR系统 · 发布台账与 PR 周期版';
     $$("dialog").forEach(dialog => {
       const panel = document.createElement("div");panel.className="dialog-sync-feedback";
       panel.innerHTML='<p data-dialog-status role="status" aria-live="polite"></p><button type="button" class="secondary-button small" data-dialog-export>导出待同步修改</button><a data-dialog-login href="/xhs-media/login" target="_blank" rel="noopener">重新登录</a>';
@@ -4041,7 +4092,9 @@
     window.setInterval(refreshCatalog,60000);window.addEventListener('focus',refreshCatalog);
     window.addEventListener('online',()=>cloud.refresh());window.addEventListener('focus',()=>cloud.refresh());
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloud.refresh()});
-    InterfaceUpdate.mount({current:'20261128-promotion-catalog-v2',url:'/api/xhs-media/version',host:syncPanel,
+    let renderedPrDate=prToday();
+    window.setInterval(()=>{const date=prToday();if(date!==renderedPrDate&&!hasOpenEditorDialog()&&!document.activeElement?.matches('input,textarea,select')){renderedPrDate=date;renderAll();}},60000);
+    InterfaceUpdate.mount({current:'20261128-pr-ledger-v3',url:'/api/xhs-media/version',host:syncPanel,
       getBlockReason:()=>hasPendingLocalSync()||cloud?.saving?'有尚未确认的保存或同步冲突，请先完成同步；必要时导出待同步修改。':
         hasOpenEditorDialog()?'请先保存或取消正在编辑的表单，再更新界面。':
         !cloud?.ready||cloud?.stopped?'请先恢复登录和数据连接。':

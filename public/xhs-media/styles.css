@@ -1430,3 +1430,80 @@ body .product-list{display:block}
 #promotion-sku-form .sku-confirm{display:flex;align-items:center;gap:8px}.sku-confirm input{width:auto}.catalog-dialog-actions{display:flex;gap:12px;justify-content:flex-end;margin-top:18px}
 @media(max-width:1180px){body .topbar{position:fixed;display:grid;width:224px;height:100vh}body .shell{margin-left:224px}body .shared-status-panel{margin-left:224px;position:relative}}
 @media(max-width:760px){body .topbar{box-shadow:15px 0 45px #172f4240}body .shell{margin-left:0;padding:16px}body .shared-status-panel{margin-left:0;padding-left:148px;min-height:58px}body .product-board{padding:16px}.monthly-started-card{width:100%}.sku-component{grid-template-columns:1fr 80px}.sku-component button{grid-column:1/-1}.catalog-row{flex-wrap:wrap}}
+
+/* Compact lists fit the available pane; narrow panes become labelled cards. */
+#placements-view, #creators-view { min-width: 0; }
+.compact-table-wrap { max-width: 100%; max-height: none; overflow: visible; border-radius: 14px; }
+.compact-data-table { table-layout: fixed; width: 100%; min-width: 0; }
+.compact-data-table th, .compact-data-table td { padding: 10px 8px; overflow-wrap: anywhere; line-height: 1.5; }
+.compact-data-table th { position: static; font-size: 12px; }
+.compact-data-table td { font-size: 13px; }
+.compact-data-table .cell-title { gap: 4px; }
+.compact-data-table .pill { width: fit-content; max-width: 100%; padding: 3px 7px; font-size: 11px; white-space: normal; }
+.compact-data-table .col-actions { width: 68px; }
+.placement-data-table .col-content { width: 40%; }
+.placement-data-table .col-metrics { width: 20%; }
+.placement-data-table .col-review { width: 20%; }
+.placement-data-table .col-cost { width: auto; }
+.placement-data-table td:last-child { min-width: 0; }
+.creator-data-table .col-creator { width: 26%; }
+.creator-data-table .col-type { width: 15%; }
+.creator-data-table .col-fans { width: 10%; }
+.creator-data-table .col-cooperation { width: 30%; }
+.creator-data-table .col-outreach { width: auto; }
+.compact-data-table .small { min-width: 0; min-height: 30px; padding: 5px 9px; border-radius: 7px; }
+.compact-data-table input[type="checkbox"] { width: 17px; height: 17px; margin: 5px 0; }
+.compact-row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.compact-data-table .creator-products-inline, .compact-data-table .creator-tags-inline { gap: 4px; }
+.creator-name-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 7px; }
+.blacklist-badge { display: inline-block; flex: none; padding: 2px 7px; border: 1px solid #991b1b; border-radius: 5px; color: white; background: #b91c1c; font-size: 12px; font-weight: 900; }
+.blacklist-reason { color: #991b1b; font-size: 12px; }
+.row-details { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.row-details summary { color: var(--teal); cursor: pointer; width: fit-content; }
+.row-details[open] > :not(summary) { margin-top: 5px; }
+.compact-data-table .ledger-metrics { min-width: 0; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 4px; }
+.compact-data-table .ledger-metric { min-width: 0; min-height: 44px; padding: 5px; border-radius: 7px; }
+.compact-data-table .ledger-metric strong { font-size: 15px; }
+.compact-data-table .metric-note { font-size: 11px; }
+#placements-view .toolbar, #creators-view .toolbar { gap: 8px; margin-bottom: 14px; grid-template-columns: repeat(auto-fit,minmax(min(150px,100%),1fr)); }
+#placements-view .toolbar .search-field, #creators-view .toolbar .search-field { grid-column: 1 / -1; }
+#placements-view .toolbar input, #placements-view .toolbar select, #creators-view .toolbar input, #creators-view .toolbar select { min-width: 0; padding: 8px 10px; font-size: 13px; }
+.pr-summary { padding: 14px; margin: 0 0 14px; background: #f0f7f3; border: 1px solid #c9ddd4; border-radius: 14px; overflow-wrap: anywhere; }
+.pr-summary-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px 14px; font-size: 13px; }
+.pr-summary-heading span, .pr-summary small { color: #60766e; font-size: 12px; }
+.pr-summary-cards { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; margin: 10px 0; }
+.pr-summary-cards > div { display: grid; gap: 4px; padding: 8px 10px; border-radius: 8px; background: white; }
+.pr-summary-cards span { font-size: 12px; color: #536b62; }
+.pr-summary-cards strong { font-size: 22px; color: #174e42; }
+.pr-owner-summary { display: flex; flex-wrap: wrap; gap: 5px 16px; margin: 6px 0; font-size: 12px; }
+#creators-view .type-editor { gap: 8px; margin-bottom: 14px; }
+#creators-view .creator-products-inline .pill { display: inline; border-radius: 4px; }
+@media (max-width: 1100px) {
+  .compact-data-table colgroup, .compact-data-table thead { display: none; }
+  .compact-data-table, .compact-data-table tbody { display: block; }
+  .compact-data-table tbody tr { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 12px; padding: 10px; border-bottom: 1px solid var(--line); }
+  .compact-data-table td { display: block; min-width: 0; width: auto; border: 0; padding: 5px 0; }
+  .compact-data-table td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+  .compact-data-table td:first-child { grid-column: 1 / -1; }
+  .compact-data-table td:nth-child(2) { grid-column: 1 / -1; }
+  .compact-data-table td:first-child::before { display: none; }
+  .compact-data-table td[colspan] { grid-column: 1 / -1; }
+  .compact-data-table .ledger-metrics { max-width: 280px; }
+  .compact-table-wrap { overflow: visible; }
+}
+@media (max-width: 520px) {
+  .pr-summary-cards { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .compact-data-table tbody tr { grid-template-columns: minmax(0,1fr); }
+  .compact-data-table td { grid-column: 1; }
+  #placements-view .heading-actions, #placements-view .period-control { min-width: 0; width: 100%; }
+  #ledger-period { min-width: 0; max-width: 100%; }
+}
+
+.compact-data-table .review-quick-form { grid-template-columns: minmax(0,1fr); gap: 6px; padding: 6px 0; }
+.compact-data-table .review-quick-form input { min-width: 0; width: 100%; padding: 6px; }
+.compact-data-table .review-quick-form button { grid-column: 1; min-width: 0; white-space: normal; }
+.compact-data-table .ledger-metric strong { white-space: nowrap; }
+
+.pr-summary-cards { grid-template-columns: repeat(3,minmax(0,1fr)); }
+.review-form-note { grid-column: 1 / -1; }
+@media(max-width:520px){.pr-summary-cards { grid-template-columns: repeat(2,minmax(0,1fr)); }}

@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>小红书媒介投放跟踪台</title>
-  <link rel="stylesheet" href="styles.css?v=20261128-promotion-catalog-v2" />
+  <link rel="stylesheet" href="styles.css?v=20261128-pr-ledger-v3" />
 </head>
 <body>
   <button type="button" id="sidebar-toggle" class="sidebar-toggle" aria-controls="app-sidebar" aria-expanded="true">‹ 收起菜单</button>
@@ -172,23 +172,10 @@
         <input id="new-creator-type" placeholder="新增达人类型，例如：探店博主、家居收纳博主" />
         <button class="secondary-button small" id="add-creator-type">新增类型</button>
       </div>
-      <div class="table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th><input id="select-all-outreach" type="checkbox" aria-label="选择当前页待建联达人" /></th>
-              <th>达人</th>
-              <th>类型</th>
-              <th>量级</th>
-              <th>粉丝数</th>
-              <th>合作次数</th>
-              <th>最近合作</th>
-              <th>联系信息</th>
-              <th>建联</th>
-              <th>黑名单</th>
-              <th>操作</th>
-            </tr>
-          </thead>
+      <div class="table-wrap compact-table-wrap">
+        <table class="data-table creator-data-table compact-data-table">
+          <colgroup><col class="col-actions"><col class="col-creator"><col class="col-type"><col class="col-fans"><col class="col-cooperation"><col class="col-outreach"></colgroup>
+          <thead><tr><th>操作<br><input id="select-all-outreach" type="checkbox" aria-label="选择当前页待建联达人" /></th><th>达人</th><th>类型／量级</th><th>粉丝数</th><th>合作</th><th>建联</th></tr></thead>
           <tbody id="creator-table"></tbody>
         </table>
       </div>
@@ -231,7 +218,7 @@
           <h1>达人投放台账</h1>
         </div>
         <div class="heading-actions">
-          <label class="period-control">登记月份<select id="ledger-period"></select></label>
+          <label class="period-control">PR 发布周期<select id="ledger-period"></select></label>
         </div>
       </div>
       <div class="toolbar">
@@ -239,7 +226,6 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.3-4.3M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z"/></svg>
           <input id="search-input" placeholder="搜索达人、产品、笔记、负责人" />
         </div>
-        <select id="status-filter"></select>
         <select id="content-filter"></select>
         <select id="result-filter">
           <option value="all">全部反馈</option>
@@ -248,31 +234,23 @@
           <option value="pause">暂停观察</option>
         </select>
         <select id="data-entry-filter">
-          <option value="all">全部台账记录</option>
-          <option value="missing">待建联/未启动</option>
-          <option value="active">合作进行中</option>
-          <option value="check">信息待核对</option>
-          <option value="filled">已发布已填数据</option>
+          <option value="all">全部已发布</option>
+          <option value="qualified">达标 ≥200赞</option>
+          <option value="below">7天数据未达标</option>
+          <option value="day7due">7天数据待补（含提前达标）</option>
+          <option value="young">未满7天</option>
+          <option value="check">统计日期待核</option>
         </select>
         <select id="metric-sort">
           <option value="time">按发布时间排序</option>
           <option value="likes">按点赞高到低</option>
         </select>
       </div>
-      <div class="table-wrap">
-        <table class="data-table placement-data-table">
-          <thead>
-            <tr>
-              <th>状态</th>
-              <th>达人与内容</th>
-              <th>费用</th>
-              <th>互动数据</th>
-              <th>转化</th>
-              <th>跟进</th>
-              <th>反馈</th>
-              <th>操作</th>
-            </tr>
-          </thead>
+      <section id="pr-summary" class="pr-summary" aria-label="PR 发布周期统计"></section>
+      <div class="table-wrap compact-table-wrap">
+        <table class="data-table placement-data-table compact-data-table">
+          <colgroup><col class="col-actions"><col class="col-content"><col class="col-metrics"><col class="col-review"><col class="col-cost"></colgroup>
+          <thead><tr><th>操作</th><th>达人与内容</th><th>互动数据</th><th>PR 统计</th><th>费用</th></tr></thead>
           <tbody id="placement-table"></tbody>
         </table>
       </div>
@@ -530,6 +508,6 @@
   <datalist id="creator-type-list"></datalist>
   <datalist id="creator-name-list"></datalist>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="interface-update.js?v=20261128-promotion-catalog-v2"></script><script src="/promotion-data.cjs?v=20261128-promotion-catalog-v2"></script><script src="product-catalog-ui.js?v=20261128-promotion-catalog-v2"></script><script src="app.js?v=20261128-promotion-catalog-v2"></script>
+  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="interface-update.js?v=20261128-pr-ledger-v3"></script><script src="/promotion-data.cjs?v=20261128-pr-ledger-v3"></script><script src="product-catalog-ui.js?v=20261128-pr-ledger-v3"></script><script src="app.js?v=20261128-pr-ledger-v3"></script>
 </body>
 </html>
