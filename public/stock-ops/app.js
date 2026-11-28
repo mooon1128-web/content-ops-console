@@ -1,6 +1,7 @@
 import {createCommandClient,acceptNewerState} from './reliable-save.js?v=20261123-purchase-reliable-v1';
 import {renderSalesRecipes,collectionInstructions as componentInstructions} from './sales-recipes-ui.js';
 import {renderPurchases,renderReplenishment} from './purchasing-ui.js?v=20261128-reconciliation-v2';
+import {renderPromotions} from './promotion-ui.js';
 import {showHandoffInbox} from './purchase-handoff-ui.js';
 import {handoffInbox} from './purchase-reconciliation.js';
 import {renderSpecial} from './special-ui.js';
@@ -17,14 +18,15 @@ let user=null,state=null,tab='monthly',samples=[],sampleError='',editorHandler=n
 let catalogStatus='正在读取订货商品名称和图片…',catalogBusy=false;
 let editorBusy=false,costLoading=false;const commandClient=createCommandClient({request,getState:()=>state,refresh,userId:()=>user?.id,storage:globalThis.sessionStorage,progress:message=>{if(editorBusy)$('#form-message').textContent=message;}});const pendingCommands=commandClient.pending;let refreshing=false;const editing=()=>Boolean(document.querySelector('dialog[open]'))||document.activeElement?.matches('input,textarea,select');
 let filters={month:today().slice(0,7),sku:'',channel:''};
-let sampleFilters={month:today().slice(0,7),mode:'registered'};
-const tabs=[['monthly','▤','月度销售'],['purchases','▦','补货与到货'],['warehouse','▥','库存盘点'],['samples','✧','博主寄样'],['special','▧','售后处理'],['costs','¥','成本资料'],['settings','⚙','协作设置']];
+let sampleFilters={month:today().slice(0,7),mode:'registered',search:'',status:'all'};
+let promotionData={placements:[]},promotionLoading=false,promotionFetchedAt=0;
+const tabs=[['monthly','▤','月度销售'],['purchases','▦','补货与到货'],['warehouse','▥','库存盘点'],['samples','✧','推广花销'],['special','▧','售后处理'],['costs','¥','成本资料'],['settings','⚙','协作设置']];
 const roleLabels={finance:'财务（查阅）',pr_service:'PR＋客服',admin:'管理员',warehouse:'仓管',customer_service:'客服',pr:'PR',content:'新媒体运营',operations:'经营数据运营',marketing:'推广查阅（原权限）',viewer:'只读',none:'未分配'};
 const roleTasks={finance:'查看成本、合同、尾款及每次收货和寄回记录。',pr_service:'负责博主合作与客服售后；库存实际扣减由仓管确认。',customer_service:'登记特殊售后、认领来件、确认处理要求并跟进结案。',warehouse:'确认收件和实际出入库，维护特殊件位置，每周六提交库存。',pr:'查看寄样和可售库存；合作需求继续在博主推广系统登记。',content:'查看各款净销量与库存，结合售后缺货情况安排内容；内容账号沿用原分配。'};
 const typeNames={purchase_hold:'采购瑕疵／待检入库',receipt:'合格采购入库',sale:'销售出库',offline:'线下出库',sample:'博主寄样出库',replacement:'换货／补发出库',reserve:'预留库存',release:'释放预留',return_hold:'退回待检入库',return_good:'退回验收合格',inspect_good:'待检转合格',damage:'合格转坏品',factory_return:'坏品退厂',adjust:'盘点调整',reverse:'冲正'};
 const can=(...roles)=>state?.role==='admin'||roles.includes(state?.role)||(state?.role==='pr_service'&&roles.some(r=>['pr','customer_service'].includes(r)));
 const sku=id=>state.skus.find(x=>x.id===id);
-const skuLabel=id=>sku(id)?.name||id;
+const skuLabel=id=>sku(id)?productPresentation(sku(id)).fullName:id;
 const pill=(label,kind='')=>`<span class="pill ${kind}">${escape(label)}</span>`;
 function notice(message,error=false){$('#notice').textContent=message;$('#notice').hidden=!message;$('#notice').className=error?'error':'';}
 async function request(path,options={}) {
@@ -118,15 +120,20 @@ function events(){
   bind('events-export',()=>csv('库存流水',['时间','SKU','名称','仓库','类型','数量','释放预留','业务编号','说明','记录人'],state.events.map(e=>[textDate(e.at),sku(e.skuId)?.code,skuLabel(e.skuId),e.warehouse,typeNames[e.type],e.quantity,e.released,e.ref,e.note,e.actor.name])));
 }
 function editEvent(){const key=crypto.randomUUID();const options=Object.entries(typeNames).filter(([k])=>!['sample','replacement','return_hold','return_good','purchase_hold','reverse'].includes(k)&&(k!=='adjust'||state.role==='admin'));showEditor('登记库存流水',skuSelect()+select('type','业务类型',options)+field('warehouse','仓库','主仓')+field('at','实际发生时间',localNow(),'datetime-local')+field('quantity','数量','','number')+field('released','出库同时释放的预留',0,'number')+field('ref','出入库 / 业务单据编号')+area('note','来源和原因'),d=>command('event',{...d,at:iso(d.at)},key),'同一单据、SKU与业务类型不能重复登记。寄样、换货补发与退件请从对应页面登记。');}
-async function loadSamples(){try{const result=await request('/api/stock-ops/samples');samples=result.placements;sampleError=''}catch(e){sampleError=e.message}if(tab==='samples')renderSamples(false);}
-function renderSamples(load=true){
-  const view=sampleMonthData(samples,state.events,sampleFilters.month,sampleFilters.mode);
-  $('#content').innerHTML=heading('博主寄样','按月查看合作与实际寄样。',button('refresh-samples','同步推广记录'))+`<div class="sales-toolbar"><label>月份<input id="sample-month" type="month" value="${escape(sampleFilters.month)}"></label><div class="segmented"><button id="sample-registered" class="${sampleFilters.mode==='registered'?'selected':''}">当月合作</button><button id="sample-shipped" class="${sampleFilters.mode==='shipped'?'selected':''}">当月实际寄出</button><button id="sample-undated" class="${sampleFilters.mode==='undated'?'selected':''}">月份待核 ${view.unknownCount}</button></div></div><div class="sales-totals"><div><span>当月登记合作</span><strong>${view.registeredCount}</strong></div><div><span>当月已登记实际出库</span><strong>${num(view.shippedQuantity)}<small> 件</small></strong></div><p>合作按登记月份查看<br>库存只按仓库确认的出库扣减</p></div><div class="card">${sampleError?`<p class="empty">推广数据暂时无法读取：${escape(sampleError)}</p>`:table(['博主','商品','计划寄样件数','状态','本月实际出库',''],view.rows.map(p=>{const ids=p.productIds?.map(String)||[],match=state.skus.find(k=>k.influencerProductId&&ids.includes(k.influencerProductId));return [`<b>${escape(p.creator)}</b>`,productCell(match||{name:p.product,influencerProductId:ids.length===1?ids[0]:''}),num(p.sampleQuantity),pill(p.sampleStatus||p.status||'待核'),num(view.booked.get(String(p.id))??0),can('warehouse')?`<button data-sample="${escape(p.id)}">确认寄出</button>`:'']}),'本月没有对应记录。缺少登记月份的合作请查看“月份待核”。')}</div>`;
-  $('#sample-month').onchange=e=>{sampleFilters.month=e.target.value;renderSamples(false);};
-  for(const mode of ['registered','shipped','undated'])bind('sample-'+mode,()=>{sampleFilters.mode=mode;renderSamples(false);});
-  bind('refresh-samples',loadSamples);bindAll('[data-sample]',el=>editSample(samples.find(p=>p.id===el.dataset.sample)));bindImageFallback();if(load)loadSamples();
+async function loadSamples(force=false){
+  if(promotionLoading)return;
+  promotionLoading=true;const button=$('#refresh-samples');if(button){button.disabled=true;button.textContent='正在同步…';}
+  const prior=JSON.stringify(promotionData);
+  try{const result=await request('/api/stock-ops/promotions'+(force?'?refresh=1':''));promotionData=result;samples=result.placements;sampleError='';promotionFetchedAt=Date.now();}
+  catch(e){sampleError='同步未完成，保留最近确认数据：'+e.message;}
+  finally{promotionLoading=false;if(button){button.disabled=false;button.textContent='同步最新数据';}}
+  if(tab==='samples'&&!editing()&&(force||sampleError||prior!==JSON.stringify(promotionData)))renderSamples(false);
 }
-function editSample(p){const key=crypto.randomUUID(),match=state.skus.find(k=>k.influencerProductId&&p.productIds?.map(String).includes(k.influencerProductId));showEditor(`寄样出库 · ${p.creator}`,skuSelect('skuId',match?.id)+field('quantity','实际寄出件数','','number')+field('warehouse','仓库',match?.warehouse||'主仓')+field('at','实际出库时间',localNow(),'datetime-local')+field('released','同时释放已预留数量',0,'number')+field('shipment','本次出库单号')+area('note','实际出库依据'),d=>command('sample',{...d,placementId:p.id,at:iso(d.at)},key),`原推广商品：${p.product||'未填写'}。推广记录数量仅供核对，实际寄样数量需仓库确认。`);}
+function renderSamples(load=true){
+  renderPromotions({data:promotionData,filters:sampleFilters,state,$,heading,button,table,bind,bindAll,can,load:loadSamples,editSample,showEditor,render:()=>renderSamples(false),error:sampleError,loading:promotionLoading});
+  if(load)void loadSamples();
+}
+function editSample(p){const key=crypto.randomUUID(),match=state.skus.find(k=>k.influencerProductId&&p.productIds?.map(v=>String(v).replace(/^wholesale-/,'' )).includes(String(k.influencerProductId).replace(/^wholesale-/,'')));showEditor(`寄样出库 · ${p.creator}`,skuSelect('skuId',match?.id)+field('quantity','实际寄出件数','','number')+field('warehouse','仓库',match?.warehouse||'主仓')+field('at','实际出库时间',localNow(),'datetime-local')+field('released','同时释放已预留数量',0,'number')+field('shipment','本次出库单号')+area('note','实际出库依据'),d=>command('sample',{...d,placementId:p.id,at:iso(d.at)},key),`原推广商品：${p.product||'未填写'}。推广记录数量仅供核对，实际寄样数量需仓库确认。`);}
 function aftersales(){
   const used=(c,types)=>state.events.filter(e=>e.source?.caseId===c.id&&types.includes(e.type)).reduce((a,e)=>a+e.quantity,0);
   $('#content').innerHTML=heading('售后与换货','记录原单号即可，不收集消费者姓名、电话或地址。换货的两个物流方向分别入账。',can('operations','warehouse','customer_service')?button('new-case','＋ 登记售后',true):'')+`<div class="hint">未发货退款：释放原订单预留。已发货仅退款：只记退款，不凭退款增加库存。换货或补发：新品寄出记出库，旧件收回并检验后记合格或待检入库。售后数量不自动改写月销报表。</div><div class="card">${table(['售后 / 原订单','平台 / 款式','补发进度','退回进度','状态 / 原因','仓库操作'],state.cases.slice().reverse().map(c=>{const a=used(c,['replacement']),b=used(c,['return_good','return_hold']);return [`<b>${escape(c.reference)}</b><small>${escape(c.order)}</small>`,`${escape(c.channel)}<small>原款：${escape(skuLabel(c.skuId))}</small><small>补发：${escape(skuLabel(c.replacementSkuId))}</small>`,`${a} / ${c.replacementQty}`,`${b} / ${c.returnQty}`,`${pill(c.status)}<small>${escape(c.reason)}</small>`,can('warehouse')?`${a<c.replacementQty?`<button data-case="${c.id}" data-stage="replacement">补发出库</button> `:''}${b<c.returnQty?`<button data-case="${c.id}" data-stage="return_good">退回合格</button> <button data-case="${c.id}" data-stage="return_hold">退回待检</button>`:''}`:'']}))}</div>`;
@@ -215,6 +222,7 @@ async function pollShared(){
  try{const v=await request('/api/stock-ops/version');if(v.updatedAt!==state.updatedAt&&!pendingCommands.size)await refresh();else if(!pendingCommands.size)$('#sync-status').innerHTML=`<i class="live-dot"></i>已同步 · ${state.updatedAt?textDate(state.updatedAt):'尚未登记'}`;if(lastRenderedDay!==today()&&!editing()){lastRenderedDay=today();render();}}
  catch(e){$('#sync-status').textContent='连接未完成，显示最近确认数据；'+e.message;}
  finally{refreshing=false;}
+ if(tab==='samples'&&!promotionLoading){try{const v=await request('/api/stock-ops/promotions/version');if(v.updatedAt!==promotionData.updatedAt||Date.now()-promotionFetchedAt>=60000)await loadSamples();}catch(e){const label=$('#promotion-sync-status');if(label)label.textContent='推广同步暂未完成，保留最近确认数据：'+e.message;}}
 }
 let liveSource=null;
 function startLiveSync(){
