@@ -7,7 +7,7 @@ let catalog=wholesaleProducts;
 export function setProductCatalog(rows){if(!Array.isArray(rows)||!rows.length)return false;catalog=rows.filter(p=>p?.id&&p?.name).map(p=>({id:String(p.id),code:String(p.code||''),name:String(p.name),image:String(p.image||'')}));return true;}
 export function matchedProduct(k={},products=catalog){
   const catalog=products;
-  const explicit=aliases[k.code]||k.influencerProductId;
+  const explicit=aliases[k.code]||String(k.influencerProductId||'').replace(/^wholesale-/,'');
   let candidates=catalog.filter(p=>p.id===explicit);
   if(!candidates.length){const codes=new Set([k.code,k.barcode,k.erpBarcode,k.costSkuId?.replace(/^SKU-/,'' )].filter(Boolean));candidates=catalog.filter(p=>p.code&&codes.has(p.code));}
   if(!candidates.length){const names=new Set([k.name,k.erpName,[k.erpName,k.erpSpec].filter(Boolean).join('-')].map(normalize).filter(Boolean));candidates=catalog.filter(p=>names.has(normalize(p.name)));}
@@ -25,7 +25,7 @@ export function matchedProduct(k={},products=catalog){
 }
 export function productPresentation(k={},products=catalog){
   const p=matchedProduct(k,products),xc=[k.name,k.erpName].some(n=>normalize(n)==='痛包xc');
-  const full=aliases[k.code]&&k.name?k.name:p?.name||(xc?'肥士顿痛包':k.name)||'商品待匹配';
+  const full=p?.name||(xc?'肥士顿痛包':k.name)||'商品待匹配';
   const split=full.lastIndexOf('-'),name=split>0?full.slice(0,split):full;
   const spec=split>0?full.slice(split+1):k.erpSpec||(k.spec&&!/独立款式|平台映射/.test(k.spec)?k.spec:'');
   let image='';try{if(p?.image){const u=new URL(p.image,'https://pupuhome-wholesale.onrender.com/');if(u.protocol==='https:')image=u.href;}}catch{}

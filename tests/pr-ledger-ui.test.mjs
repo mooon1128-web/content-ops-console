@@ -1,3 +1,4 @@
+import PromotionData from '../public/content-ops/promotion-data.cjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -13,7 +14,7 @@ function setup(){
  function node(key){if(!nodes.has(key))nodes.set(key,{value:'',innerHTML:'',textContent:'',hidden:true,disabled:false,dataset:{},style:{},classList:{add(){},remove(){},toggle(){}},elements:{id:{value:'p1'}},open:true,showModal(){this.open=true},close(){this.open=false},scrollIntoView(){},querySelector:s=>node(s)});return nodes.get(key)}
  node('.tab.active').dataset.view='placements';
  const document={querySelector:node,querySelectorAll:s=>s==='dialog[open] [data-dialog-status]'?[node('feedback')]:[],activeElement:null};
- const ctx=vm.createContext({document,structuredClone,RecordOps,crypto:{randomUUID},AbortSignal,console,fetch:()=>{},setTimeout:(fn,ms)=>{timers.set(++timer,{fn,ms});return timer},clearTimeout:id=>timers.delete(id)});
+ const ctx=vm.createContext({PromotionData,document,structuredClone,RecordOps,crypto:{randomUUID},AbortSignal,console,fetch:()=>{},setTimeout:(fn,ms)=>{timers.set(++timer,{fn,ms});return timer},clearTimeout:id=>timers.delete(id)});
  vm.runInContext(syncSource,ctx);
  vm.runInContext(app.slice(0,app.lastIndexOf('  startSharedApp().catch('))+`globalThis.subject={deletePlacements,selectFollowups,requestBulkPlacementDeletion,
  groups:value=>followupGroups=new Map(value),selection:()=>[...selectedFollowupIds],confirmIds:()=>confirmedBulkIds,deletePlacement,updatePlacementDeletion,allowSyncInteraction,requestPlacementDeletion,
