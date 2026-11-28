@@ -73,3 +73,12 @@ test('live catalog refresh updates presentation only, handles ambiguous and miss
  setProductCatalog([{id:'a',code:'K',name:'坏图商品',image:'javascript:bad()'}]);assert.equal(productImage(k),'');
  }finally{setProductCatalog(wholesaleProducts);}
 });
+
+test('verified custom catalog aliases match each scene and mangosteen separately without modifying ERP records',()=>{
+ const catalog=[['NEW-361615','造景贴纸-甜品屋'],['NEW-466774','造景贴纸-巧克力屋'],['NEW-512919','造景贴纸-面包工坊'],['NEW-911819','手机链/迷你挂件-小山竹']].map(([code,name])=>({id:code,code,name,image:'https://pupuhome-wholesale.onrender.com/uploads/'+code+'.jpg'}));
+ setProductCatalog(catalog);
+ try{for(const [name,code]of [['场景贴纸（甜品屋）','NEW-361615'],['场景贴纸（巧克力屋）','NEW-466774'],['场景贴纸（面包工坊）','NEW-512919']])assert.equal(matchedProduct({name}).code,code);
+ assert.equal(matchedProduct({name:'迷你挂件',erpName:'迷你挂件',erpSpec:'山竹'}).code,'NEW-911819');
+ assert.equal(matchedProduct({name:'迷你挂件',erpSpec:'其他'}),null);assert.equal(matchedProduct({name:'场景贴纸（其他）'}),null);
+ }finally{setProductCatalog(wholesaleProducts);}
+});

@@ -96,5 +96,8 @@ test('contract file endpoints enforce administrator access, content types, and a
  state.purchasePrivate.p={contracts:[meta]};await files.handle(req('GET'),response,url,admin,send);
  assert.equal(response.status,200);assert.match(response.headers['Cache-Control'],/no-store/);assert.deepEqual(response.data,png);
  assert.deepEqual(await readFile(join(dir,meta.id)),png);
+ await files.handle(req('GET'),response,new URL(url.href+'&download=1'),employee('finance'),send);assert.deepEqual(response.data,png);assert.match(response.headers['Content-Disposition'],/attachment/);
+ await assert.rejects(()=>files.handle(req('POST'),response,url,employee('finance'),send),e=>e.status===403);
+ await assert.rejects(()=>files.validate(employee('finance'),[meta]),e=>e.status===403);
  await assert.rejects(()=>files.validate(admin,[{...meta,bytes:meta.bytes+1}]),/不一致/);
 });
