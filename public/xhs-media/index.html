@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>小红书媒介投放跟踪台</title>
-  <link rel="stylesheet" href="styles.css?v=20261128-pr-periods-v4" />
+  <link rel="stylesheet" href="styles.css?v=20261128-pr-conversion-v5" />
 </head>
 <body>
   <button type="button" id="sidebar-toggle" class="sidebar-toggle" aria-controls="app-sidebar" aria-expanded="true">‹ 收起菜单</button>
@@ -340,6 +340,7 @@
           <label><input type="checkbox" name="conversionMethods" value="评论回复" />评论回复</label>
         </div></fieldset>
         <label class="wide">具体合作内容<textarea name="cooperationDetails" rows="4" placeholder="例如：合集 vlog 植入，坑位 1/2/3 随机；外观展示＋收纳过程；选题、时长、口播、评论区配合等具体要求"></textarea></label>
+        <div class="wide" id="placement-conversion-review"></div>
         <label>稿件审核<select name="requiresDraftReview"><option value="yes">需要审核</option><option value="no">无需审核</option></select></label>
         <label>最晚提交审核稿<input name="draftDeadline" type="date" /><small>未填写时按约定发布前 1 天</small></label>
         <label>改期最晚告知日期<input name="changeNoticeDeadline" type="date" /><small>未填写时按约定发布前 7 天</small></label>
@@ -509,6 +510,6 @@
   <datalist id="creator-type-list"></datalist>
   <datalist id="creator-name-list"></datalist>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="interface-update.js?v=20261128-pr-periods-v4"></script><script src="/promotion-data.cjs?v=20261128-pr-periods-v4"></script><script src="product-catalog-ui.js?v=20261128-pr-periods-v4"></script><script src="app.js?v=20261128-pr-periods-v4"></script>
+  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="interface-update.js?v=20261128-pr-conversion-v5"></script><script src="/promotion-data.cjs?v=20261128-pr-conversion-v5"></script><script src="product-catalog-ui.js?v=20261128-pr-conversion-v5"></script><script src="app.js?v=20261128-pr-conversion-v5"></script>
 </body>
 </html>

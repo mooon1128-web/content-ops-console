@@ -265,6 +265,9 @@
   let pendingPlacementDeletion = null;
   let selectedFollowupIds = new Set();
   let followupGroups = new Map();
+  let conversionOwnerScope = 'all';
+  const conversionSaves = new Set();
+  const conversionChecks = [['直接带链接', '已带链接'], ['评论回复', '已回复转化评论']];
   let confirmedBulkIds = [];
   let syncMessage = "";
   let apiOnline = false;
@@ -2360,8 +2363,94 @@
     }).join("") : `<div class="empty-state">发布后录入点赞、收藏和评论，这里会自动出现达人互动排行。</div>`;
   }
 
+  function conversionOwnerIsMe(item) {
+    if (!currentUser) return false;
+    if (item.ownerId || item.ownerUserId) return (item.ownerId || item.ownerUserId) === currentUser.id;
+    if (item.ownerUsername) return item.ownerUsername === currentUser.username;
+    return Boolean(item.owner && [currentUser.name, currentUser.username].filter(Boolean).includes(item.owner));
+  }
+
+  function conversionReviewFor(item) {
+    const review = item.conversionReview;
+    return review && review.publishedAt === String(item.publishedAt || '').trim() && review.url === String(item.url || '').trim() ? review : null;
+  }
+
+  function conversionRequirements(item) {
+    return conversionChecks.map(([value]) => value).filter(value => Array.isArray(item.conversionMethods) && item.conversionMethods.includes(value));
+  }
+
+  function conversionMethodsComplete(item, methods) {
+    const required = conversionRequirements(item);
+    return required.length ? required.every(value => methods.includes(value)) : conversionChecks.some(([value]) => methods.includes(value));
+  }
+
+  function conversionSavePending(item) {
+    if (!cloud?.ready || !item.conversionReview) return false;
+    const saved = cloud.base?.placements?.find(row => row.id === item.id)?.conversionReview;
+    return JSON.stringify(saved || null) !== JSON.stringify(item.conversionReview);
+  }
+
+  function conversionCheckComplete(item) {
+    const review = conversionReviewFor(item);
+    return Boolean(review?.completedAt && conversionMethodsComplete(item, review.methods || []));
+  }
+
+  function needsConversionCheck(item) {
+    return prPublished(item) && (!conversionCheckComplete(item) || conversionSavePending(item));
+  }
+
+  function conversionTasks() {
+    return prUniqueRows(scopedPlacements()).filter(needsConversionCheck)
+      .sort((a,b) => Number(conversionOwnerIsMe(b)) - Number(conversionOwnerIsMe(a)) || String(a.publishedAt || '').localeCompare(String(b.publishedAt || '')))
+      .map(item => ({...item, task: {kind:'conversion-check',priority:'高',rank:priorityRank['高'],warnings:[],
+        reason:`负责 PR：${item.owner || item.ownerUsername || '负责人待补'}${conversionOwnerIsMe(item) ? ' · 待你核查' : ''}`,
+        action:'打开笔记检查评论区，勾选实际完成的转化项目。'}}));
+  }
+
+  function conversionReviewDisplay(item, editable = false) {
+    const review = conversionReviewFor(item), methods = review?.methods || [], required = conversionRequirements(item);
+    const pending = conversionSavePending(item), complete = conversionCheckComplete(item) && !pending;
+    const history = Array.isArray(item.conversionReview?.history) ? item.conversionReview.history : [];
+    const timeLabel = value => Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}) : '时间待核';
+    return `<div class="conversion-review" ${editable ? `data-conversion-check="${escapeHtml(item.id)}"` : ''}>
+      <strong class="${complete ? 'conversion-done' : ''}">${pending ? '核查结果待同步确认' : complete ? '转化已核查' : '转化待核查'}</strong>
+      <small>负责 PR：${escapeHtml(item.owner || item.ownerUsername || '负责人待补')}${!complete && conversionOwnerIsMe(item) ? ' · 待你核查' : ''}</small>
+      <small>约定转化：${escapeHtml(required.join('、') || '未约定具体方式，核实链接或评论回复')}</small>
+      ${editable ? `<div class="conversion-check-options">${conversionChecks.map(([value,label]) => `<label><input type="checkbox" data-conversion-method value="${value}" ${methods.includes(value) ? 'checked' : ''} ${conversionSaves.has(item.id) || pending ? 'disabled' : ''} />${label}${required.includes(value) ? '<small>（约定项）</small>' : ''}</label>`).join('')}</div>
+        <small role="status">${pending ? '尚未获服务器确认，记录继续保留在待办；恢复连接后自动重试。' : complete ? '已移出转化待办；如需重新核查，可取消勾选。' : '勾选后自动保存，完成约定项目即移出转化待办；7天数据仍单独提醒。'}</small>` : ''}
+      ${review?.checkedAt ? `<small>最近核查：${escapeHtml(review.checkedBy?.name || review.checkedBy?.username || '未记录')} · ${escapeHtml(timeLabel(review.checkedAt))} · ${escapeHtml(methods.join('、') || '需重新核查')}</small>` : ''}
+      ${history.length ? `<details class="row-details"><summary>核查记录（${history.length}）</summary><ul>${[...history].reverse().map(entry => `<li>${escapeHtml(timeLabel(entry.at))} · ${escapeHtml(entry.by?.name || entry.by?.username || '未记录')} · ${escapeHtml((entry.methods || []).join('、') || '取消勾选，重新核查')} · ${entry.completed ? '已完成' : '待继续核查'}</li>`).join('')}</ul></details>` : ''}
+    </div>`;
+  }
+
+  async function saveConversionCheck(panel) {
+    const id = panel.dataset.conversionCheck, item = placements.find(row => row.id === id);
+    if (!item || !prPublished(item) || conversionSaves.has(id) || conversionSavePending(item)) return;
+    if (cloud && (!cloud.ready || cloud.conflict || cloud.stopped)) {toast('请先恢复登录或处理同步冲突，核查结果尚未提交');return;}
+    const methods = Array.from(panel.querySelectorAll('[data-conversion-method]:checked'), input => input.value).filter(value => conversionChecks.some(([key]) => key === value));
+    const previous = conversionReviewFor(item);
+    if (JSON.stringify(previous?.methods || []) === JSON.stringify(methods)) return;
+    const now = new Date().toISOString(), by = {id:currentUser?.id || '',name:currentUser?.name || '',username:currentUser?.username || ''};
+    const completed = conversionMethodsComplete(item, methods), publishedAt = String(item.publishedAt || '').trim(), url = String(item.url || '').trim();
+    const history = Array.isArray(item.conversionReview?.history) ? item.conversionReview.history : [];
+    item.conversionReview = {publishedAt,url,methods,checkedAt:now,checkedBy:by,completedAt:completed ? now : '',
+      history:[...history,{at:now,by,methods,completed,publishedAt,url}]};
+    item.updatedAt = now;
+    conversionSaves.add(id);
+    panel.querySelectorAll('[data-conversion-method]').forEach(input => input.disabled = true);
+    try {
+      savePlacements();
+      const confirmed = await flushServerSave();
+      toast(confirmed && !conversionSavePending(placements.find(row=>row.id===id) || item)
+        ? completed ? '转化核查已完成，记录已保留' : '核查进度已保存，未完成项目继续提醒'
+        : '核查结果尚未获服务器确认，继续保留在待办中');
+    } catch { toast('核查结果待同步，请查看顶部同步状态'); }
+    finally {conversionSaves.delete(id);renderAll();}
+  }
+
   function renderFollowups() {
     const tasks = followupTasks();
+    const conversion = conversionTasks();
     const bucket = (predicate) => tasks.filter((item) => predicate(item));
     const buckets = {
       pendingContact: bucket((item) => item.task.kind === "pending-contact"),
@@ -2373,6 +2462,7 @@
       publishDelay10: bucket((item) => item.task.kind === "publish-overdue" && item.task.delayLevel?.key === "delay10"),
       publishedWaiting: bucket((item) => item.task.kind === "published-waiting"),
       day7Review: bucket((item) => item.task.kind === "day7-review"),
+      conversionCheck: conversionOwnerScope === 'mine' ? conversion.filter(conversionOwnerIsMe) : conversion,
     };
     const summaryGroups = [
       {
@@ -2387,11 +2477,12 @@
       },
       {
         title: "发布",
-        note: "只看约定时间到了但没发布的",
+        note: "发布催办与评论区转化核查",
         cards: [
           ["约定时间未发布", buckets.publishOverdue.length, "到期0-4天", "accent-coral", "followup-publish-overdue"],
           ["发布拖延达5天", buckets.publishDelay5.length, "拖延5-9天", "accent-amber", "followup-publish-delay5"],
           ["发布拖延10天以上", buckets.publishDelay10.length, "严重拖延", "accent-coral", "followup-publish-delay10"],
+          ["转化待核查", conversion.length, `其中${conversion.filter(conversionOwnerIsMe).length}条待你核查`, "accent-teal", "followup-conversion-check"],
         ],
       },
       {
@@ -2425,11 +2516,12 @@
       },
       {
         title: "发布",
-        note: "只看约定时间到了但还没有实际发布时间的记录。",
+        note: "跟进发布进度；发布后提醒负责 PR 核查评论区转化。",
         sections: [
           ["followup-publish-overdue", "约定时间未发布", "拖延5天以内，先确认是否今天发布或改期。", buckets.publishOverdue],
           ["followup-publish-delay5", "发布拖延达5天", "拖延5-9天，建议标记风险并催最终时间。", buckets.publishDelay5],
           ["followup-publish-delay10", "发布拖延10天以上", "严重拖延，优先处理是否暂停合作。", buckets.publishDelay10],
+          ["followup-conversion-check", "转化待核查", "勾选完成约定转化项目后移出待办，核查记录保留在投放台账。", buckets.conversionCheck],
         ],
       },
       {
@@ -2472,6 +2564,7 @@
             <span class="muted">${escapeHtml(note)}</span>
           </div>
           <div class="followup-bucket-tools"><strong>${items.length}</strong>
+            ${id === 'followup-conversion-check' ? `<label>核查范围<select id="conversion-owner-filter"><option value="all" ${conversionOwnerScope==='all'?'selected':''}>全部 PR</option><option value="mine" ${conversionOwnerScope==='mine'?'selected':''}>只看我负责的</option></select></label>` : ''}
             ${items.length ? `<label class="followup-select"><input type="checkbox" data-followup-group="${escapeHtml(id)}" />全选本组</label>` : ""}
           </div>
         </div>
@@ -2501,11 +2594,13 @@
           </div>
           ${task.kind === "sample-shipping" ? sampleShipmentForm(item) : ""}
           ${task.kind === "day7-review" ? performanceReviewForm(item) : ""}
+          ${task.kind === "conversion-check" ? conversionReviewDisplay(item, true) : ""}
           ${task.warnings.length ? `<p><strong>风险提醒：</strong>${task.warnings.map(escapeHtml).join("；")}。</p>` : ""}
         </div>
         <div class="task-action">
           <label class="followup-select"><input type="checkbox" data-followup-select="${escapeHtml(item.id)}" aria-label="选择 ${escapeHtml(item.creator)} · ${escapeHtml(placementProductName(item))}" />选择</label>
-          ${task.kind === "day7-review" && normalizeProfileLink(item.url) ? `<a class="secondary-button small" href="${escapeHtml(normalizeProfileLink(item.url))}" target="_blank" rel="noreferrer">打开笔记</a>` : ""}
+          ${['day7-review','conversion-check'].includes(task.kind) && normalizeProfileLink(item.url) ? `<a class="secondary-button small" href="${escapeHtml(normalizeProfileLink(item.url))}" target="_blank" rel="noreferrer">打开笔记</a>` : ""}
+          ${task.kind==='conversion-check' && !normalizeProfileLink(item.url) ? '<small class="danger-text">请编辑补填笔记链接</small>' : ''}
           <button class="secondary-button small" data-edit="${item.id}">${task.kind === "day7-review" ? "编辑全部" : "编辑记录"}</button>
           <span class="muted">${escapeHtml(item.contactMethod || "未填联系方式")}</span>
         </div>
@@ -2902,7 +2997,7 @@
         <div>${item.url?`<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${title}</a>`:title}</div>
         <span class="muted">${placementProductDisplay(item)}</span>
         <span class="muted">${escapeHtml(placementPlatform(item))} · 已发布 ${escapeHtml(item.publishedAt || '日期待补')}</span>
-        <details class="row-details"><summary>查看明细</summary><div>约定发布：${escapeHtml(item.agreedPublishAt || '未填')}</div><div>快递：${escapeHtml(sampleTrackingNumber(item) || '未填')}</div><div>备注：${escapeHtml(item.notes || '未填')}</div><div>转化：${compact(item.leads)} 线索 / ${compact(item.orders)} 单 / ${money(item.gmv)}</div><div>${escapeHtml(feedbackReason(item))}</div><button class="text-button danger-text" data-remove="${escapeHtml(item.id)}">删除记录</button></details>
+        <details class="row-details"><summary>查看明细</summary><div>约定发布：${escapeHtml(item.agreedPublishAt || '未填')}</div><div>快递：${escapeHtml(sampleTrackingNumber(item) || '未填')}</div><div>备注：${escapeHtml(item.notes || '未填')}</div><div>转化：${compact(item.leads)} 线索 / ${compact(item.orders)} 单 / ${money(item.gmv)}</div><div>${escapeHtml(feedbackReason(item))}</div>${conversionReviewDisplay(item,true)}<button class="text-button danger-text" data-remove="${escapeHtml(item.id)}">删除记录</button></details>
       </div></td>
       <td data-label="互动数据">${ledgerMetricsDisplay(item)}<details class="row-details"><summary>${prAge(item)>=7?'填写／更新7天数据':'填写当前数据'}</summary>${performanceReviewForm(item)}</details></td>
       <td data-label="PR 统计"><div class="cell-title"><span class="pill ${tone}">${review.label}</span><small class="${isDay7ReviewDue(item)?'danger-text':'muted'}">${escapeHtml(prDay7Label(item))}</small><small>${escapeHtml(prCycleLabel(review.cycle))}</small><small class="muted">${escapeHtml(prCycleNote(item))}</small>${review.key==='check'?`<small class="danger-text">${escapeHtml(placementInformationIssue(item) || '请核对实际发布日期')}</small>`:''}</div></td>
@@ -3232,6 +3327,7 @@
       applyWholesaleProductsToForm([]);
     }
     form.querySelectorAll('[name="conversionMethods"]').forEach(el=>{el.checked=(item?.conversionMethods||[]).includes(el.value);});
+    $('#placement-conversion-review').innerHTML = item && (prPublished(item) || item.conversionReview) ? conversionReviewDisplay(item) : '';
     renderDuplicateCooperationWarning();
     dialog.showModal();
   }
@@ -3399,10 +3495,10 @@
   }
 
   function buildFollowupReport() {
-    const tasks = followupTasks().filter((item) => item.task.priority !== "暂无");
+    const tasks = [...followupTasks().filter((item) => item.task.priority !== "暂无"), ...conversionTasks()];
     return [
       "小红书媒介今日跟进清单",
-      `需跟进：${tasks.length} 条`,
+      `需跟进：${tasks.length} 项（转化核查与7天数据分别跟进）`,
       ...tasks.map((item, index) => `${index + 1}. ${item.creator}｜${item.product}｜${item.task.priority}｜${item.task.reason}｜${item.task.action}`),
     ].join("\n");
   }
@@ -3592,7 +3688,10 @@
       const editId = event.target.closest("[data-edit]")?.dataset.edit;
       if (editId) openForm(placements.find((item) => item.id === editId));
     });
-    $("#followup-list").addEventListener("change", event => {
+    $("#followup-list").addEventListener("change", async event => {
+      if (event.target.id === 'conversion-owner-filter') {conversionOwnerScope=event.target.value;renderFollowups();return;}
+      const conversionPanel = event.target.closest('[data-conversion-check]');
+      if (conversionPanel && event.target.matches('[data-conversion-method]')) {await saveConversionCheck(conversionPanel);return;}
       const item = event.target.closest("[data-followup-select]");
       const group = event.target.closest("[data-followup-group]");
       if (item) selectFollowups([item.dataset.followupSelect], item.checked);
@@ -3614,6 +3713,10 @@
     $('#placement-table').addEventListener('submit', async event => {
       const form = event.target.closest('[data-review-form]');
       if (!form) return; event.preventDefault(); await savePerformanceReview(form);
+    });
+    $('#placement-table').addEventListener('change', async event => {
+      const panel = event.target.closest('[data-conversion-check]');
+      if (panel && event.target.matches('[data-conversion-method]')) await saveConversionCheck(panel);
     });
     $("#overview-period").addEventListener("change", (event) => {
       overviewPeriod = event.target.value;
@@ -4065,7 +4168,7 @@
     const cloudState=await response.json();
     const backup={source:API_URL,account:user.username,at:new Date().toISOString(),draft,cloudState};
     const panel=document.createElement('main');panel.className='recovery-page';
-    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261128-pr-periods-v4">备份完成后打开新版</a>';
+    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261128-pr-conversion-v5">备份完成后打开新版</a>';
     document.body.replaceChildren(panel);
     $('#recovery-count').textContent=`本机待同步更改 ${draft?.operations?.length||0} 项；云端投放 ${cloudState.placements?.length||0} 条。请保留原来卡住的页面，先下载备份核对。`;
     $('#recovery-download').onclick=()=>{downloadRecovery(backup,'PR保存故障核对_'+today()+'.json');$('#recovery-feedback').textContent='已发起备份下载，请确认文件已保存。原页面和草稿仍保留。';};
@@ -4123,7 +4226,7 @@
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloud.refresh()});
     let renderedPrDate=prToday();
     window.setInterval(()=>{const date=prToday();if(date!==renderedPrDate&&!hasOpenEditorDialog()&&!document.activeElement?.matches('input,textarea,select')){renderedPrDate=date;renderAll();}},60000);
-    InterfaceUpdate.mount({current:'20261128-pr-periods-v4',url:'/api/xhs-media/version',host:syncPanel,
+    InterfaceUpdate.mount({current:'20261128-pr-conversion-v5',url:'/api/xhs-media/version',host:syncPanel,
       getBlockReason:()=>hasPendingLocalSync()||cloud?.saving?'有尚未确认的保存或同步冲突，请先完成同步；必要时导出待同步修改。':
         hasOpenEditorDialog()?'请先保存或取消正在编辑的表单，再更新界面。':
         !cloud?.ready||cloud?.stopped?'请先恢复登录和数据连接。':
