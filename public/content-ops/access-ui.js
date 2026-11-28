@@ -16,7 +16,7 @@
     for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();
   }
   async function signedIn(value){
-    if(['warehouse','customer_service','pr','pr_service'].includes(value.stockRole)){location.replace('/stock-ops/');return;}
+    if(['warehouse','customer_service','pr','pr_service','finance'].includes(value.stockRole)){location.replace('/stock-ops/');return;}
     user=value;$('#login-layer').hidden=true;document.body.classList.remove('signed-out');document.body.dataset.role=user.role;
     $('#signed-in-name').textContent=`${user.name} · ${user.username}${user.role==='admin'?' · 管理员':''}`;
     $('#users-tab').hidden=user.role!=='admin';
