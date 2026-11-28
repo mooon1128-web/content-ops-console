@@ -1701,8 +1701,8 @@
 
   function publishDelayDays(item) {
     if (String(item.publishedAt || "").trim() || item.status === "已发布") return NaN;
-    const dueDate = publishDueDate(item);
-    const delayedDays = daysSince(dueDate);
+    const dueDate = prDate(publishDueDate(item));
+    const delayedDays = dueDate ? Math.round((Date.parse(prToday() + 'T00:00:00Z') - Date.parse(dueDate + 'T00:00:00Z')) / 86400000) : NaN;
     return Number.isFinite(delayedDays) && delayedDays >= 0 ? delayedDays : NaN;
   }
 
@@ -1750,7 +1750,7 @@
     const deliveredDays = daysSince(item.sampleDeliveredAt);
     const contactDays = daysSince(item.lastContactAt);
     const daysToPublish = Number.isFinite(daysSince(item.agreedPublishAt)) ? -daysSince(item.agreedPublishAt) : NaN;
-    const draftDone = Boolean(item.draftSubmittedAt) || ["已申请", "已通过", "无需申请"].includes(item.draftStatus);
+    const draftDone = item.status === "脚本已确认" || Boolean(item.draftSubmittedAt) || ["已申请", "已通过", "无需申请"].includes(item.draftStatus);
     const draftDueMissed = Number.isFinite(daysToPublish) && daysToPublish <= 2 && daysToPublish >= 0 && !draftDone;
     const notes = [item.notes, item.creatorResponse].join(" ");
     const publishedDays = prAge(item);
@@ -1790,6 +1790,17 @@
           : delayedDays >= 5
             ? "已拖延5天以上，催确认最终发布时间，并标记风险。"
             : "约定时间已到，确认今天是否发布或重新约定时间。",
+        warnings,
+      };
+    }
+
+    if (item.status === "脚本已确认" && !String(item.publishedAt || "").trim()) {
+      return {
+        priority: "中",
+        rank: priorityRank["中"],
+        kind: "script-confirmed",
+        reason: "脚本内容已确认，待博主按约定安排发布。",
+        action: dueDate ? `约定发布时间是${dueDate}，到期仍未发布会进入发布提醒。` : "请编辑记录补充约定发布时间。",
         warnings,
       };
     }
@@ -2455,6 +2466,7 @@
     const buckets = {
       pendingContact: bucket((item) => item.task.kind === "pending-contact"),
       informationCheck: bucket((item) => item.task.kind === "information-check"),
+      scriptConfirmed: bucket((item) => item.task.kind === "script-confirmed"),
       sampleShipping: bucket((item) => item.task.kind === "sample-shipping"),
       waitingPublish: bucket((item) => item.task.kind === "waiting-publish"),
       publishOverdue: bucket((item) => item.task.kind === "publish-overdue" && item.task.delayLevel?.key === "overdue"),
@@ -2472,7 +2484,7 @@
           ["待建联", buckets.pendingContact.length, "联系博主并确认合作", "accent-blue", "followup-pending-contact"],
           ["新增合作未寄样", buckets.sampleShipping.length, "寄了后勾选并填单号", "accent-amber", "followup-sample-shipping"],
           ["等待发布", buckets.waitingPublish.length, "已推进到发布排期", "accent-blue", "followup-waiting-publish"],
-          ["信息待核对", buckets.informationCheck.length, "核对实际发布时间与状态", "accent-coral", "followup-information-check"],
+          ["脚本已确认", buckets.scriptConfirmed.length, "脚本已确认，跟进发布安排", "accent-teal", "followup-script-confirmed"],
         ],
       },
       {
@@ -2506,12 +2518,13 @@
     const groups = [
       {
         title: "合作推进",
-        note: "从待建联开始推进；日期或状态异常单独列出。",
+        note: "跟进寄样、脚本确认与发布安排。",
         sections: [
           ["followup-pending-contact", "待建联", "已登记、尚待联系确认的合作。", buckets.pendingContact],
-          ["followup-information-check", "信息待核对", "原记录保留，请打开记录核对日期和状态。", buckets.informationCheck],
+          ["followup-script-confirmed", "脚本已确认", "编辑记录，将投放状态设为“脚本已确认”后显示在这里；到期未发布会进入发布提醒。", buckets.scriptConfirmed],
           ["followup-sample-shipping", "新增合作未寄样", "寄出后直接勾选，并填写快递单号。", buckets.sampleShipping],
           ["followup-waiting-publish", "等待发布", "已经进入发布排期，但还没到约定时间。", buckets.waitingPublish],
+          ...(buckets.informationCheck.length ? [["followup-information-check", "日期或状态异常", "原记录保留，请打开记录核对日期和状态。", buckets.informationCheck]] : []),
         ],
       },
       {
@@ -4168,7 +4181,7 @@
     const cloudState=await response.json();
     const backup={source:API_URL,account:user.username,at:new Date().toISOString(),draft,cloudState};
     const panel=document.createElement('main');panel.className='recovery-page';
-    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261128-pr-day7-red-v6">备份完成后打开新版</a>';
+    panel.innerHTML='<h1>保全待同步记录</h1><p>此页面只读取本机草稿与云端记录，不提交、不清除。</p><p id="recovery-count"></p><button type="button" id="recovery-download" class="primary-button">下载核对备份</button><p id="recovery-feedback" role="status"></p><a href="/xhs-media/?ui=20261128-pr-script-confirmed-v7">备份完成后打开新版</a>';
     document.body.replaceChildren(panel);
     $('#recovery-count').textContent=`本机待同步更改 ${draft?.operations?.length||0} 项；云端投放 ${cloudState.placements?.length||0} 条。请保留原来卡住的页面，先下载备份核对。`;
     $('#recovery-download').onclick=()=>{downloadRecovery(backup,'PR保存故障核对_'+today()+'.json');$('#recovery-feedback').textContent='已发起备份下载，请确认文件已保存。原页面和草稿仍保留。';};
@@ -4226,7 +4239,7 @@
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloud.refresh()});
     let renderedPrDate=prToday();
     window.setInterval(()=>{const date=prToday();if(date!==renderedPrDate&&!hasOpenEditorDialog()&&!document.activeElement?.matches('input,textarea,select')){renderedPrDate=date;renderAll();}},60000);
-    InterfaceUpdate.mount({current:'20261128-pr-day7-red-v6',url:'/api/xhs-media/version',host:syncPanel,
+    InterfaceUpdate.mount({current:'20261128-pr-script-confirmed-v7',url:'/api/xhs-media/version',host:syncPanel,
       getBlockReason:()=>hasPendingLocalSync()||cloud?.saving?'有尚未确认的保存或同步冲突，请先完成同步；必要时导出待同步修改。':
         hasOpenEditorDialog()?'请先保存或取消正在编辑的表单，再更新界面。':
         !cloud?.ready||cloud?.stopped?'请先恢复登录和数据连接。':
