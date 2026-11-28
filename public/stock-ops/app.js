@@ -1,6 +1,6 @@
 import {createCommandClient,acceptNewerState} from './reliable-save.js?v=20261123-purchase-reliable-v1';
 import {renderSalesRecipes,collectionInstructions as componentInstructions} from './sales-recipes-ui.js';
-import {renderPurchases,renderReplenishment} from './purchasing-ui.js?v=20261127-edit-v1';
+import {renderPurchases,renderReplenishment} from './purchasing-ui.js?v=20261128-receipts-finance-v1';
 import {renderSpecial} from './special-ui.js';
 import {renderCatalog} from './catalog-ui.js';
 import {renderMonthly,productCell,bindImageFallback,sampleMonthData,productPresentation,setProductCatalog} from './sales-ui.js';
@@ -16,9 +16,9 @@ let catalogStatus='正在读取订货商品名称和图片…',catalogBusy=false
 let editorBusy=false,costLoading=false;const commandClient=createCommandClient({request,getState:()=>state,refresh,userId:()=>user?.id,storage:globalThis.sessionStorage,progress:message=>{if(editorBusy)$('#form-message').textContent=message;}});const pendingCommands=commandClient.pending;let refreshing=false;const editing=()=>Boolean(document.querySelector('dialog[open]'))||document.activeElement?.matches('input,textarea,select');
 let filters={month:today().slice(0,7),sku:'',channel:''};
 let sampleFilters={month:today().slice(0,7),mode:'registered'};
-const tabs=[['monthly','▤','月度销售'],['purchases','▦','补货与到货'],['replenishment','↗','补货建议'],['warehouse','▥','库存盘点'],['samples','✧','博主寄样'],['special','▧','售后处理'],['costs','¥','成本资料'],['settings','⚙','协作设置']];
-const roleLabels={pr_service:'PR＋客服',admin:'管理员',warehouse:'仓管',customer_service:'客服',pr:'PR',content:'新媒体运营',operations:'经营数据运营',marketing:'推广查阅（原权限）',viewer:'只读',none:'未分配'};
-const roleTasks={pr_service:'负责博主合作与客服售后；库存实际扣减由仓管确认。',customer_service:'登记特殊售后、认领来件、确认处理要求并跟进结案。',warehouse:'确认收件和实际出入库，维护特殊件位置，每周六提交库存。',pr:'查看寄样和可售库存；合作需求继续在博主推广系统登记。',content:'查看各款净销量与库存，结合售后缺货情况安排内容；内容账号沿用原分配。'};
+const tabs=[['monthly','▤','月度销售'],['purchases','▦','补货与到货'],['warehouse','▥','库存盘点'],['samples','✧','博主寄样'],['special','▧','售后处理'],['costs','¥','成本资料'],['settings','⚙','协作设置']];
+const roleLabels={finance:'财务（查阅）',pr_service:'PR＋客服',admin:'管理员',warehouse:'仓管',customer_service:'客服',pr:'PR',content:'新媒体运营',operations:'经营数据运营',marketing:'推广查阅（原权限）',viewer:'只读',none:'未分配'};
+const roleTasks={finance:'查看成本、合同、尾款及每次收货和寄回记录。',pr_service:'负责博主合作与客服售后；库存实际扣减由仓管确认。',customer_service:'登记特殊售后、认领来件、确认处理要求并跟进结案。',warehouse:'确认收件和实际出入库，维护特殊件位置，每周六提交库存。',pr:'查看寄样和可售库存；合作需求继续在博主推广系统登记。',content:'查看各款净销量与库存，结合售后缺货情况安排内容；内容账号沿用原分配。'};
 const typeNames={purchase_hold:'采购瑕疵／待检入库',receipt:'合格采购入库',sale:'销售出库',offline:'线下出库',sample:'博主寄样出库',replacement:'换货／补发出库',reserve:'预留库存',release:'释放预留',return_hold:'退回待检入库',return_good:'退回验收合格',inspect_good:'待检转合格',damage:'合格转坏品',factory_return:'坏品退厂',adjust:'盘点调整',reverse:'冲正'};
 const can=(...roles)=>state?.role==='admin'||roles.includes(state?.role)||(state?.role==='pr_service'&&roles.some(r=>['pr','customer_service'].includes(r)));
 const sku=id=>state.skus.find(x=>x.id===id);
@@ -28,7 +28,7 @@ function notice(message,error=false){$('#notice').textContent=message;$('#notice
 async function request(path,options={}) {
   const response=await fetch(path,{cache:'no-store',signal:AbortSignal.timeout(60000),...options,headers:{'Content-Type':'application/json',...options.headers}});
   let result;try{result=await response.json()}catch{throw Error('服务器响应异常，请稍后重试')}
-  if(!response.ok){if(response.status===401){$('#login').hidden=false;$('#workspace').hidden=true;}throw Object.assign(Error(result.error||'请求失败'),{status:response.status,code:result.code});}return result;
+  if(!response.ok){if(response.status===401){liveSource?.close();user=null;$('#login').hidden=false;$('#workspace').hidden=true;}throw Object.assign(Error(result.error||'请求失败'),{status:response.status,code:result.code});}return result;
 }
 async function syncProductCatalog(force=false){
   if(catalogBusy)return;
@@ -46,7 +46,7 @@ async function command(action,data,key){
   catch(error){notice('记录已保存，但列表尚未刷新成功。请点刷新查看，不要重新登记。',true);}
   return result;
 }
-async function activate(){const session=await request('/api/content-ops/session');user=session.user;await refresh(false);$('#login').hidden=true;$('#workspace').hidden=false;$('#identity').innerHTML=`${escape(user.name)}<br>${escape(roleLabels[state.role]||state.role)}`;tab=({pr_service:'special',customer_service:'special',warehouse:'warehouse',pr:'samples',content:'monthly'})[state.role]||'monthly';render();void syncProductCatalog();}
+async function activate(){const session=await request('/api/content-ops/session');user=session.user;await refresh(false);$('#login').hidden=true;$('#workspace').hidden=false;$('#identity').innerHTML=`${escape(user.name)}<br>${escape(roleLabels[state.role]||state.role)}`;tab=({pr_service:'special',customer_service:'special',warehouse:'warehouse',finance:'purchases',pr:'samples',content:'monthly'})[state.role]||'monthly';render();void syncProductCatalog();startLiveSync();}
 $('#login-form').onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector('button');b.disabled=true;try{await request('/api/content-ops/login',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});e.target.reset();await activate();}catch(err){$('#login-message').textContent=err.message}finally{b.disabled=false}};
 $('#logout').onclick=async()=>{await request('/api/content-ops/logout',{method:'POST',body:'{}'});location.reload()};
 $('#refresh').onclick=()=>refresh().catch(e=>notice(e.message,true));
@@ -73,7 +73,7 @@ const button=(id,label,primary=false)=>`<button type="button" id="${id}" class="
 function bind(id,fn){const el=$('#'+id);if(el)el.onclick=()=>Promise.resolve().then(fn).catch(e=>notice(e.message,true));}
 function bindAll(selector,fn){document.querySelectorAll(selector).forEach(el=>el.onclick=()=>Promise.resolve().then(()=>fn(el)).catch(e=>notice(e.message,true)));}
 function render(){
-  const visibleTabs=tabs.filter(t=>(t[0]!=='costs'||can())&&(t[0]!=='special'||can('operations','warehouse','customer_service')));
+  const visibleTabs=tabs.filter(t=>(t[0]!=='costs'||can('finance'))&&(t[0]!=='special'||can('operations','warehouse','customer_service')));
   const internalTabs={collections:'月度销售',recipes:'月度销售',erp:'核账工具',events:'核账工具',skus:'商品档案',issues:'待核记录',aftersales:'售后处理'};
   if(!visibleTabs.some(t=>t[0]===tab)&&!internalTabs[tab])tab='monthly';
   $('#nav').innerHTML=visibleTabs.map(([key,symbol,label])=>`<button data-nav="${key}" class="${(tab===key||(['collections','recipes'].includes(tab)&&key==='monthly'))?'active':''}"><span class="nav-symbol">${symbol}</span>${label}</button>`).join('');
@@ -162,7 +162,7 @@ async function openCollection(j){
   if($('#job-result'))$('#job-result').onchange=async e=>{try{if(e.target.files[0].size>4.8*1024*1024)throw Error('文件较大，请按月拆分任务，不要截断订单。');const result=JSON.parse(await e.target.files[0].text());if(result.jobId&&result.jobId!==j.id)throw Error('结果所属任务与当前任务不一致');await command('collectionResult',{...result,jobId:j.id});$('#editor').close();render();openCollection(state.collections.find(x=>x.id===j.id));}catch(err){$('#job-result-status').textContent=err.message}};
 }
 function costs(){
-  if(!can()){$('#content').innerHTML='<div class="empty">成本资料仅管理员可见。</div>';return;}
+  if(!can('finance')){$('#content').innerHTML='<div class="empty">成本资料仅管理员及财务可见。</div>';return;}
   if(state.costWorkbookDeferred&&!state.costWorkbook){$('#content').innerHTML=heading('成本资料','正在读取完整成本资料…');if(!costLoading){costLoading=true;request('/api/stock-ops/state').then(full=>{if(full.revision>=state.revision){state=full;if(tab==='costs')costs();}}).catch(e=>notice(e.message,true)).finally(()=>costLoading=false);}return;}
   const book=state.costWorkbook;
   if(!book){$('#content').innerHTML=heading('成本资料','保留完整成本主表、价格历史、包装、运费与平台映射。')+'<div class="card empty">尚未导入成本资料。请在协作设置导入包含成本原表的数据包。</div>';return;}
@@ -179,12 +179,12 @@ function costs(){
     <div class="hint">来源：${escape(book.source.name)} · 文件版本 ${escape(book.source.modifiedAt||'待核')} · 导入 ${textDate(book.importedAt)}。成本映射“待核对”、近似名称合同款、估算运费均沿用原状态。当前采购价格不自动应用于7—9月历史销售成本，也不自动用于计算利润。</div>
     <div class="filterbar">${select('costSheet','原工作表',book.sheets.map(s=>s.name),costSheet)}<label>查找款式 / 编码 / 凭证<input id="cost-search" value="${escape(costSearch)}" placeholder="按原表内容搜索"></label><button id="cost-search-go">查找</button>${sheet.name==='SKU成本主表'?button('cost-toggle',costRaw?'显示成本摘要':'显示全部原字段'):''}</div>
     <div class="card"><div class="section-heading"><h2>${escape(sheet.name)}</h2><span>${rows.length} 条非空数据行 · 公式可展开追溯</span></div>${table(['原行号',...cols.map(i=>escape(header[i]??`列${i+1}`))],rows.map(r=>[String(r.row),...cols.map(i=>display(r,i))]),'此筛选下没有记录。')}</div>
-    <div class="card"><h2>完整Excel原件</h2><p class="muted">产品图片、原图核对、格式及全部公式保留在原文件。共享原件使用登录保护，不公开成本数据。</p><div class="actions"><a class="pill" href="/api/stock-ops/cost-file?sha=${encodeURIComponent(book.source.sha256)}">下载已上传的完整原件 ↗</a></div><label>上传与当前资料一致的Excel原件<input id="cost-original" type="file" accept=".xlsx"></label><p class="muted" id="cost-upload-status">文件校验码 ${escape(book.source.sha256)}</p></div>`;
+    <div class="card"><h2>完整Excel原件</h2><p class="muted">产品图片、原图核对、格式及全部公式保留在原文件。共享原件使用登录保护，不公开成本数据。</p><div class="actions"><a class="pill" href="/api/stock-ops/cost-file?sha=${encodeURIComponent(book.source.sha256)}">下载已上传的完整原件 ↗</a></div>${can()?'<label>上传与当前资料一致的Excel原件<input id="cost-original" type="file" accept=".xlsx"></label>':''}<p class="muted" id="cost-upload-status">文件校验码 ${escape(book.source.sha256)}</p></div>`;
   $('[name="costSheet"]').onchange=e=>{costSheet=e.target.value;costSearch='';costs()};
   bind('cost-search-go',()=>{costSearch=$('#cost-search').value;costs()});$('#cost-search').onkeydown=e=>{if(e.key==='Enter'){costSearch=e.target.value;costs()}};
   bind('cost-toggle',()=>{costRaw=!costRaw;costs()});
   bind('cost-export',()=>csv(sheet.name,['原行号',...header],rows.map(r=>[r.row,...r.values])));
-  $('#cost-original').onchange=async e=>{const file=e.target.files[0];if(!file)return;const status=$('#cost-upload-status');status.textContent='正在上传并校验原文件，请保持页面打开…';try{const r=await fetch('/api/stock-ops/cost-file?sha='+encodeURIComponent(book.source.sha256),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});const result=await r.json();if(!r.ok)throw Error(result.error);status.textContent='完整Excel原件已保存，可供管理员下载。';}catch(error){status.textContent=error.message}};
+  if($('#cost-original'))$('#cost-original').onchange=async e=>{const file=e.target.files[0];if(!file)return;const status=$('#cost-upload-status');status.textContent='正在上传并校验原文件，请保持页面打开…';try{const r=await fetch('/api/stock-ops/cost-file?sha='+encodeURIComponent(book.source.sha256),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});const result=await r.json();if(!r.ok)throw Error(result.error);status.textContent='完整Excel原件已保存，可供管理员下载。';}catch(error){status.textContent=error.message}};
 }
 function settings(){
   $('#content').innerHTML=heading('协作设置','经营协作沿用内容运营管理台的个人登录。权限由管理员分配，仓库可以只负责库存相关工作。')+`<div class="split"><div class="card"><h2>每周怎么协作</h2><div class="task"><div><strong>经营数据运营 · 月销与SKU</strong><p>每月导入或填录各平台支付与成功退款，跨月退款回溯修订原月份。</p></div></div><div class="task"><div><strong>仓管 · 出入库、特殊件与周六盘点</strong><p>发货、寄样、补发发生时记流水；每周六提交实物、预留、坏品待检。周报待办由页面自动识别，暂不发送站外提醒。</p></div></div><div class="task"><div><strong>PR · 合作与寄样核对</strong><p>继续在原博主系统维护合作；这里查看寄样是否已由仓库记账。</p></div></div><div class="task"><div><strong>客服 · 特殊售后工单</strong><p>登记原订单、处理要求和跟进日；来件认领、等货补发及维修寄回全程保留交接记录，数量核清后结案。</p></div></div><div class="task"><div><strong>新媒体运营 · 内容安排</strong><p>查看款式净销量、可售库存与寄样进度，继续在内容运营管理台维护获分配的账号。</p></div></div><div class="task"><div><strong>负责人 · 处理差额</strong><p>核对差异及来源后处理，不把未知入库量、退回状态或成本视为0。</p></div></div></div><div class="card"><h2>数据导入与备份</h2><p class="muted">支持管理员导入经过整理的初始JSON资料。写入SKU、月销售、库存参考、待核事项及成本原表，不直接扣库存。成本资料默认仅管理员可见。</p>${can()?'<input id="import-file" type="file" accept="application/json,.json"><div id="import-preview"></div>':'<p class="hint">请管理员导入初始资料。</p>'}<p class="muted">月销、盘点、流水与SKU可导出CSV，用Excel打开；右上角可导出全部当前资料备份。CSV已防止公式执行，长编码按文本保存。</p></div></div>${can()?'<div class="card"><div class="section-heading"><h2>成员与权限</h2><button id="add-member" class="primary">＋ 添加成员</button></div><div id="members">读取中…</div></div>':''}`;
@@ -199,18 +199,25 @@ function settings(){
 }
 let members=[];
 async function loadMembers(){try{members=(await request('/api/content-ops/users')).users;if(tab!=='settings')return;$('#members').innerHTML=table(['姓名 / 登录名','内容权限','经营权限','状态',''],members.map(u=>[`${escape(u.name)}<small>${escape(u.username)}</small>`,u.role==='admin'?'管理员':'员工',escape(roleLabels[u.stockRole]||'未分配'),u.disabled?'停用':'启用',`<button data-member="${u.id}">编辑</button>`]));bindAll('[data-member]',el=>editMember(members.find(u=>u.id===el.dataset.member)));}catch(e){if($('#members'))$('#members').textContent=e.message}}
-function editMember(u={}){showEditor(u.id?'更新协作成员':'添加协作成员',field('username','登录名（英文/数字/下划线）',u.username)+field('name','显示姓名',u.name)+field('password',u.id?'新密码（留空不变）':'初始密码',undefined,'password',!u.id)+select('role','系统角色',[['employee','员工'],['admin','管理员']],u.role)+select('stockRole','经营协作权限',[['none','未分配'],['customer_service','客服：售后方案、认领与结案'],['warehouse','仓管：实物交接、盘点与出入库'],['pr','PR：博主合作、寄样与库存'],['pr_service','PR＋客服：博主合作与售后'],['content','新媒体运营：销量与库存查阅'],['operations','经营数据运营：SKU、月销与核对'],['marketing','推广查阅（原权限）'],['viewer','只读']],u.stockRole)+select('disabled','账号状态',[['false','启用'],['true','停用']],String(!!u.disabled)),async d=>{await request('/api/content-ops/users',{method:'POST',body:JSON.stringify({...d,id:u.id,accountIds:u.accountIds||[],disabled:d.disabled==='true'})});notice('成员已保存。权限变更后需重新登录。')},'这里分配经营岗位；保留原有内容账号分配。PR及PR＋客服使用此个人账号进入博主推广系统。新媒体运营不默认获得库存写入或成本权限。');}
+function editMember(u={}){showEditor(u.id?'更新协作成员':'添加协作成员',field('username','登录名（英文/数字/下划线）',u.username)+field('name','显示姓名',u.name)+field('password',u.id?'新密码（留空不变）':'初始密码',undefined,'password',!u.id)+select('role','系统角色',[['employee','员工'],['admin','管理员']],u.role)+select('stockRole','经营协作权限',[['none','未分配'],['customer_service','客服：售后方案、认领与结案'],['warehouse','仓管：实物交接、盘点与出入库'],['pr','PR：博主合作、寄样与库存'],['pr_service','PR＋客服：博主合作与售后'],['content','新媒体运营：销量与库存查阅'],['operations','经营数据运营：SKU、月销与核对'],['marketing','推广查阅（原权限）'],['finance','财务：成本、合同、尾款与收退货查阅'],['viewer','只读']],u.stockRole)+select('disabled','账号状态',[['false','启用'],['true','停用']],String(!!u.disabled)),async d=>{await request('/api/content-ops/users',{method:'POST',body:JSON.stringify({...d,id:u.id,accountIds:u.accountIds||[],disabled:d.disabled==='true'})});notice('成员已保存。权限变更后需重新登录。')},'这里分配经营岗位；保留原有内容账号分配。PR及PR＋客服使用此个人账号进入博主推广系统。新媒体运营不默认获得库存写入或成本权限。');}
 function download(name,content,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
 function csv(name,headers,rows){const cell=v=>{let s=v===null||v===undefined?'':String(v);if(/^[\s]*[=+@-]/.test(s)||/^\d{12,}$/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"'};download(`${name}_${today()}.csv`,'\uFEFF'+[headers,...rows].map(r=>r.map(cell).join(',')).join('\r\n'),'text/csv;charset=utf-8')}
 activate().catch(e=>{$('#login').hidden=false;$('#workspace').hidden=true;$('#login-message').textContent=e.message==='请先登录'?'请输入个人账号和密码。':e.message});
 
 let lastRenderedDay=today();
 async function pollShared(){
- if(!user||!state||refreshing||document.hidden||editing()||pendingCommands.size)return;
+ if(!user||!state||refreshing||document.hidden||pendingCommands.size)return;
  refreshing=true;
- try{const v=await request('/api/stock-ops/version');if(v.updatedAt!==state.updatedAt&&!editing()&&!pendingCommands.size)await refresh();if(lastRenderedDay!==today()&&!editing()){lastRenderedDay=today();render();}}
+ try{const v=await request('/api/stock-ops/version');if(v.updatedAt!==state.updatedAt&&!pendingCommands.size)await refresh();else if(!pendingCommands.size)$('#sync-status').innerHTML=`<i class="live-dot"></i>已同步 · ${state.updatedAt?textDate(state.updatedAt):'尚未登记'}`;if(lastRenderedDay!==today()&&!editing()){lastRenderedDay=today();render();}}
  catch(e){$('#sync-status').textContent='连接未完成，显示最近确认数据；'+e.message;}
  finally{refreshing=false;}
 }
-setInterval(pollShared,10000);window.addEventListener('focus',pollShared);window.addEventListener('online',pollShared);document.addEventListener('visibilitychange',pollShared);
+let liveSource=null;
+function startLiveSync(){
+ liveSource?.close();if(!globalThis.EventSource)return;
+ liveSource=new EventSource('/api/stock-ops/stream');
+ liveSource.addEventListener('revision',()=>{void pollShared();});
+ liveSource.onerror=()=>{if(user)$('#sync-status').textContent='正在恢复实时连接，保留最近确认数据';};
+}
+setInterval(pollShared,5000);window.addEventListener('focus',pollShared);window.addEventListener('online',pollShared);document.addEventListener('visibilitychange',pollShared);
 window.addEventListener('beforeunload',e=>{if(editorBusy||pendingCommands.size){e.preventDefault();e.returnValue='';}});

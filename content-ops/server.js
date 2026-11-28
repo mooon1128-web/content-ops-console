@@ -1,3 +1,4 @@
+import {createStockLive} from './stock-live.js';
 import { createAccessControl, publicState, scopedWrite, validateRows, makeAudit } from "./access.js";
 import { createStockStore } from './stock-store.js';
 import {createPurchaseFiles} from './purchase-files.js';
@@ -8,7 +9,7 @@ import {currentWholesaleProducts,catalogCostInfo} from './wholesale-catalog.js';
 import RecordOps from '../public/content-ops/ops-core.cjs';
 import {createGzip} from 'node:zlib';
 import {Readable} from 'node:stream';
-const BUILD_ID='20261127-purchase-edit-v1';
+const BUILD_ID='20261128-receipts-finance-v1';
 const XHS_UI_VERSION='20261123-save-v4';
 const contentShape={titles:'rows',accounts:'rows',posts:'rows',products:'rows',inventorySettings:'map'};
 import { createServer } from "node:http";
@@ -814,6 +815,8 @@ async function readStockCatalog(force=false){
   try{return await stockCatalogRequest;}finally{stockCatalogRequest=null;}
 }
 
+const stockLive=createStockLive({version:()=>stockStore.version(),authorize:async req=>{const user=await access.requireUser(req);if(roleOf(user)==='none')throw fail(403,'请重新登录');}});
+
 const server = createServer(async (request, response) => {
   try {
     response.gzip=/\bgzip\b/.test(request.headers['accept-encoding']||'');
@@ -831,7 +834,7 @@ const server = createServer(async (request, response) => {
         send(response,200,{totalBytes:disk.blocks*disk.bsize,availableBytes:disk.bavail*disk.bsize,warning:disk.bavail/disk.blocks<0.2,structuredData:hasSupabaseStateStore()?'Supabase':'服务器文件',attachmentPath:costFilesDir});return;
       }
       if(url.pathname==='/api/stock-ops/cost-file'){
-        if(user.role!=='admin')throw fail(403,'成本原文件仅管理员可查看');
+        if(!hasStockRole(user,'admin','finance') || (request.method!=='GET'&&user.role!=='admin'))throw fail(403,'成本原文件仅管理员及财务可查看，上传仅限管理员');
         const sha=url.searchParams.get('sha');if(!/^[a-f0-9]{64}$/.test(sha||''))throw fail(400,'文件校验码无效');
         const target=join(costFilesDir,`${sha}.xlsx`);
         if(request.method==='GET'){
@@ -849,6 +852,7 @@ const server = createServer(async (request, response) => {
         }
         throw fail(405,'Method not allowed');
       }
+      if(url.pathname==='/api/stock-ops/stream'&&request.method==='GET'){stockLive.connect(request,response);return;}
       if(url.pathname==='/api/stock-ops/version'&&request.method==='GET'){send(response,200,{updatedAt:await stockStore.version(),build:BUILD_ID});return;}
       if(url.pathname==='/api/stock-ops/state'&&request.method==='GET'){
         const compact=url.searchParams.get('view')==='workspace';
@@ -869,6 +873,7 @@ const server = createServer(async (request, response) => {
         if(command.data?.privateDetails!==undefined)await purchaseFiles.validate(user,command.data.privateDetails?.contracts||[]);
         const placements=command.action==='sample'?(await xhsStore.read())?.placements||[]:[];
         const result=await stockStore.commit(command,user,{placements});
+        stockLive.publish(result.state.updatedAt);
         if(url.searchParams.get('receipt')==='1')send(response,200,{ok:true,replayed:Boolean(result.replayed),requestId:command.requestId,revision:result.state.revision,updatedAt:result.state.updatedAt});
         else send(response,200,{ok:true,replayed:Boolean(result.replayed),state:stockView(await stockStore.hydrate(result.state),user)});return;
       }

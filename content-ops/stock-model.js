@@ -5,7 +5,7 @@ import { applyProcurement } from './procurement.js';
 import {addSalesRecipe,calculateComponentSales,digest,recipesDigest,SALES_COMPONENT_BASIS} from './sales-components.js';
 
 export const fail = (status, message) => Object.assign(new Error(message), {status});
-export const roles = ['none','viewer','warehouse','operations','marketing','customer_service','pr','content','pr_service'];
+export const roles = ['none','viewer','warehouse','operations','marketing','customer_service','pr','content','pr_service','finance'];
 export const roleOf = user => user.role === 'admin' ? 'admin' : roles.includes(user.stockRole) ? user.stockRole : 'none';
 export const hasStockRole=(user,...wanted)=>wanted.includes(roleOf(user))||(roleOf(user)==='pr_service'&&wanted.some(r=>['pr','customer_service'].includes(r)));
 const permissions = {
@@ -216,7 +216,7 @@ export function stockView(state,user,now=new Date()) {
     const available=k?balance(state,k.id,k.warehouse)?.available??null:null;
     return {...c,summary:{...summary,available,stockReady:!c.closedAt&&c.replacementQty>summary.replaced&&available!==null&&available>=c.replacementQty-summary.replaced}};
   }):[];
-  if(user.role==='admin'){visible.costWorkbook=costWorkbook;visible.purchasePrivate=purchasePrivate||{};}
+  if(hasStockRole(user,'admin','finance')){visible.costWorkbook=costWorkbook;visible.purchasePrivate=purchasePrivate||{};}
   const week=saturday(now);
   const audit=state.audit.filter(a=>(caseAccess||!a.action.startsWith('special'))&&(user.role==='admin'||!['costArchive','purchasePrivate','purchaseSettle','purchaseReopen'].includes(a.action))).slice(-300).reverse().map(a=>user.role==='admin'||a.action!=='import'?a:{...a,result:Array.isArray(a.result)?a.result.filter(r=>r?.kind!=='costArchive'):null});
   return {...visible,role:roleOf(user),week,balances:state.skus.map(k=>({skuId:k.id,warehouse:k.warehouse,...(balance(state,k.id,k.warehouse)||{}),reported:state.snapshots.some(s=>s.skuId===k.id&&s.warehouse===k.warehouse&&chinaDate(s.at)>=week)})),audit};
