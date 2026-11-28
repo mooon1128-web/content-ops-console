@@ -3,7 +3,7 @@ import {dirname,join} from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
 import RecordOps from '../public/content-ops/ops-core.cjs';
 import {bindPlacementOwners} from './placement-owner.js';
-export const xhsShape={creators:'rows',placements:'rows',customCreatorTypes:'value',monthlyBudgets:'map'};
+export const xhsShape={creators:'rows',placements:'rows',customCreatorTypes:'value',monthlyBudgets:'map',promotionSkus:'map'};
 const fail=(status,message)=>Object.assign(new Error(message),{status});
 export const publicXhs=s=>Object.fromEntries([...Object.keys(xhsShape),'updatedAt'].map(k=>[k,s[k]]));
 export function createXhsStore({file,remote,stateId}){
@@ -37,6 +37,14 @@ export function createXhsStore({file,remote,stateId}){
       const now=new Date(Math.max(Date.now(),(Date.parse(current.updatedAt)||0)+1)).toISOString();
       const operations=bindPlacementOwners(command.operations,user);
       const next=RecordOps.apply(current,operations,xhsShape,now);
+      for(const op of operations.filter(o=>o.group==='promotionSkus'&&o.after?.exists)){
+        const p=next.promotionSkus?.[op.key];
+        if(!p||!String(op.key).startsWith('promo-')||p.id!==op.key||typeof p.name!=='string'||!p.name.trim()||p.name.length>200||!['product','bundle'].includes(p.kind))throw fail(422,'请填写有效的推广 SKU 名称和类型');
+        if(!Array.isArray(p.aliases)||p.aliases.length>100||p.aliases.some(s=>typeof s!=='string'||s.length>300))throw fail(422,'商品旧名称格式不正确');
+        if(!Array.isArray(p.components)||p.components.length>100||p.components.some(c=>typeof c.productId!=='string'||!c.productId.startsWith('wholesale-')||!Number.isFinite(c.quantity)||c.quantity<=0))throw fail(422,'请为每个组成商品填写正确的件数');
+        if(new Set(p.components.map(c=>c.productId)).size!==p.components.length)throw fail(422,'套餐内相同商品请合并数量');
+        if(p.compositionConfirmed&&!p.components.length&&!p.replacementId)throw fail(422,'请补齐组成商品后再确认');
+      }
       if(!command.operations.length)return current;
       if(next.creators.length>200000||next.placements.length>200000)throw fail(422,'记录量需要扩容，请联系管理员；本次数据未被删除');
       next.updatedAt=now;
@@ -54,10 +62,10 @@ export function createXhsStore({file,remote,stateId}){
     throw fail(409,'其他同事正在保存，请稍后重试；本次未覆盖数据');
   }
   async function placements(){
-    if(!remote){const {state}=await load();return {placements:state.placements||[],updatedAt:state.updatedAt};}
-    const rows=await remote(`/content_ops_state?id=eq.${encodeURIComponent(stateId)}&select=placements:state->placements,updated_at`);
+    if(!remote){const {state}=await load();return {placements:state.placements||[],promotionSkus:state.promotionSkus||{},updatedAt:state.updatedAt};}
+    const rows=await remote(`/content_ops_state?id=eq.${encodeURIComponent(stateId)}&select=placements:state->placements,promotionSkus:state->promotionSkus,updated_at`);
     if(!rows?.[0])throw fail(503,'推广记录暂时无法读取，保留上次数据');
-    return {placements:rows[0].placements||[],updatedAt:new Date(rows[0].updated_at).toISOString()};
+    return {placements:rows[0].placements||[],promotionSkus:rows[0].promotionSkus||{},updatedAt:new Date(rows[0].updated_at).toISOString()};
   }
   return {placements,read:async()=>publicXhs((await load()).state),raw:async()=>(await load()).state,version,
     commit:(command,user)=>{const work=queue.then(()=>commitOnce(command,user));queue=work.catch(()=>{});return work;}};
