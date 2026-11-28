@@ -1,3 +1,4 @@
+import PromotionData from '../public/content-ops/promotion-data.cjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -21,7 +22,7 @@ async function fixture(){
  const nodes=new Map(),events=new Map(),reports=[];const memory={};let renders=0;
  function node(s){if(!nodes.has(s))nodes.set(s,{value:'',textContent:'',innerHTML:'',dataset:{},classList:{add(){},remove(){},toggle(){}},elements:{creatorTier:{value:''}},open:false,close(){this.open=false},addEventListener:(type,fn)=>events.set(s+':'+type,fn),querySelector:node,querySelectorAll:()=>[]});return nodes.get(s)}
  class FD{constructor(f){this.values=f.values}entries(){return this.values[Symbol.iterator]()}getAll(k){return this.values.filter(x=>x[0]===k).map(x=>x[1])}}
- const ctx=vm.createContext({structuredClone,RecordOps,crypto:{randomUUID},AbortSignal,FormData:FD,console,setTimeout:()=>1,clearTimeout(){},document:{querySelector:node,querySelectorAll:()=>[],addEventListener(){},activeElement:null},window:{addEventListener(){}}});
+ const ctx=vm.createContext({PromotionData,structuredClone,RecordOps,crypto:{randomUUID},AbortSignal,FormData:FD,console,setTimeout:()=>1,clearTimeout(){},document:{querySelector:node,querySelectorAll:()=>[],addEventListener(){},activeElement:null},window:{addEventListener(){}}});
  vm.runInContext(syncSource,ctx);
  vm.runInContext(app.slice(0,app.lastIndexOf('  startSharedApp().catch('))+`globalThis.subject={syncCreatorsFromPlacements,allowSyncInteraction,creatorId,
  setup:(c,u)=>{cloud=c;currentUser=u;selectedWholesaleProductsFromForm=()=>[];renderAll=()=>{};bindEvents()},
@@ -77,7 +78,7 @@ test('saving one cooperation preserves concurrent unrelated edits; real same-fie
 
 test('old-page recovery reads only the signed-in account outbox and never starts sync or writes it',async()=>{
  const record={operations:[{group:'placements',kind:'add',id:'saved-draft',after:{id:'saved-draft',creator:'Synthetic'}}]},calls=[];
- const ctx=vm.createContext({indexedDB:{open:name=>{calls.push(['open',name]);const request={};queueMicrotask(()=>{request.result={objectStoreNames:{contains:()=>true},close:()=>calls.push(['close']),transaction:(store,mode)=>{calls.push([store,mode]);const tx={objectStore:()=>({get:key=>{calls.push(['get',key]);queueMicrotask(()=>tx.oncomplete());return{result:record}}})};return tx}};request.onsuccess()});return request}},document:{querySelector(){},querySelectorAll:()=>[]},crypto:{randomUUID},console,setTimeout(){},clearTimeout(){}});
+ const ctx=vm.createContext({PromotionData,indexedDB:{open:name=>{calls.push(['open',name]);const request={};queueMicrotask(()=>{request.result={objectStoreNames:{contains:()=>true},close:()=>calls.push(['close']),transaction:(store,mode)=>{calls.push([store,mode]);const tx={objectStore:()=>({get:key=>{calls.push(['get',key]);queueMicrotask(()=>tx.oncomplete());return{result:record}}})};return tx}};request.onsuccess()});return request}},document:{querySelector(){},querySelectorAll:()=>[]},crypto:{randomUUID},console,setTimeout(){},clearTimeout(){}});
  vm.runInContext(app.slice(0,app.lastIndexOf('  startSharedApp().catch('))+'globalThis.readDraft=readStoredPending;})();',ctx);
  assert.deepEqual(plain(await ctx.readDraft('xhs-v3:test-pr')),record);
  assert.deepEqual(calls,[['open','pupuhome-shared-outbox-v3'],['outbox','readonly'],['get','xhs-v3:test-pr'],['close']]);

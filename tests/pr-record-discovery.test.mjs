@@ -1,3 +1,4 @@
+import PromotionData from '../public/content-ops/promotion-data.cjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -7,7 +8,7 @@ function setup(rows){
  const nodes=new Map();
  const node=k=>{if(!nodes.has(k))nodes.set(k,{value:'',textContent:'',innerHTML:'',hidden:false,disabled:false,dataset:{},classList:{add(){},remove(){},toggle(){}},scrollIntoView(){}});return nodes.get(k)};
  const RealDate=Date;class FixedDate extends RealDate{constructor(...a){super(...(a.length?a:['2026-11-23T09:00:00Z']))}static now(){return new RealDate('2026-11-23T09:00:00Z').getTime()}}
- const ctx=vm.createContext({document:{querySelector:node,querySelectorAll:()=>[],activeElement:null},Date:FixedDate,console,structuredClone,setTimeout:()=>1,clearTimeout(){},URL});
+ const ctx=vm.createContext({PromotionData,document:{querySelector:node,querySelectorAll:()=>[],activeElement:null},Date:FixedDate,console,structuredClone,setTimeout:()=>1,clearTimeout(){},URL});
  vm.runInContext(app.slice(0,app.lastIndexOf('  startSharedApp().catch('))+`globalThis.s={followupTask,placementInformationIssue,renderFollowups,renderTable,renderProductBoard,filteredPlacements,openCooperationRecords,
  setup:rows=>{placements=rows;creators=[];currentUser={role:'admin'};},rows:()=>placements,
  period:p=>ledgerPeriod=p,overview:p=>overviewPeriod=p,product:p=>selectedProduct=p,

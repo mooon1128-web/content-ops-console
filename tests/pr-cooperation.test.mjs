@@ -1,3 +1,4 @@
+import PromotionData from '../public/content-ops/promotion-data.cjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -14,7 +15,7 @@ function harness() {
  const nodes=new Map();
  const node=k=>{if(!nodes.has(k))nodes.set(k,{value:'',textContent:'',innerHTML:'',disabled:false,classList:{toggle(){},add(){},remove(){}},elements:{},open:true});return nodes.get(k)};
  class FD {constructor(form){this.values=form.values}entries(){return this.values[Symbol.iterator]()}getAll(key){return this.values.filter(x=>x[0]===key).map(x=>x[1])}}
- const ctx=vm.createContext({document:{querySelector:node,querySelectorAll:()=>[],activeElement:null},crypto:{randomUUID},console,structuredClone,FormData:FD,AbortSignal,setTimeout:()=>1,clearTimeout(){},fetch:async()=>{throw Error('not configured')}});
+ const ctx=vm.createContext({PromotionData,document:{querySelector:node,querySelectorAll:()=>[],activeElement:null},crypto:{randomUUID},console,structuredClone,FormData:FD,AbortSignal,setTimeout:()=>1,clearTimeout(){},fetch:async()=>{throw Error('not configured')}});
  vm.runInContext(app.slice(0,app.lastIndexOf('  startSharedApp().catch('))+`globalThis.subject={formToPlacement,cooperationBriefData,cooperationBriefText,loadWholesaleProducts,
  setup:(rows,products,user)=>{placements=rows;productCatalog=products;currentUser=user;selectedWholesaleProductsFromForm=()=>[];hasOpenEditorDialog=()=>true;renderProductPickerOptions=()=>{};updatePlacementProductCostDisplay=()=>{}},catalog:()=>productCatalog};})();`,ctx);
  return {ctx,s:ctx.subject,node};
