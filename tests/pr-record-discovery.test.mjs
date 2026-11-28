@@ -6,10 +6,10 @@ import {readFile} from 'node:fs/promises';
 const app=await readFile(new URL('../public/xhs-media/app.js',import.meta.url),'utf8');
 function setup(rows){
  const nodes=new Map();
- const node=k=>{if(!nodes.has(k))nodes.set(k,{value:'',textContent:'',innerHTML:'',hidden:false,disabled:false,dataset:{},classList:{add(){},remove(){},toggle(){}},scrollIntoView(){}});return nodes.get(k)};
+ const node=k=>{if(!nodes.has(k))nodes.set(k,{value:'',textContent:'',innerHTML:'',hidden:false,disabled:false,dataset:{},setAttribute(key,value){this[key]=value;},classList:{add(){},remove(){},toggle(){}},scrollIntoView(){}});return nodes.get(k)};
  let now='2026-11-23T09:00:00Z';const RealDate=Date;class FixedDate extends RealDate{constructor(...a){super(...(a.length?a:[now]))}static now(){return new RealDate(now).getTime()}}
  const ctx=vm.createContext({PromotionData,document:{querySelector:node,querySelectorAll:()=>[],activeElement:null},Date:FixedDate,console,structuredClone,setTimeout:()=>1,clearTimeout(){},URL});
- vm.runInContext(app.slice(0,app.lastIndexOf('  startSharedApp().catch('))+`globalThis.s={followupTask,placementInformationIssue,renderFollowups,renderTable,renderProductBoard,filteredPlacements,openCooperationRecords,prDate,prCycle,prCycleLabel,prReview,prDay7Data,isDay7ReviewDue,isPublishedWaitingForDay7,savePerformanceReview,feedbackType,renderPrSummary,scopedPlacements,
+ vm.runInContext(app.slice(0,app.lastIndexOf('  startSharedApp().catch('))+`globalThis.s={followupTask,placementInformationIssue,renderFollowups,renderTable,renderProductBoard,filteredPlacements,openCooperationRecords,prDate,prCycle,prCycleLabel,ledgerPeriodOptions,ledgerPeriodLabel,setLedgerPeriodMode,renderPeriodControls,prReview,prDay7Data,isDay7ReviewDue,isPublishedWaitingForDay7,savePerformanceReview,feedbackType,renderPrSummary,scopedPlacements,
  prepareSave:()=>{savePlacements=()=>{};syncCreatorsFromPlacements=()=>{};flushServerSave=async()=>true;renderAll=()=>{};},
  setup:rows=>{placements=rows;creators=[];currentUser={role:'admin'};rebuildPromotionCatalog();},rows:()=>placements,
  period:p=>ledgerPeriod=p,overview:p=>overviewPeriod=p,product:p=>selectedProduct=p,
@@ -67,6 +67,32 @@ test('summary counts each cooperation once across products and recomputes after 
 });
 
 const reviewForm=(id,date,likes,saves=0,comments=0)=>({dataset:{reviewForm:id},reportValidity:()=>true,querySelector:selector=>({value:({recordedAt:date,likes,saves,comments})[selector.match(/"(.*?)"/)[1]]})});
+test('ledger offers every cycle through December 2028 even with no records',()=>{
+ const f=setup([]),options=Array.from(f.s.ledgerPeriodOptions());
+ const months=options.filter(o=>/^\d{4}-\d{2}$/.test(o.value));
+ assert.equal(months.length,36);assert.equal(months[0].value,'2028-12');assert.equal(months.at(-1).value,'2026-01');
+ for(let i=0;i<36;i++)assert.ok(months.some(o=>o.value===`${2026+Math.floor(i/12)}-${String(i%12+1).padStart(2,'0')}`));
+ assert.equal(months[0].label,'2028-12-17 至 2029-01-16');
+ f.s.period('2028-12');f.s.renderPeriodControls();assert.equal(f.node('#ledger-period').value,'2028-12');assert.deepEqual(Array.from(f.s.filtered()),[]);
+});
+test('month view uses actual publication month and leaves PR attribution and source data unchanged',()=>{
+ const rows=[row('prior',{status:'已发布',publishedAt:'2026-10-31',likes:200,performanceReviewedAt:'2026-11-01'}),row('first',{status:'已发布',publishedAt:'2026-11-01',likes:200,performanceReviewedAt:'2026-11-02'}),row('last',{status:'已发布',publishedAt:'2026-11-30'}),row('next',{status:'已发布',publishedAt:'2026-12-01'}),row('waiting',{status:'已寄样',publishedAt:'2026-11-15'}),row('missing',{status:'已发布'})];
+ const f=setup(rows);f.clock('2026-12-20T09:00:00Z');const before=JSON.stringify(f.s.rows());f.s.period('2026-11');
+ f.s.setLedgerPeriodMode('month');assert.deepEqual(Array.from(f.s.filtered()),['first','last']);
+ assert.equal(f.node('#ledger-period-label').textContent,'发布月份');assert.equal(f.node('#ledger-month-toggle')['aria-pressed'],'true');
+ assert.match(f.node('#pr-summary').innerHTML,/2026-11-01 至 2026-11-30/);
+ assert.equal(f.s.prReview(rows[1]).cycle,'2026-10');
+ f.s.setLedgerPeriodMode('cycle');assert.deepEqual(Array.from(f.s.filtered()),['last','next']);
+ assert.equal(f.node('#ledger-period-label').textContent,'PR 发布周期');assert.equal(f.node('#ledger-month-toggle').textContent,'按月显示');
+ assert.equal(JSON.stringify(f.s.rows()),before);
+});
+test('month labels cover leap day and December; unknown review date does not hide a known publication month',()=>{
+ const f=setup([row('known',{status:'已发布',publishedAt:'2028-02-29',likes:200}),row('unknown',{status:'已发布'}),row('invalid',{status:'已发布',publishedAt:'2028-02-30'})]);f.clock('2028-03-10T09:00:00Z');
+ f.s.setLedgerPeriodMode('month');assert.equal(f.s.ledgerPeriodLabel('2028-02'),'2028-02-01 至 2028-02-29');assert.equal(f.s.ledgerPeriodLabel('2028-12'),'2028-12-01 至 2028-12-31');
+ f.s.period('2028-02');assert.deepEqual(Array.from(f.s.filtered()),['known']);
+ f.s.period('undated');assert.deepEqual(Array.from(f.s.filtered()),['unknown','invalid']);
+ f.s.setLedgerPeriodMode('cycle');assert.deepEqual(Array.from(f.s.filtered()),['known','unknown','invalid']);
+});
 test('early 200 counts in its original task cycle while day-7 data is still required across cycles',async()=>{
  const f=setup([row('early',{status:'已发布',publishedAt:'2026-11-15'})]);f.s.prepareSave();f.clock('2026-11-16T09:00:00Z');
  await f.s.savePerformanceReview(reviewForm('early','2026-11-16',200));const item=f.s.rows()[0];
