@@ -5,7 +5,8 @@ const aliases={'PUPU-TAIYAKI':'qp-35','PUPU-TOAST-BAG':'qp-43','PUPU-DONUT-BAG':
 const normalize=v=>String(v||'').normalize('NFKC').replace(/\s|[（）()／/·—-]/g,'').toLowerCase();
 let catalog=wholesaleProducts;
 export function setProductCatalog(rows){if(!Array.isArray(rows)||!rows.length)return false;catalog=rows.filter(p=>p?.id&&p?.name).map(p=>({id:String(p.id),code:String(p.code||''),name:String(p.name),image:String(p.image||'')}));return true;}
-export function matchedProduct(k={}){
+export function matchedProduct(k={},products=catalog){
+  const catalog=products;
   const explicit=aliases[k.code]||k.influencerProductId;
   let candidates=catalog.filter(p=>p.id===explicit);
   if(!candidates.length){const codes=new Set([k.code,k.barcode,k.erpBarcode,k.costSkuId?.replace(/^SKU-/,'' )].filter(Boolean));candidates=catalog.filter(p=>p.code&&codes.has(p.code));}
@@ -22,8 +23,8 @@ export function matchedProduct(k={}){
   }
   return candidates.length===1?candidates[0]:null;
 }
-export function productPresentation(k={}){
-  const p=matchedProduct(k),xc=[k.name,k.erpName].some(n=>normalize(n)==='痛包xc');
+export function productPresentation(k={},products=catalog){
+  const p=matchedProduct(k,products),xc=[k.name,k.erpName].some(n=>normalize(n)==='痛包xc');
   const full=aliases[k.code]&&k.name?k.name:p?.name||(xc?'肥士顿痛包':k.name)||'商品待匹配';
   const split=full.lastIndexOf('-'),name=split>0?full.slice(0,split):full;
   const spec=split>0?full.slice(split+1):k.erpSpec||(k.spec&&!/独立款式|平台映射/.test(k.spec)?k.spec:'');

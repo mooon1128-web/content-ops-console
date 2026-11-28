@@ -18,6 +18,7 @@ const permissions = {
   collection: ['admin','operations'], collectionStatus: ['admin','operations'], collectionResult: ['admin','operations'], collectionAccept: ['admin','operations'],
   catalogImport: ['admin'],
   salesRecipe: ['admin','operations'],
+  purchaseComplete:['admin','warehouse'],purchaseHandoffRead:['admin','finance'],
   purchase:['admin','operations'],purchaseUpdate:['admin','operations'],purchaseSchedule:['admin','operations'],purchaseShip:['admin','operations','warehouse'],purchaseConfirm:['admin','operations'],purchaseReceive:['admin','warehouse'],purchaseInspect:['admin','warehouse'],purchaseDecision:['admin','warehouse'],purchaseReturn:['admin','warehouse'],forecast:['admin','operations'],
 };
 export function authorize(user, action) {
@@ -72,7 +73,7 @@ function appendEvent(s,p,user,now,internal=false) {
 }
 function apply(s,action,p,user,now,context={}) {
   authorize(user,action);
-  if(['purchase','purchaseUpdate','purchasePrivate','purchaseSettle','purchaseReopen','purchaseSchedule','purchaseShip','purchaseConfirm','purchaseReceive','purchaseInspect','purchaseDecision','purchaseReturn','forecast'].includes(action))return applyProcurement(s,action,p,user,now,{fail,required,number,date,instant,stamp,skuExists,appendEvent});
+  if(['purchaseComplete','purchaseHandoffRead','purchase','purchaseUpdate','purchasePrivate','purchaseSettle','purchaseReopen','purchaseSchedule','purchaseShip','purchaseConfirm','purchaseReceive','purchaseInspect','purchaseDecision','purchaseReturn','forecast'].includes(action))return applyProcurement(s,action,p,user,now,{fail,required,number,date,instant,stamp,skuExists,appendEvent},context);
   if(action==='catalogImport')return importCatalog(s,p,user,now,{fail});
   if(action==='salesRecipe')return addSalesRecipe(s,p,user,now);
   if(action==='sku') {
@@ -194,14 +195,14 @@ function apply(s,action,p,user,now,context={}) {
   }
   throw fail(400,'不支持的操作');
 }
-export function transact(current,command,user,{now=new Date().toISOString(),placements=[]}={}) {
+export function transact(current,command,user,{now=new Date().toISOString(),placements=[],users=[],catalogProducts}={}) {
   authorize(user,command.action);
   const requestId=required(command.requestId,'请求编号');
   const retry=current.requests.find(r=>r.id===requestId);
   const payloadHash=createHash('sha256').update(JSON.stringify({action:command.action,data:command.data})).digest('hex');
   if(retry){if(retry.actor!==user.id||retry.payloadHash!==payloadHash)throw fail(409,'请求编号已用于其他操作');return {state:current,replayed:true};}
   if(command.revision!==current.revision)throw Object.assign(fail(409,'共享数据版本已变化，可能包含前一次提交。当前填写内容已保留，请核对最新记录后重试'),{code:'REVISION_CONFLICT'});
-  const next=structuredClone(current),result=apply(next,command.action,command.data||{},user,now,{placements});
+  const next=structuredClone(current),result=apply(next,command.action,command.data||{},user,now,{placements,users,catalogProducts});
   next.revision++;next.updatedAt=now;
   next.requests.push({id:requestId,actor:user.id,payloadHash,revision:next.revision});
   next.audit.push({id:randomUUID(),at:now,actor:{id:user.id,name:user.name,username:user.username},action:command.action,beforeRevision:current.revision,revision:next.revision,result});

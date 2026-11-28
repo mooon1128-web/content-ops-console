@@ -1,10 +1,17 @@
 import {purchaseSummary,forecastSupply} from '../public/stock-ops/purchasing-math.js';
 import {balanceCents,paymentDueDate} from '../public/stock-ops/purchase-balances.js';
+import {reconciliation,reconciliationKey,latestHandoff} from '../public/stock-ops/purchase-reconciliation.js';
+import {productPresentation} from '../public/stock-ops/sales-ui.js';
 
-export function applyProcurement(s,action,p,user,now,h){
+export function applyProcurement(s,action,p,user,now,h,context={}){
   const {fail,required,number,date,instant,stamp,skuExists,appendEvent}=h;
   const chinaDay=v=>new Date(Date.parse(v)+8*3600000).toISOString().slice(0,10);
   s.purchases??=[];s.purchaseReceipts??=[];s.purchaseInspections??=[];s.purchaseReturns??=[];s.forecasts??=[];
+  if(action==='purchaseHandoffRead'){
+    const report=s.purchaseHandoffs?.find(r=>r.id===p.reportId),recipient=report?.recipients.find(r=>r.id===user.id);
+    if(!recipient)throw fail(403,'只能标记发给自己的对账资料');
+    recipient.readAt??=now;return {reportId:report.id,readAt:recipient.readAt};
+  }
   function savePrivate(purchaseId,details){
     if(user.role!=='admin')throw fail(403,'合同与尾款仅管理员可登记');
     const balanceDue=number(details.balanceDue,'尾款金额',{optional:true,decimal:true});
@@ -37,6 +44,22 @@ export function applyProcurement(s,action,p,user,now,h){
     s.purchases.push(row);if(p.privateDetails!==undefined)savePrivate(row.id,p.privateDetails);return row;
   }
   const order=s.purchases.find(r=>r.id===p.purchaseId);if(!order)throw fail(404,'补货批次不存在');
+  if(action==='purchaseComplete'){
+    if(p.confirmed!==true)throw fail(400,'请确认该批次入库和售后已全部处理完毕');
+    const report=reconciliation(s,order.id),reviewKey=reconciliationKey(s,order.id);
+    if(p.reviewKey!==reviewKey)throw fail(409,'到货或售后数据已变化，请重新打开明细核对后发送');
+    if(report.issues.length)throw fail(400,report.issues.join('；'));
+    const discrepancyNote=String(p.discrepancyNote||'').trim().slice(0,2000);
+    if((report.totals.shortfall||report.totals.over)&&!discrepancyNote)throw fail(400,'到货与下单数量不一致，请说明差额及不再到货的确认依据');
+    const previous=latestHandoff(s,order.id);
+    if(previous?.reviewKey===reviewKey)return {reportId:previous.id,alreadySent:true};
+    const recipients=(context.users||[]).filter(u=>!u.disabled&&(u.role==='admin'||u.username==='bonnie')).map(u=>({id:u.id,username:u.username,name:u.name||u.username,readAt:null}));
+    if(!recipients.some(u=>u.username==='bonnie')||!(context.users||[]).some(u=>!u.disabled&&u.role==='admin'))throw fail(409,'管理员或 bonnie 账号不可用，请管理员确认接收账号后再发送');
+    const k=s.skus.find(k=>k.id===order.skuId);
+    const saved={...stamp({},user,now),purchaseId:order.id,reviewKey,version:(previous?.version||0)+1,sentAt:now,recipients,previousReportId:previous?.id||null,snapshot:{...report,product:{name:productPresentation(k,context.catalogProducts).fullName,code:k.code},discrepancyNote,processedBy:stamp({},user,now).actor,processedAt:now}};
+    s.purchaseHandoffs??=[];s.purchaseHandoffs.push(saved);
+    return {reportId:saved.id,purchaseId:order.id,version:saved.version,recipients:recipients.map(({readAt,...u})=>u)};
+  }
   if(action==='purchaseUpdate'){
     if(p.expectedUpdatedAt!==order.updatedAt)throw fail(409,'这批补货已被修改，请关闭编辑并重新打开最新记录后再修改');
     const next={reference:required(p.reference,'补货批次号'),skuId:skuExists(s,p.skuId),quantity:number(p.quantity,'下单数量'),status:p.status,orderDate:date(p.orderDate),expectedShipAt:p.expectedShipAt?date(p.expectedShipAt):null,expectedAt:p.expectedAt?date(p.expectedAt):null,warehouse:required(p.warehouse,'仓库'),note:required(p.note,'工厂确认或计划说明',2000)};
