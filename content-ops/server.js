@@ -9,7 +9,7 @@ import {currentWholesaleProducts,catalogCostInfo} from './wholesale-catalog.js';
 import RecordOps from '../public/content-ops/ops-core.cjs';
 import {createGzip} from 'node:zlib';
 import {Readable} from 'node:stream';
-const BUILD_ID='20261128-receipts-finance-v1';
+const BUILD_ID='20261128-reconciliation-v2';
 const XHS_UI_VERSION='20261123-save-v4';
 const contentShape={titles:'rows',accounts:'rows',posts:'rows',products:'rows',inventorySettings:'map'};
 import { createServer } from "node:http";
@@ -872,7 +872,8 @@ const server = createServer(async (request, response) => {
         const command=JSON.parse(await readBody(request));
         if(command.data?.privateDetails!==undefined)await purchaseFiles.validate(user,command.data.privateDetails?.contracts||[]);
         const placements=command.action==='sample'?(await xhsStore.read())?.placements||[]:[];
-        const result=await stockStore.commit(command,user,{placements});
+        const users=command.action==='purchaseComplete'?(await readAccessOnly())._access?.users||[]:[];
+        const result=await stockStore.commit(command,user,{placements,users,catalogProducts:stockCatalogCache?.products});
         stockLive.publish(result.state.updatedAt);
         if(url.searchParams.get('receipt')==='1')send(response,200,{ok:true,replayed:Boolean(result.replayed),requestId:command.requestId,revision:result.state.revision,updatedAt:result.state.updatedAt});
         else send(response,200,{ok:true,replayed:Boolean(result.replayed),state:stockView(await stockStore.hydrate(result.state),user)});return;
