@@ -37,6 +37,28 @@ export function applyProcurement(s,action,p,user,now,h){
     s.purchases.push(row);if(p.privateDetails!==undefined)savePrivate(row.id,p.privateDetails);return row;
   }
   const order=s.purchases.find(r=>r.id===p.purchaseId);if(!order)throw fail(404,'补货批次不存在');
+  if(action==='purchaseUpdate'){
+    if(p.expectedUpdatedAt!==order.updatedAt)throw fail(409,'这批补货已被修改，请关闭编辑并重新打开最新记录后再修改');
+    const next={reference:required(p.reference,'补货批次号'),skuId:skuExists(s,p.skuId),quantity:number(p.quantity,'下单数量'),status:p.status,orderDate:date(p.orderDate),expectedShipAt:p.expectedShipAt?date(p.expectedShipAt):null,expectedAt:p.expectedAt?date(p.expectedAt):null,warehouse:required(p.warehouse,'仓库'),note:required(p.note,'工厂确认或计划说明',2000)};
+    if(!next.quantity)throw fail(400,'下单数量须大于0');
+    if(!['计划','已下单'].includes(next.status))throw fail(400,'请选择计划或已下单');
+    if(!next.expectedShipAt&&!next.expectedAt)throw fail(400,'请填写预计出货时间');
+    if(next.expectedShipAt&&next.expectedShipAt<next.orderDate)throw fail(400,'预计出货时间不能早于下单日');
+    if(next.expectedAt&&next.expectedAt<(next.expectedShipAt||next.orderDate))throw fail(400,'预计到货日不能早于出货或下单日');
+    if(next.status==='已下单'&&next.orderDate>chinaDay(now))throw fail(400,'未来计划不能标为已下单');
+    if(s.purchases.some(r=>r.id!==order.id&&r.reference===next.reference&&r.skuId===next.skuId))throw fail(409,'此批次的该SKU已经登记');
+    const shipments=order.shipments||[],receipts=s.purchaseReceipts.filter(r=>r.purchaseId===order.id);
+    const shipped=shipments.reduce((n,r)=>n+r.quantity,0),received=receipts.reduce((n,r)=>n+r.good+r.defect+r.pending,0);
+    if(shipments.length||receipts.length){
+      if(next.skuId!==order.skuId||next.warehouse!==order.warehouse||next.status!==order.status)throw fail(409,'已有出货或收货记录，不能更换商品、仓库或下单状态；原库存记录须保留');
+      if(next.quantity!==order.quantity&&next.quantity<Math.max(shipped,received))throw fail(400,'修改后的下单数量不能少于已出货或已收货数量');
+      if([...shipments.map(r=>r.at),...receipts.map(r=>chinaDay(r.at))].some(at=>next.orderDate>at))throw fail(400,'下单日不能晚于已登记的出货或收货日期');
+    }
+    const previous=Object.fromEntries(Object.keys(next).map(k=>[k,order[k]??null]));
+    order.editHistory??=[];order.editHistory.push({...stamp({},user,now),previous,current:structuredClone(next)});
+    Object.assign(order,next,{updatedAt:now,actor:stamp({},user,now).actor});
+    return order;
+  }
   if(action==='purchaseSettle'||action==='purchaseReopen'){
     if(user.role!=='admin')throw fail(403,'尾款结清情况仅管理员可维护');
     const priv=s.purchasePrivate?.[order.id];

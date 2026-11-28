@@ -3,16 +3,32 @@ import {wholesaleProducts} from './wholesale-products.js';
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const aliases={'PUPU-TAIYAKI':'qp-35','PUPU-TOAST-BAG':'qp-43','PUPU-DONUT-BAG':'qp-44','PUPU-PENCIL':'qp-34','PUPU-SANFEN-COIN':'qp-37'};
 const normalize=v=>String(v||'').normalize('NFKC').replace(/\s|[（）()／/·—-]/g,'').toLowerCase();
-export function productImage(k={}){
+let catalog=wholesaleProducts;
+export function setProductCatalog(rows){if(!Array.isArray(rows)||!rows.length)return false;catalog=rows.filter(p=>p?.id&&p?.name).map(p=>({id:String(p.id),code:String(p.code||''),name:String(p.name),image:String(p.image||'')}));return true;}
+export function matchedProduct(k={}){
   const explicit=aliases[k.code]||k.influencerProductId;
-  let candidates=wholesaleProducts.filter(p=>p.id===explicit);
-  if(!candidates.length){const codes=new Set([k.code,k.barcode,k.erpBarcode,k.costSkuId?.replace(/^SKU-/,'' )].filter(Boolean));candidates=wholesaleProducts.filter(p=>codes.has(p.code));}
-  if(!candidates.length){const names=new Set([k.name,k.erpName,[k.erpName,k.erpSpec].filter(Boolean).join('-')].map(normalize).filter(Boolean));candidates=wholesaleProducts.filter(p=>names.has(normalize(p.name)));}
-  return candidates.length===1?new URL(candidates[0].image,'https://pupuhome-wholesale.onrender.com/').href:'';
+  let candidates=catalog.filter(p=>p.id===explicit);
+  if(!candidates.length){const codes=new Set([k.code,k.barcode,k.erpBarcode,k.costSkuId?.replace(/^SKU-/,'' )].filter(Boolean));candidates=catalog.filter(p=>p.code&&codes.has(p.code));}
+  if(!candidates.length){const names=new Set([k.name,k.erpName,[k.erpName,k.erpSpec].filter(Boolean).join('-')].map(normalize).filter(Boolean));candidates=catalog.filter(p=>names.has(normalize(p.name)));}
+  // User-confirmed family alias; exact colour only. XC remains a separate ERP SKU.
+  if(!candidates.length&&[k.name,k.erpName].some(n=>normalize(n)==='痛包xc')){
+    const colour=k.erpSpec||String(k.spec||'').replace(/^颜色\s*[／/]\s*/,''),wanted=normalize('肥士顿痛包系列-'+colour);
+    if(colour)candidates=catalog.filter(p=>normalize(p.name)===wanted);
+  }
+  return candidates.length===1?candidates[0]:null;
 }
+export function productPresentation(k={}){
+  const p=matchedProduct(k),xc=[k.name,k.erpName].some(n=>normalize(n)==='痛包xc');
+  const full=aliases[k.code]&&k.name?k.name:p?.name||(xc?'肥士顿痛包':k.name)||'商品待匹配';
+  const split=full.lastIndexOf('-'),name=split>0?full.slice(0,split):full;
+  const spec=split>0?full.slice(split+1):k.erpSpec||(k.spec&&!/独立款式|平台映射/.test(k.spec)?k.spec:'');
+  let image='';try{if(p?.image){const u=new URL(p.image,'https://pupuhome-wholesale.onrender.com/');if(u.protocol==='https:')image=u.href;}}catch{}
+  return {name,spec,image,xc,fullName:[name,spec,xc?'XC档案':''].filter(Boolean).join(' · ')};
+}
+export function productImage(k={}){return productPresentation(k).image;}
 export function productCell(k={},subtitle=''){
-  const image=productImage(k);
-  return `<div class="product-cell"><span class="product-photo">${image?`<img src="${esc(image)}" alt="${esc(k.name)}" loading="lazy" decoding="async" referrerpolicy="no-referrer">`:'<span>待配图</span>'}</span><span><b>${esc(k.name||'商品待匹配')}</b>${subtitle?`<small>${esc(subtitle)}</small>`:''}</span></div>`;
+  const {name,spec,image,xc,fullName}=productPresentation(k);
+  return `<div class="product-cell"><span class="product-photo">${image?`<img src="${esc(image)}" alt="${esc(fullName)}" loading="lazy" decoding="async" referrerpolicy="no-referrer">`:'<span>待配图</span>'}</span><span class="product-copy"><b>${esc(name)}</b>${spec||xc?`<span class="product-spec">${esc(spec)}${xc?' · XC档案':''}</span>`:''}${subtitle?`<small>${esc(subtitle)}</small>`:''}</span></div>`;
 }
 export function bindImageFallback(root=document){root.querySelectorAll('.product-photo img').forEach(img=>img.onerror=()=>{img.parentElement.innerHTML='<span>图片待补</span>';});}
 export function platformLogo(channel){return channel==='淘宝'?'<span class="platform-brand"><span class="platform-logo taobao" role="img" aria-label="淘宝标志">淘</span>淘宝</span>':channel==='小红书'?'<span class="platform-brand"><span class="platform-logo xiaohongshu" role="img" aria-label="小红书标志">小红书</span>小红书</span>':`<span class="platform-brand">${esc(channel)}</span>`;}

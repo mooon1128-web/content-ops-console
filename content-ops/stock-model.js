@@ -18,7 +18,7 @@ const permissions = {
   collection: ['admin','operations'], collectionStatus: ['admin','operations'], collectionResult: ['admin','operations'], collectionAccept: ['admin','operations'],
   catalogImport: ['admin'],
   salesRecipe: ['admin','operations'],
-  purchase:['admin','operations'],purchaseSchedule:['admin','operations'],purchaseShip:['admin','operations','warehouse'],purchaseConfirm:['admin','operations'],purchaseReceive:['admin','warehouse'],purchaseInspect:['admin','warehouse'],purchaseDecision:['admin','warehouse'],purchaseReturn:['admin','warehouse'],forecast:['admin','operations'],
+  purchase:['admin','operations'],purchaseUpdate:['admin','operations'],purchaseSchedule:['admin','operations'],purchaseShip:['admin','operations','warehouse'],purchaseConfirm:['admin','operations'],purchaseReceive:['admin','warehouse'],purchaseInspect:['admin','warehouse'],purchaseDecision:['admin','warehouse'],purchaseReturn:['admin','warehouse'],forecast:['admin','operations'],
 };
 export function authorize(user, action) {
   if (!hasStockRole(user,...(permissions[action] || []))) throw fail(403,'当前账号没有此操作权限');
@@ -72,7 +72,7 @@ function appendEvent(s,p,user,now,internal=false) {
 }
 function apply(s,action,p,user,now,context={}) {
   authorize(user,action);
-  if(['purchase','purchasePrivate','purchaseSettle','purchaseReopen','purchaseSchedule','purchaseShip','purchaseConfirm','purchaseReceive','purchaseInspect','purchaseDecision','purchaseReturn','forecast'].includes(action))return applyProcurement(s,action,p,user,now,{fail,required,number,date,instant,stamp,skuExists,appendEvent});
+  if(['purchase','purchaseUpdate','purchasePrivate','purchaseSettle','purchaseReopen','purchaseSchedule','purchaseShip','purchaseConfirm','purchaseReceive','purchaseInspect','purchaseDecision','purchaseReturn','forecast'].includes(action))return applyProcurement(s,action,p,user,now,{fail,required,number,date,instant,stamp,skuExists,appendEvent});
   if(action==='catalogImport')return importCatalog(s,p,user,now,{fail});
   if(action==='salesRecipe')return addSalesRecipe(s,p,user,now);
   if(action==='sku') {

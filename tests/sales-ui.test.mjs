@@ -50,3 +50,26 @@ test('newest calculation wins once, old incomplete snapshots without coverage re
  assert.equal(monthlyReadModel(s).find(x=>x.skuId==='A').paid,14);assert.equal(monthlyReadModel(s).length,2);
  delete s.collections[1].calculation.computedAt;delete s.collections[0].calculation.computedAt;assert.deepEqual(monthlyReadModel(s),s.monthly);
 });
+
+import {productPresentation,productCell,setProductCatalog,matchedProduct} from '../public/stock-ops/sales-ui.js';
+import {wholesaleProducts} from '../public/stock-ops/wholesale-products.js';
+test('XC family alias requires exact colour, keeps the original SKU distinct and exposes full name and variant',()=>{
+ const rows=['黑色','蓝色','白色','粉色'].map(erpSpec=>({name:'痛包（XC）',erpSpec,spec:'颜色 / '+erpSpec}));
+ const before=structuredClone(rows),images=rows.map(productImage);assert.equal(new Set(images).size,4);assert.ok(images.every(Boolean));
+ assert.equal(productPresentation(rows[0]).fullName,'肥士顿痛包系列 · 黑色 · XC档案');
+ const html=productCell(rows[0],'鑫浩');assert.match(html,/肥士顿痛包系列/);assert.match(html,/product-spec/);assert.match(html,/黑色 · XC档案/);
+ assert.deepEqual(rows,before);assert.equal(productImage({name:'痛包（XC）'}),'');assert.equal(productImage({name:'痛包（XC）',erpSpec:'黑色+白色'}),'');
+ assert.equal(productImage({name:'不是同一款痛包',erpSpec:'黑色'}),'');
+ const baguette=productPresentation({name:'法棍痛包',costSkuId:'SKU-BG0019',erpSpec:'石墨黑'});assert.equal(baguette.name,'法棍包系列');assert.equal(baguette.spec,'石墨黑');assert.ok(baguette.image);
+});
+test('live catalog refresh updates presentation only, handles ambiguous and missing images safely',()=>{
+ try{
+ const k={code:'K',name:'ERP简称',erpSpec:'蓝色'},before=structuredClone(k);
+ setProductCatalog([{id:'a',code:'K',name:'完整商品名称-蓝色',image:'/assets/new.jpg'}]);
+ assert.equal(productPresentation(k).fullName,'完整商品名称 · 蓝色');assert.match(productImage(k),/new.jpg$/);assert.deepEqual(k,before);
+ assert.equal(setProductCatalog([]),false);assert.match(productImage(k),/new.jpg$/);
+ setProductCatalog([{id:'a',code:'K',name:'同码1',image:'/1.jpg'},{id:'b',code:'K',name:'同码2',image:'/2.jpg'}]);assert.equal(matchedProduct(k),null);
+ setProductCatalog([{id:'a',code:'K',name:'无图商品',image:''}]);assert.equal(productImage(k),'');
+ setProductCatalog([{id:'a',code:'K',name:'坏图商品',image:'javascript:bad()'}]);assert.equal(productImage(k),'');
+ }finally{setProductCatalog(wholesaleProducts);}
+});
