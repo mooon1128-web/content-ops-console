@@ -1,9 +1,9 @@
 import {createCommandClient,acceptNewerState} from './reliable-save.js?v=20261123-purchase-reliable-v1';
 import {renderSalesRecipes,collectionInstructions as componentInstructions} from './sales-recipes-ui.js';
-import {renderPurchases,renderReplenishment} from './purchasing-ui.js?v=20261123-balances-v1';
+import {renderPurchases,renderReplenishment} from './purchasing-ui.js?v=20261127-edit-v1';
 import {renderSpecial} from './special-ui.js';
 import {renderCatalog} from './catalog-ui.js';
-import {renderMonthly,productCell,bindImageFallback,sampleMonthData} from './sales-ui.js';
+import {renderMonthly,productCell,bindImageFallback,sampleMonthData,productPresentation,setProductCatalog} from './sales-ui.js';
 const $=s=>document.querySelector(s);
 const escape=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=v=>v===null||v===undefined?'<span class="missing">待核</span>':Number(v).toLocaleString('zh-CN');
@@ -12,6 +12,7 @@ const today=()=>new Date(Date.now()+8*3600000).toISOString().slice(0,10);
 const localNow=()=>new Date(Date.now()+8*3600000).toISOString().slice(0,16);
 const iso=v=>v?new Date(v+':00+08:00').toISOString():null;
 let user=null,state=null,tab='monthly',samples=[],sampleError='',editorHandler=null;
+let catalogStatus='正在读取订货商品名称和图片…',catalogBusy=false;
 let editorBusy=false,costLoading=false;const commandClient=createCommandClient({request,getState:()=>state,refresh,userId:()=>user?.id,storage:globalThis.sessionStorage,progress:message=>{if(editorBusy)$('#form-message').textContent=message;}});const pendingCommands=commandClient.pending;let refreshing=false;const editing=()=>Boolean(document.querySelector('dialog[open]'))||document.activeElement?.matches('input,textarea,select');
 let filters={month:today().slice(0,7),sku:'',channel:''};
 let sampleFilters={month:today().slice(0,7),mode:'registered'};
@@ -29,6 +30,14 @@ async function request(path,options={}) {
   let result;try{result=await response.json()}catch{throw Error('服务器响应异常，请稍后重试')}
   if(!response.ok){if(response.status===401){$('#login').hidden=false;$('#workspace').hidden=true;}throw Object.assign(Error(result.error||'请求失败'),{status:response.status,code:result.code});}return result;
 }
+async function syncProductCatalog(force=false){
+  if(catalogBusy)return;
+  catalogBusy=true;catalogStatus='正在同步商品名称和图片…';
+  const label=$('#product-catalog-status'),button=$('#sync-purchase-products');if(label)label.textContent=catalogStatus;if(button)button.disabled=true;
+  try{const result=await request('/api/stock-ops/product-catalog'+(force?'?refresh=1':''));if(!setProductCatalog(result.products))throw Error('商品目录为空');catalogStatus=result.catalogConnected?'商品名称与图片已同步 · '+textDate(result.syncedAt):'已读取订货基础目录；后台自定义商品暂未连接，未匹配项保留待配图。';}
+  catch(error){catalogStatus='商品同步未完成，现有资料保留：'+error.message;}
+  finally{catalogBusy=false;if(button)button.disabled=false;if(!editing())render();else if(label)label.textContent=catalogStatus;}
+}
 async function refresh(renderPage=true){const incoming=await request('/api/stock-ops/state?view=workspace');state=acceptNewerState(state,incoming);$('#sync-status').innerHTML=`<i class="live-dot"></i>已同步 · ${state.updatedAt?textDate(state.updatedAt):'尚未登记'}`;if(renderPage&&!editing())render();}
 async function command(action,data,key){
   const result=await commandClient.send(action,data);
@@ -37,7 +46,7 @@ async function command(action,data,key){
   catch(error){notice('记录已保存，但列表尚未刷新成功。请点刷新查看，不要重新登记。',true);}
   return result;
 }
-async function activate(){const session=await request('/api/content-ops/session');user=session.user;await refresh(false);$('#login').hidden=true;$('#workspace').hidden=false;$('#identity').innerHTML=`${escape(user.name)}<br>${escape(roleLabels[state.role]||state.role)}`;tab=({pr_service:'special',customer_service:'special',warehouse:'warehouse',pr:'samples',content:'monthly'})[state.role]||'monthly';render();}
+async function activate(){const session=await request('/api/content-ops/session');user=session.user;await refresh(false);$('#login').hidden=true;$('#workspace').hidden=false;$('#identity').innerHTML=`${escape(user.name)}<br>${escape(roleLabels[state.role]||state.role)}`;tab=({pr_service:'special',customer_service:'special',warehouse:'warehouse',pr:'samples',content:'monthly'})[state.role]||'monthly';render();void syncProductCatalog();}
 $('#login-form').onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector('button');b.disabled=true;try{await request('/api/content-ops/login',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});e.target.reset();await activate();}catch(err){$('#login-message').textContent=err.message}finally{b.disabled=false}};
 $('#logout').onclick=async()=>{await request('/api/content-ops/logout',{method:'POST',body:'{}'});location.reload()};
 $('#refresh').onclick=()=>refresh().catch(e=>notice(e.message,true));
@@ -57,7 +66,7 @@ function showEditor(title,fields,handler,hint='') {if(editorBusy)return;$('#save
 function field(name,label,value='',type='text',required=true,wide=false){return `<label class="${wide?'wide':''}">${escape(label)}<input name="${name}" type="${type}" value="${escape(value??'')}" ${required?'required':''} ${type==='number'?'step="any"':''}></label>`;}
 function area(name,label,value='',required=true){return `<label class="wide">${escape(label)}<textarea name="${name}" ${required?'required':''}>${escape(value)}</textarea></label>`;}
 function select(name,label,options,value=''){return `<label>${escape(label)}<select name="${name}" required>${options.map(o=>{const [v,l]=Array.isArray(o)?o:[o,o];return `<option value="${escape(v)}" ${String(value)===String(v)?'selected':''}>${escape(l)}</option>`}).join('')}</select></label>`;}
-function skuSelect(name='skuId',value=''){return select(name,'款式 / SKU',state.skus.map(k=>[k.id,`${k.name}${k.spec?' · '+k.spec:''} · ${k.code}`]),value);}
+function skuSelect(name='skuId',value=''){return select(name,'款式 / SKU',state.skus.map(k=>[k.id,`${productPresentation(k).fullName} · ${k.code}`]),value);}
 function table(headers,rows,empty='暂无记录。填写后会保存在共享台。'){return rows.length?`<div class="table-wrap"><table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:`<div class="empty">${empty}</div>`;}
 function heading(title,sub,actions='',eyebrow='PUPUHOME / OPERATIONS'){return `<div class="page-heading"><div><p class="eyebrow">${eyebrow}</p><h1>${title}</h1><p class="subtitle">${sub}</p></div><div class="actions">${actions}</div></div>`;}
 const button=(id,label,primary=false)=>`<button type="button" id="${id}" class="${primary?'primary':''}">${label}</button>`;
@@ -74,7 +83,7 @@ function render(){
   bindImageFallback();
   if(state.demo)$('#content').insertAdjacentHTML('afterbegin','<p class="hint"><strong>演示环境</strong> · 以下均为虚构的测试工单和库存，与真实业务数据隔离。</p>');
 }
-function purchaseApi(){return {state,$,can,heading,button,table,escape,num,pill,bind,bindAll,showEditor,field,area,select,skuSelect,command,localNow,iso,today,sku,render};}
+function purchaseApi(){return {state,$,can,heading,button,table,escape,num,pill,bind,bindAll,showEditor,field,area,select,skuSelect,command,localNow,iso,today,sku,render,syncProductCatalog,catalogStatus};}
 function purchases(){renderPurchases(purchaseApi());}
 function replenishment(){renderReplenishment(purchaseApi());}
 function special(){renderSpecial({state,can,$,escape,num,textDate,today,localNow,iso,skuLabel,sku,heading,button,table,pill,field,area,select,showEditor,command,bind,bindAll,csv,render});$('#content').insertAdjacentHTML('beforeend',button('ordinary-aftersales','普通退款／换货出入库'));bind('ordinary-aftersales',()=>{tab='aftersales';render()});}
