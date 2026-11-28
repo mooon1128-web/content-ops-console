@@ -116,3 +116,12 @@ test('a stale or empty bulk selection never causes a partial delete',async()=>{
  const f=await synced();await f.s.deletePlacements(['p1','gone'],true);await f.s.deletePlacements([],true);
  assert.equal(f.patches(),0);assert.equal(f.remote().placements.length,2);assert.equal(f.s.pending(),null);
 });
+
+test('creator list moves editing first, marks blacklist before names, and keeps contacts out of the list',()=>{
+ const f=setup();const creator={id:'flagged',name:'Marked creator',tier:'素人',isBlacklisted:true,blacklistReason:'Repeated non-delivery',email:'private@example.invalid',contactAddress:'Private address',wechat:'private-wechat'};
+ f.s.setState({...structuredClone(seed),creators:[creator]});f.s.prepareCreatorTable();f.s.renderCreators();const html=f.node('#creator-table').innerHTML;
+ assert.ok(html.indexOf('data-edit-creator')<html.indexOf('Marked creator</strong>'));
+ assert.ok(html.indexOf('blacklist-badge')<html.indexOf('Marked creator</strong>'));
+ assert.match(html,/Repeated non-delivery/);assert.doesNotMatch(html,/private@example|Private address|private-wechat/);
+ assert.equal(f.s.read().creators[0].contactAddress,'Private address');
+});
