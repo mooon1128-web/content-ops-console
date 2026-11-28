@@ -43,6 +43,7 @@
     if(!matches.length)matches=products.filter(p=>key(p.name)===key(value)||key(code(p)+' · '+p.name)===key(value));
     if(!matches.length&&aliases[key(value)])matches=products.filter(p=>key(code(p))===key(aliases[key(value)]));
     // Only a whole, unique specification name is accepted; never substring/fuzzy matching.
+    if(!matches.length)matches=products.filter(p=>(p.aliases||[]).some(a=>key(a)===key(value)));
     if(!matches.length)matches=products.filter(p=>p.name.includes('-')&&key(p.name.slice(p.name.lastIndexOf('-')+1))===key(value));
     return matches.length===1?matches[0]:null;
   }
@@ -107,5 +108,78 @@
       estimated:rows.filter(r=>r.expense?.basis==='estimate').length,
       snapshot:rows.filter(r=>r.expense?.basis==='snapshot').length};
   }
-  return {key,findProduct,resolvePlacement,costs,filterRows,totals,monthOf,amount,segments};
+  function publicationStage(row){
+    if(row.status==='已发布')return '已发布';
+    if(['待发布','等待发布','已寄样','寄样中','已签收','脚本已确认'].includes(row.status))return '待发布';
+    return '';
+  }
+  const promoSeeds=[
+    {name:'法棍痛包（颜色待补）',aliases:['法棍包'],kind:'product',category:'箱包'},
+    {name:'拖鞋',aliases:['拖鞋'],kind:'product',category:'家居周边'},
+    {name:'拖鞋-39码',aliases:['拖鞋 39码','拖鞋39码'],kind:'product',category:'家居周边'},
+    {name:'烘焙礼盒（组合待补）',aliases:['红格礼盒','烘焙礼盒'],kind:'bundle'},
+    ...[1,2,3,4].map(n=>({name:`烘焙礼盒${n}组`,aliases:[`烘焙礼盒${n}组`],kind:'bundle'})),
+    {name:'mini手机链（款式与数量待补）',aliases:['mini挂件','迷你挂件','mini手机链'],kind:'bundle',category:'饰品'},
+    {name:'mini手机链全套',aliases:['mini挂件全套','mini挂件全','迷你挂件 全'],kind:'bundle',category:'饰品'},
+    {name:'mini手机链任选2–3个',aliases:['mini挂件2-3','mini挂件2-3个'],kind:'bundle',category:'饰品'},
+    {name:'mini手机链任选3–4个',aliases:['mini挂件3-4个'],kind:'bundle',category:'饰品'},
+    {name:'烘焙系列新品任选5',aliases:['烘培系列 新品任选5','烘培系列 新品 任选5'],kind:'bundle'},
+  ];
+  const promoId=name=>'promo-'+encodeURIComponent(key(name));
+  const promoCode=name=>{let n=2166136261;for(const c of key(name))n=Math.imul(n^c.charCodeAt(0),16777619);return 'PR-'+(n>>>0).toString(16).toUpperCase().padStart(8,'0');};
+  function productCategories(p){return [...new Set([...(p.categories||[]),p.sourceCategory||p.category].filter(Boolean))];}
+  // Extra SKUs live only in the promotion catalog. Source placements are never rewritten.
+  function extendCatalog(base=[],saved={},placements=[]){
+    const entries=new Map();
+    const add=entry=>{const id=entry.id||promoId(entry.aliases?.[0]||entry.name);entries.set(id,{id,code:promoCode(id),kind:'product',aliases:[],components:[],...entry});};
+    for(const entry of promoSeeds)if(!findProduct(entry.name,base))add(entry);
+    const aliasBase=base.map(p=>({...p,aliases:[...(p.aliases||[])]}));
+    for(const [alias,target] of Object.entries({'mini小草莓':'NEW-807703','mini草莓挂件':'NEW-807703','学生娃':'NEW-007717'})){
+      const p=findProduct(target,aliasBase);if(p)p.aliases.push(alias);
+    }
+    for(const entry of Object.values(saved))if(entry?.id&&entry.name)add(entry);
+    const effective=()=>[...aliasBase,...entries.values()].filter(p=>!p.replacementId);
+    for(const row of placements)for(const text of segments(row.product)){
+      if(resolvePlacement(row,aliasBase).legacyLabels.includes(text))continue;
+      if(findProduct(text,effective()))continue;
+      const parts=splitKnownProducts(text,effective());
+      // Keep conditional selection plans together instead of inventing standalone SKUs such as “自选1”.
+      if(/\bor|自选1|手帐任选|手帐自选|卡包\s+护照本/i.test(text)){
+        add({name:parts.map(part=>findProduct(part,effective())?.name||part.replace(/mini挂件|迷你挂件/gi,'mini手机链')).join('＋'),aliases:[text],kind:'bundle',categories:[...new Set(parts.flatMap(part=>{const p=findProduct(part,effective());return p?productCategories(p):[];}))]});
+      }else for(const part of parts)if(!findProduct(part,effective()))add({name:part,aliases:[part],kind:/礼盒|任选|自选|随机|全套|mini|迷你挂件|组合/i.test(part)?'bundle':'product',category:/mini|迷你挂件/i.test(part)?'饰品':''});
+    }
+    // Reapply saved overrides after discovery, including aliases and replacement links.
+    for(const entry of Object.values(saved))if(entry?.id&&entry.name)add(entry);
+    for(const entry of entries.values())if(entry.replacementId){
+      const target=findProduct(entry.replacementId,aliasBase);
+      if(target)target.aliases.push(entry.name,...entry.aliases);
+    }
+    const catalog=[...aliasBase,...[...entries.values()].filter(p=>!p.replacementId||!findProduct(p.replacementId,aliasBase))];
+    for(const p of catalog.filter(p=>String(p.id).startsWith('promo-'))){
+      p.promotionOnly=true;p.unit='组';
+      const components=(p.components||[]).map(c=>({product:findProduct(c.productId,aliasBase),quantity:amount(c.quantity)}));
+      const complete=p.compositionConfirmed===true&&components.length>0&&components.every(c=>c.product&&c.quantity>0);
+      p.compositionPending=!complete;p.costConnected=Boolean(complete&&components.every(c=>c.product.costConnected&&amount(c.product.unitCost??c.product.cost)!==null));
+      p.unitCost=p.costConnected?round(components.reduce((n,c)=>n+amount(c.product.unitCost??c.product.cost)*c.quantity,0)):null;
+      p.costSource=p.costConnected?'订货商品成本 × 套餐组成数量':'';
+      p.categories=[...new Set([...(p.categories||[]),p.category,...components.flatMap(c=>c.product?productCategories(c.product):[])].filter(Boolean))];
+      p.status=complete?'推广专用 SKU':'组成／资料待补';
+    }
+    return catalog;
+  }
+  function rankedProducts(rows,products,filters={}){
+    const groups=new Map(),seen=new Set(),query=key(filters.search);
+    const eligible=rows.filter(row=>{const stage=publicationStage(row);return stage&&(!filters.stage||filters.stage==='all'||stage===filters.stage);});
+    for(const row of eligible){if(seen.has(row.id))continue;seen.add(row.id);
+      const resolved=resolvePlacement(row,products);
+      for(const p of resolved.products){
+        if(filters.category&&filters.category!=='all'&&!productCategories(p).includes(filters.category))continue;
+        if(query&&!key([p.name,code(p),...(p.aliases||[])].join(' ')).includes(query))continue;
+        const g=groups.get(p.id)||{product:p,count:0,pending:0,published:0,recordIds:[]};
+        g.count++;g[publicationStage(row)==='已发布'?'published':'pending']++;g.recordIds.push(row.id);groups.set(p.id,g);
+      }
+    }
+    return [...groups.values()].sort((a,b)=>b.count-a.count||a.product.name.localeCompare(b.product.name,'zh-CN'));
+  }
+  return {key,findProduct,resolvePlacement,costs,filterRows,totals,monthOf,amount,segments,publicationStage,extendCatalog,productCategories,rankedProducts,promoId};
 });
