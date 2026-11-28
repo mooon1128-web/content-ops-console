@@ -59,3 +59,61 @@ test('forecast saves its assumptions without placing orders or changing past sug
  s=run(s,'forecast',{skuId:'test',inputs:{...inputs,daily:4},basis:'新情景'});
  assert.deepEqual(s.forecasts[0],original);assert.equal(s.forecasts.length,2);assert.equal(s.purchases.length,0);assert.equal(s.events.length,0);
 });
+
+test('editing a purchase preserves receipts, contracts, settlements and the old public values',()=>{
+ let s=run(seed(),'purchase',order),o=s.purchases[0];
+ s.purchasePrivate={[o.id]:{balanceDue:123.45,contracts:[{id:'keep'}],settlement:{status:'已结清'}}};
+ const privateBefore=structuredClone(s.purchasePrivate),events=structuredClone(s.events),original=structuredClone(o);
+ s=run(s,'purchaseUpdate',{...o,purchaseId:o.id,expectedUpdatedAt:o.updatedAt,reference:'TEST-PO1-new',quantity:600,expectedShipAt:'2026-11-22',expectedAt:'2026-11-23'});
+ assert.equal(s.purchases.length,1);assert.equal(s.purchases[0].id,original.id);assert.equal(s.purchases[0].quantity,600);
+ assert.equal(s.purchases[0].editHistory[0].previous.quantity,500);assert.equal(s.purchases[0].editHistory[0].previous.reference,original.reference);
+ assert.deepEqual(s.purchasePrivate,privateBefore);assert.deepEqual(s.events,events);assert.deepEqual(s.purchaseReceipts,[]);
+});
+test('purchase edits reject stale forms, duplicate batches, invalid quantities and unauthorized roles atomically',()=>{
+ let s=run(seed(),'purchase',order),o=s.purchases[0],d={...o,purchaseId:o.id,expectedUpdatedAt:o.updatedAt},before=structuredClone(s);
+ for(const role of [warehouse,pr])assert.throws(()=>run(s,'purchaseUpdate',d,role),/权限/);
+ assert.throws(()=>run(s,'purchaseUpdate',{...d,expectedUpdatedAt:'old'}),/已被修改/);
+ for(const quantity of [0,-1,'',1.2])assert.throws(()=>run(s,'purchaseUpdate',{...d,quantity}));
+ assert.throws(()=>run(s,'purchaseUpdate',{...d,orderDate:'2026-12-01',expectedShipAt:'2026-12-10',expectedAt:''}),/未来计划/);
+ assert.deepEqual(s,before);
+ s=run(s,'purchase',{...order,reference:'TEST-PO2'});
+ assert.throws(()=>run(s,'purchaseUpdate',{...d,reference:'TEST-PO2'}),/已经登记/);
+ s=transact(s,{action:'purchaseUpdate',data:{...d,quantity:600},revision:s.revision,requestId:randomUUID()},admin,{now:'2026-11-22T08:01:00.000Z'}).state;
+ assert.throws(()=>run(s,'purchaseUpdate',{...d,quantity:700}),/已被修改/);
+});
+test('received and shipped batches keep their inventory identity while allowing safe corrections',()=>{
+ let s=run(seed(),'purchase',order),o=s.purchases[0];
+ s=run(s,'purchaseShip',{purchaseId:o.id,reference:'SHIP1',at:'2026-11-21',quantity:300,note:'已出货'});
+ s=run(s,'purchaseReceive',{...receive,purchaseId:o.id,good:200,defect:0,pending:0},warehouse);
+ o=s.purchases[0];const d={...o,purchaseId:o.id,expectedUpdatedAt:o.updatedAt};
+ assert.throws(()=>run(s,'purchaseUpdate',{...d,quantity:299}),/不能少于/);
+ assert.throws(()=>run(s,'purchaseUpdate',{...d,warehouse:'副仓'}),/已有出货或收货/);
+ assert.throws(()=>run(s,'purchaseUpdate',{...d,status:'计划'}),/已有出货或收货/);
+ assert.throws(()=>run(s,'purchaseUpdate',{...d,orderDate:'2026-11-22',expectedShipAt:'2026-11-23',expectedAt:''}),/不能晚于/);
+ const snapshot=structuredClone({receipts:s.purchaseReceipts,events:s.events,shipments:o.shipments});
+ s=run(s,'purchaseUpdate',{...d,quantity:600,note:'工厂增补100件'});
+ assert.deepEqual({receipts:s.purchaseReceipts,events:s.events,shipments:s.purchases[0].shipments},snapshot);
+});
+test('before shipment, correcting the selected SKU preserves record ID and does not move inventory',()=>{
+ let s=run(seed(),'sku',{id:'second',code:'SECOND',name:'另一个款',warehouse:'主仓'});
+ s=run(s,'purchase',order);const o=s.purchases[0];
+ s=run(s,'purchaseUpdate',{...o,purchaseId:o.id,expectedUpdatedAt:o.updatedAt,skuId:'second',warehouse:'副仓'});
+ assert.equal(s.purchases[0].id,o.id);assert.equal(s.purchases[0].skuId,'second');assert.equal(s.purchases[0].editHistory[0].previous.skuId,'test');assert.equal(s.events.length,0);
+});
+
+import {renderPurchases} from '../public/stock-ops/purchasing-ui.js';
+test('visible edit action opens existing values and saves through the real purchase command twice',async()=>{
+ const documentBefore=globalThis.document;globalThis.document={querySelectorAll:()=>[]};
+ try{
+ let s=run(seed(),'purchase',order);s=run(s,'sku',{id:'other',code:'OTHER',name:'另款',warehouse:'主仓'});
+ const bindings=new Map(),els=new Map();let editor;
+ const a={state:{...s,role:'admin',balances:[]},$:key=>{if(!els.has(key))els.set(key,{});return els.get(key);},can:()=>true,heading:()=>'',button:(id,label)=>`<button id="${id}">${label}</button>`,table:(headers,rows)=>rows.flat().join(''),escape:String,num:String,pill:String,bind:(id,fn)=>bindings.set(id,fn),bindAll:(key,fn)=>bindings.set(key,fn),showEditor:(title,html,handler)=>{editor={title,html,handler};},field:(name,label,value)=>`<input name="${name}" value="${value}">`,area:(name,label,value)=>`<textarea name="${name}">${value}</textarea>`,select:(name,label,options,value)=>`<select name="${name}">${value}</select>`,skuSelect:(name,value)=>`<select name="${name}">${value}</select>`,command:async(action,data)=>{s=run(s,action,data);a.state={...s,role:'admin',balances:[]};},localNow:()=>now,iso:x=>x,today:()=>now.slice(0,10),sku:id=>s.skus.find(k=>k.id===id),render:()=>{},syncProductCatalog:async()=>{},catalogStatus:'已同步'};
+ for(const quantity of [600,700]){
+  renderPurchases(a);assert.match(els.get('#content').innerHTML,/data-edit-purchase/);
+  bindings.get('[data-edit-purchase]')({dataset:{editPurchase:s.purchases[0].id}});
+  assert.match(editor.html,new RegExp('value="'+s.purchases[0].quantity+'"'));assert.doesNotMatch(editor.html,/balanceDue|purchase-contract-files/);
+  await editor.handler({...order,quantity});assert.equal(s.purchases.length,1);assert.equal(s.purchases[0].quantity,quantity);
+ }
+ assert.equal(s.purchases[0].editHistory.length,2);assert.equal(s.events.length,0);
+ }finally{globalThis.document=documentBefore;}
+});
