@@ -5,10 +5,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>小红书媒介投放跟踪台</title>
-  <link rel="stylesheet" href="styles.css?v=20261123-cooperation-v1" />
+  <link rel="stylesheet" href="styles.css?v=20261128-promotion-catalog-v2" />
 </head>
 <body>
-  <header class="topbar">
+  <button type="button" id="sidebar-toggle" class="sidebar-toggle" aria-controls="app-sidebar" aria-expanded="true">‹ 收起菜单</button>
+  <header class="topbar" id="app-sidebar">
     <div class="brand">
       <span class="brand-mark">XH</span>
       <div>
@@ -52,7 +53,7 @@
         <h2 id="product-board-title">本月合作产品</h2>
         <div id="monthly-started-card" class="monthly-started-card"></div>
       </div>
-      <div id="product-board" class="product-list"></div>
+      <div class="ranking-content"><div class="ranking-toolbar"><label>搜索商品<input id="ranking-search" type="search" placeholder="名称、SKU 或旧称"></label><label>订货类目<select id="ranking-category"><option value="all">全部类目</option></select></label><label>发布状态<select id="ranking-stage"><option value="all">待发布＋已发布</option><option>待发布</option><option>已发布</option></select></label><button type="button" id="manage-promotion-skus">商品与套餐 SKU</button></div><div id="product-board" class="product-list"></div><button type="button" id="clear-ranking-filter" hidden>取消排行筛选，查看全部历史记录</button></div>
     </section>
 
     <section class="view active" id="overview-view">
@@ -529,6 +530,6 @@
   <datalist id="creator-type-list"></datalist>
   <datalist id="creator-name-list"></datalist>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="interface-update.js?v=20261128-promotion-costs-v1"></script><script src="/promotion-data.cjs?v=20261128-promotion-costs-v1"></script><script src="app.js?v=20261128-promotion-costs-v1"></script>
+  <script src="/ops-core.cjs?v=20261122"></script><script src="/cloud-sync.js?v=20261122"></script><script src="interface-update.js?v=20261128-promotion-catalog-v2"></script><script src="/promotion-data.cjs?v=20261128-promotion-catalog-v2"></script><script src="product-catalog-ui.js?v=20261128-promotion-catalog-v2"></script><script src="app.js?v=20261128-promotion-catalog-v2"></script>
 </body>
 </html>
